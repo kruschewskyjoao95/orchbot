@@ -1,0 +1,16 @@
+{
+  "appId": "com.orchbot.desktop",
+  "productName": "Orchbot",
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+  "files": ["out/**/*", "package.json"],
+  "linux": {
+    "target": ["AppImage", "deb", "dir"],
+    "category": "Development",
+    "maintainer": "Orchbot Team <support@orchbot.local>",
+    "synopsis": "Desktop workspace local-first para agentes de IA persistentes",
+    "description": "Desktop workspace local-first para agentes de IA persistentes com Codex, Claude, filas locais duráveis, anexos gerenciados e browser embarcado."
+  }
+}

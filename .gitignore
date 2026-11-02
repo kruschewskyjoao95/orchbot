@@ -5,7 +5,8 @@ node_modules/
 # Production & Build outputs
 dist/
 out/
-build/
+build/*
+!build/icon.png
 release/
 
 # SQLite databases & temp files
