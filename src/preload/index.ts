@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  BrowserBounds,
+  BrowserTab,
   CreateAgentInput,
   DelegationInput,
   OrchbotApi,
@@ -33,6 +35,26 @@ const api: OrchbotApi = {
   openAttachment: (filePath: string) => ipcRenderer.invoke('orchbot:open-attachment', filePath),
   delegateTask: (input: DelegationInput) => ipcRenderer.invoke('orchbot:delegate-task', input),
 
+  browserGetTabs: (agentId: string) => ipcRenderer.invoke('orchbot:browser-get-tabs', agentId),
+  browserOpenTab: (agentId: string, url: string) =>
+    ipcRenderer.invoke('orchbot:browser-open-tab', { agentId, url }),
+  browserCloseTab: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-close-tab', { agentId, tabId }),
+  browserNavigate: (agentId: string, tabId: string, action: 'back' | 'forward' | 'reload') =>
+    ipcRenderer.invoke('orchbot:browser-navigate', { agentId, tabId, action }),
+  browserInspect: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-inspect', { agentId, tabId }),
+  browserClick: (agentId: string, tabId: string, selector: string) =>
+    ipcRenderer.invoke('orchbot:browser-click', { agentId, tabId, selector }),
+  browserFill: (agentId: string, tabId: string, selector: string, value: string) =>
+    ipcRenderer.invoke('orchbot:browser-fill', { agentId, tabId, selector, value }),
+  browserScreenshot: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-screenshot', { agentId, tabId }),
+  browserRunScript: (agentId: string, tabId: string, script: string) =>
+    ipcRenderer.invoke('orchbot:browser-run-script', { agentId, tabId, script }),
+  browserSetBounds: (agentId: string, tabId: string, bounds: BrowserBounds | null) =>
+    ipcRenderer.invoke('orchbot:browser-set-bounds', { agentId, tabId, bounds }),
+
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => {
     const handler = (_event: unknown, data: StreamChunkEvent) => listener(data)
     ipcRenderer.on('orchbot:stream-chunk', handler)
@@ -62,6 +84,14 @@ const api: OrchbotApi = {
     ipcRenderer.on('orchbot:task-status-changed', handler)
     return () => {
       ipcRenderer.removeListener('orchbot:task-status-changed', handler)
+    }
+  },
+
+  onBrowserTabUpdated: (listener: (tab: BrowserTab) => void) => {
+    const handler = (_event: unknown, tab: BrowserTab) => listener(tab)
+    ipcRenderer.on('orchbot:browser-tab-updated', handler)
+    return () => {
+      ipcRenderer.removeListener('orchbot:browser-tab-updated', handler)
     }
   },
 }

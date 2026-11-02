@@ -1,12 +1,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { BrowserManager } from '../backend/browser/browser-manager'
+import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
 import { AttachmentManager } from '../backend/storage/attachment-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
-import type { DelegationInput } from '../shared/types'
+import type { BrowserBounds, DelegationInput } from '../shared/types'
 import { validateCreateAgentInput } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
@@ -15,6 +17,7 @@ let registry: ProviderRegistry | null = null
 let queueManager: QueueManager | null = null
 let attachmentManager: AttachmentManager | null = null
 let delegationService: DelegationService | null = null
+let browserManager: BrowserManager | null = null
 
 function getDatabase(): OrchbotDatabase {
   if (!db) {
@@ -68,6 +71,17 @@ function getDelegationService(): DelegationService {
   return delegationService
 }
 
+function getBrowserManager(): BrowserManager {
+  if (!browserManager) {
+    const driver = new ElectronBrowserDriver(() => mainWindow)
+    browserManager = new BrowserManager(app.getPath('userData'), driver)
+    browserManager.setOnTabUpdated((tab) => {
+      mainWindow?.webContents.send('orchbot:browser-tab-updated', tab)
+    })
+  }
+  return browserManager
+}
+
 function createWindow(): void {
   const mjsPreload = path.join(__dirname, '../preload/index.mjs')
   const preloadPath = fs.existsSync(mjsPreload)
@@ -111,6 +125,7 @@ function registerIpcHandlers(): void {
   const queue = getQueueManager()
   const attachments = getAttachmentManager()
   const delegation = getDelegationService()
+  const browser = getBrowserManager()
 
   ipcMain.handle('orchbot:get-agents', () => {
     return database.listAgents()
@@ -129,6 +144,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('orchbot:delete-agent', async (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('ID inválido')
     await attachments.removeAgentAttachments(id)
+    await browser.removeAgent(id)
     return database.deleteAgent(id)
   })
 
@@ -260,6 +276,93 @@ function registerIpcHandlers(): void {
     if (typeof taskId !== 'string') throw new Error('Task ID inválido')
     return queue.retry(taskId)
   })
+
+  ipcMain.handle('orchbot:browser-get-tabs', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('Agent ID inválido')
+    return browser.getTabs(agentId)
+  })
+
+  ipcMain.handle(
+    'orchbot:browser-open-tab',
+    async (_event, payload: { agentId: string; url: string }) => {
+      const { agentId, url } = payload
+      if (!agentId || !url) throw new Error('Parâmetros inválidos para abrir aba')
+      return await browser.openTab(agentId, url)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-close-tab',
+    async (_event, payload: { agentId: string; tabId: string }) => {
+      const { agentId, tabId } = payload
+      if (!agentId || !tabId) throw new Error('Parâmetros inválidos')
+      return await browser.closeTab(agentId, tabId)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-navigate',
+    async (
+      _event,
+      payload: { agentId: string; tabId: string; action: 'back' | 'forward' | 'reload' },
+    ) => {
+      const { agentId, tabId, action } = payload
+      return await browser.navigate(agentId, tabId, action)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-inspect',
+    async (_event, payload: { agentId: string; tabId: string }) => {
+      const { agentId, tabId } = payload
+      return await browser.inspect(agentId, tabId)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-click',
+    async (_event, payload: { agentId: string; tabId: string; selector: string }) => {
+      const { agentId, tabId, selector } = payload
+      return await browser.click(agentId, tabId, selector)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-fill',
+    async (
+      _event,
+      payload: { agentId: string; tabId: string; selector: string; value: string },
+    ) => {
+      const { agentId, tabId, selector, value } = payload
+      return await browser.fill(agentId, tabId, selector, value)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-screenshot',
+    async (_event, payload: { agentId: string; tabId: string }) => {
+      const { agentId, tabId } = payload
+      const base64 = await browser.captureScreenshot(agentId, tabId)
+      return { base64 }
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-run-script',
+    async (_event, payload: { agentId: string; tabId: string; script: string }) => {
+      const { agentId, tabId, script } = payload
+      return await browser.runScript(agentId, tabId, script)
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-set-bounds',
+    (_event, payload: { agentId: string; tabId: string; bounds: BrowserBounds | null }) => {
+      const { agentId, tabId, bounds } = payload
+      browser.setBounds(agentId, tabId, bounds)
+      return true
+    },
+  )
 }
 
 app.whenReady().then(() => {

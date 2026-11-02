@@ -1,6 +1,8 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import type {
   Agent,
+  BrowserPageContent,
+  BrowserTab,
   Message,
   ProviderInfo,
   SelectedFile,
@@ -21,6 +23,9 @@ export const App: Component = () => {
     ProviderInfo
   > | null>(null)
 
+  // Modo de visualização principal: 'chat' | 'browser'
+  const [mainViewMode, setMainViewMode] = createSignal<'chat' | 'browser'>('chat')
+
   // Fila FIFO signals
   const [tasks, setTasks] = createSignal<TaskQueueItem[]>([])
   const [isQueuePaused, setIsQueuePaused] = createSignal(false)
@@ -35,6 +40,18 @@ export const App: Component = () => {
   const [delegationPrompt, setDelegationPrompt] = createSignal('')
   const [delegationLoading, setDelegationLoading] = createSignal(false)
   const [delegationError, setDelegationError] = createSignal<string | null>(null)
+
+  // Browser Embarcado signals (Fase 5)
+  const [browserTabs, setBrowserTabs] = createSignal<BrowserTab[]>([])
+  const [activeTabId, setActiveTabId] = createSignal<string | null>(null)
+  const [browserUrlInput, setBrowserUrlInput] = createSignal('https://github.com')
+  const [browserLoading, setBrowserLoading] = createSignal(false)
+  const [browserInspectData, setBrowserInspectData] = createSignal<BrowserPageContent | null>(null)
+  const [browserScreenshotUrl, setBrowserScreenshotUrl] = createSignal<string | null>(null)
+  const [browserClickSelector, setBrowserClickSelector] = createSignal('')
+  const [browserFillSelector, setBrowserFillSelector] = createSignal('')
+  const [browserFillValue, setBrowserFillValue] = createSignal('')
+  const [browserStatusMsg, setBrowserStatusMsg] = createSignal<string | null>(null)
 
   // Chat signals
   const [inputText, setInputText] = createSignal('')
@@ -135,6 +152,125 @@ export const App: Component = () => {
     }
   }
 
+  const loadBrowserTabs = async (agentId: string) => {
+    try {
+      if (window.orchbot) {
+        const tabs = await window.orchbot.browserGetTabs(agentId)
+        setBrowserTabs(tabs)
+        if (tabs.length > 0) {
+          const current = tabs.find((t) => t.id === activeTabId()) || tabs[tabs.length - 1]
+          setActiveTabId(current.id)
+          setBrowserUrlInput(current.url)
+        } else {
+          setActiveTabId(null)
+          setBrowserInspectData(null)
+          setBrowserScreenshotUrl(null)
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao carregar abas do navegador:', err)
+    }
+  }
+
+  const handleOpenBrowserTab = async (targetUrl?: string) => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot) return
+    const url = targetUrl || browserUrlInput()
+    if (!url.trim()) return
+
+    setBrowserLoading(true)
+    setBrowserStatusMsg(null)
+    try {
+      const tab = await window.orchbot.browserOpenTab(agent.id, url.trim())
+      await loadBrowserTabs(agent.id)
+      setActiveTabId(tab.id)
+      setBrowserUrlInput(tab.url)
+      setBrowserInspectData(null)
+      setBrowserScreenshotUrl(null)
+    } catch (err: unknown) {
+      alert(`Erro ao abrir URL: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBrowserLoading(false)
+    }
+  }
+
+  const handleCloseBrowserTab = async (tabId: string) => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot) return
+    try {
+      await window.orchbot.browserCloseTab(agent.id, tabId)
+      await loadBrowserTabs(agent.id)
+    } catch (err) {
+      console.error('Erro ao fechar aba:', err)
+    }
+  }
+
+  const handleBrowserNavigate = async (action: 'back' | 'forward' | 'reload') => {
+    const agent = currentAgent()
+    const tabId = activeTabId()
+    if (!agent || !tabId || !window.orchbot) return
+    setBrowserLoading(true)
+    try {
+      const tab = await window.orchbot.browserNavigate(agent.id, tabId, action)
+      setBrowserUrlInput(tab.url)
+      await loadBrowserTabs(agent.id)
+    } catch (err: unknown) {
+      alert(`Erro ao navegar: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBrowserLoading(false)
+    }
+  }
+
+  const handleBrowserInspect = async () => {
+    const agent = currentAgent()
+    const tabId = activeTabId()
+    if (!agent || !tabId || !window.orchbot) return
+    try {
+      const data = await window.orchbot.browserInspect(agent.id, tabId)
+      setBrowserInspectData(data)
+    } catch (err: unknown) {
+      alert(`Erro ao inspecionar DOM: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleBrowserScreenshot = async () => {
+    const agent = currentAgent()
+    const tabId = activeTabId()
+    if (!agent || !tabId || !window.orchbot) return
+    try {
+      const res = await window.orchbot.browserScreenshot(agent.id, tabId)
+      setBrowserScreenshotUrl(res.base64)
+    } catch (err: unknown) {
+      alert(`Erro ao capturar screenshot: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleBrowserClick = async (selector: string) => {
+    const agent = currentAgent()
+    const tabId = activeTabId()
+    if (!agent || !tabId || !window.orchbot || !selector.trim()) return
+    try {
+      await window.orchbot.browserClick(agent.id, tabId, selector.trim())
+      setBrowserStatusMsg(`Elemento "${selector}" clicado com sucesso!`)
+      setTimeout(() => setBrowserStatusMsg(null), 3000)
+    } catch (err: unknown) {
+      alert(`Erro ao clicar: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleBrowserFill = async (selector: string, value: string) => {
+    const agent = currentAgent()
+    const tabId = activeTabId()
+    if (!agent || !tabId || !window.orchbot || !selector.trim()) return
+    try {
+      await window.orchbot.browserFill(agent.id, tabId, selector.trim(), value)
+      setBrowserStatusMsg(`Campo "${selector}" preenchido com sucesso!`)
+      setTimeout(() => setBrowserStatusMsg(null), 3000)
+    } catch (err: unknown) {
+      alert(`Erro ao preencher: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   onMount(() => {
     loadAgents()
     loadProviderStatuses()
@@ -183,11 +319,30 @@ export const App: Component = () => {
       }
     })
 
+    const unsubBrowserTab = window.orchbot.onBrowserTabUpdated((updatedTab) => {
+      const agentId = selectedAgentId()
+      if (agentId && updatedTab.agentId === agentId) {
+        setBrowserTabs((prev) => {
+          const index = prev.findIndex((t) => t.id === updatedTab.id)
+          if (index >= 0) {
+            const next = [...prev]
+            next[index] = updatedTab
+            return next
+          }
+          return [...prev, updatedTab]
+        })
+        if (activeTabId() === updatedTab.id) {
+          setBrowserUrlInput(updatedTab.url)
+        }
+      }
+    })
+
     onCleanup(() => {
       unsubChunk()
       unsubFinished()
       unsubError()
       unsubTask()
+      unsubBrowserTab()
     })
   })
 
@@ -199,14 +354,22 @@ export const App: Component = () => {
       setIsStreaming(false)
       setChatError(null)
       setStagedFiles([])
+      setBrowserInspectData(null)
+      setBrowserScreenshotUrl(null)
       loadThreadAndMessages(id)
       loadQueue(id)
+      loadBrowserTabs(id)
     }
   })
 
   const currentAgent = () => {
     const id = selectedAgentId()
     return agents().find((a) => a.id === id) || null
+  }
+
+  const currentActiveTab = () => {
+    const id = activeTabId()
+    return browserTabs().find((t) => t.id === id) || null
   }
 
   const otherAgents = () => {
@@ -555,6 +718,28 @@ export const App: Component = () => {
                   </div>
                 </div>
 
+                {/* Alternador de Modo: Conversa vs Navegador */}
+                <div class="mode-switcher">
+                  <button
+                    type="button"
+                    class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
+                    onClick={() => setMainViewMode('chat')}
+                  >
+                    💬 Conversa
+                  </button>
+                  <button
+                    type="button"
+                    class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
+                    onClick={() => {
+                      setMainViewMode('browser')
+                      const a = currentAgent()
+                      if (a) loadBrowserTabs(a.id)
+                    }}
+                  >
+                    🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
+                  </button>
+                </div>
+
                 <div class="header-actions">
                   {/* Botão Delegar para outro agente */}
                   <button
@@ -654,196 +839,689 @@ export const App: Component = () => {
                 </div>
               </Show>
 
-              {/* Lista de Mensagens / Conversa */}
-              <div class="chat-messages">
-                <Show when={agent().instructions}>
-                  <div
-                    class="card"
-                    style={{
-                      'margin-bottom': '12px',
-                      padding: '10px 14px',
-                      'font-size': '12px',
-                    }}
-                  >
-                    <div class="card-title" style={{ 'font-size': '11px', 'margin-bottom': '4px' }}>
-                      Instruções do Agente
+              {/* Modo Chat (Conversa) */}
+              <Show when={mainViewMode() === 'chat'}>
+                {/* Lista de Mensagens / Conversa */}
+                <div class="chat-messages">
+                  <Show when={agent().instructions}>
+                    <div
+                      class="card"
+                      style={{
+                        'margin-bottom': '12px',
+                        padding: '10px 14px',
+                        'font-size': '12px',
+                      }}
+                    >
+                      <div
+                        class="card-title"
+                        style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                      >
+                        Instruções do Agente
+                      </div>
+                      <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
                     </div>
-                    <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
+                  </Show>
+
+                  <Show
+                    when={messages().length > 0 || isStreaming()}
+                    fallback={
+                      <div class="chat-empty">
+                        <div>
+                          👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
+                          <strong>{agent().provider.toUpperCase()}</strong>.
+                        </div>
+                        <div style={{ 'margin-top': '8px' }}>
+                          Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas de
+                          forma organizada no workspace <code>{agent().workspacePath}</code>.
+                        </div>
+                      </div>
+                    }
+                  >
+                    <For each={messages()}>
+                      {(msg) => (
+                        <div class={`message-row ${msg.role}`}>
+                          <div class="message-author">
+                            <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
+                            <span style={{ 'font-size': '10px', opacity: 0.6 }}>
+                              {new Date(msg.createdAt).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </div>
+
+                          {/* Badge de Delegação se a mensagem veio de outro agente */}
+                          <Show when={msg.senderAgentId}>
+                            <span class="delegation-badge">🤝 Mensagem Delegada</span>
+                          </Show>
+
+                          <div class={`message-bubble ${msg.role}`}>
+                            {msg.text}
+
+                            {/* Lista de Anexos anexados na mensagem */}
+                            <Show when={msg.attachments && msg.attachments.length > 0}>
+                              <div class="message-attachments-list">
+                                <For each={msg.attachments}>
+                                  {(att) => (
+                                    <button
+                                      type="button"
+                                      class="attachment-card"
+                                      onClick={() => handleOpenFile(att.filePath)}
+                                      title="Clique para abrir o arquivo no aplicativo padrão"
+                                    >
+                                      <span class="attachment-icon">📎</span>
+                                      <div class="attachment-info">
+                                        <span class="attachment-name">{att.fileName}</span>
+                                        <span class="attachment-size">
+                                          {formatFileSize(att.fileSize)} • {att.mimeType}
+                                        </span>
+                                      </div>
+                                    </button>
+                                  )}
+                                </For>
+                              </div>
+                            </Show>
+                          </div>
+                        </div>
+                      )}
+                    </For>
+
+                    {/* Resposta em streaming em tempo real */}
+                    <Show when={isStreaming()}>
+                      <div class="message-row assistant">
+                        <div class="message-author">
+                          <span>{agent().name}</span>
+                          <span class={`provider-tag ${agent().provider}`}>
+                            {agent().provider} streaming
+                          </span>
+                        </div>
+                        <div class="message-bubble assistant streaming">
+                          {streamingText() || 'Processando resposta...'}
+                          <div class="streaming-indicator">
+                            <span class="pulse-dot" />
+                            <span>{agent().provider.toUpperCase()} executando...</span>
+                          </div>
+                        </div>
+                      </div>
+                    </Show>
+                  </Show>
+
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Alerta de erro se houver */}
+                <Show when={chatError()}>
+                  <div class="error-banner">
+                    <span>⚠️ Erro na execução: {chatError()}</span>
+                    <button
+                      type="button"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                      }}
+                      onClick={() => setChatError(null)}
+                    >
+                      ✕
+                    </button>
                   </div>
                 </Show>
 
-                <Show
-                  when={messages().length > 0 || isStreaming()}
-                  fallback={
-                    <div class="chat-empty">
-                      <div>
-                        👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
-                        <strong>{agent().provider.toUpperCase()}</strong>.
-                      </div>
-                      <div style={{ 'margin-top': '8px' }}>
-                        Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas de
-                        forma organizada no workspace <code>{agent().workspacePath}</code>.
-                      </div>
-                    </div>
-                  }
-                >
-                  <For each={messages()}>
-                    {(msg) => (
-                      <div class={`message-row ${msg.role}`}>
-                        <div class="message-author">
-                          <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
-                          <span style={{ 'font-size': '10px', opacity: 0.6 }}>
-                            {new Date(msg.createdAt).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                        </div>
-
-                        {/* Badge de Delegação se a mensagem veio de outro agente */}
-                        <Show when={msg.senderAgentId}>
-                          <span class="delegation-badge">🤝 Mensagem Delegada</span>
-                        </Show>
-
-                        <div class={`message-bubble ${msg.role}`}>
-                          {msg.text}
-
-                          {/* Lista de Anexos anexados na mensagem */}
-                          <Show when={msg.attachments && msg.attachments.length > 0}>
-                            <div class="message-attachments-list">
-                              <For each={msg.attachments}>
-                                {(att) => (
-                                  <button
-                                    type="button"
-                                    class="attachment-card"
-                                    onClick={() => handleOpenFile(att.filePath)}
-                                    title="Clique para abrir o arquivo no aplicativo padrão"
-                                  >
-                                    <span class="attachment-icon">📎</span>
-                                    <div class="attachment-info">
-                                      <span class="attachment-name">{att.fileName}</span>
-                                      <span class="attachment-size">
-                                        {formatFileSize(att.fileSize)} • {att.mimeType}
-                                      </span>
-                                    </div>
-                                  </button>
-                                )}
-                              </For>
+                {/* Barra de input do chat */}
+                <div class="chat-input-container">
+                  <form class="chat-input-form" onSubmit={handleSendMessage}>
+                    {/* Arquivos staged antes do envio */}
+                    <Show when={stagedFiles().length > 0}>
+                      <div class="attachments-preview-bar">
+                        <For each={stagedFiles()}>
+                          {(file, index) => (
+                            <div class="attachment-chip">
+                              <span>
+                                📎 {file.fileName} ({formatFileSize(file.fileSize)})
+                              </span>
+                              <button
+                                type="button"
+                                class="attachment-chip-remove"
+                                onClick={() => removeStagedFile(index())}
+                              >
+                                ✕
+                              </button>
                             </div>
-                          </Show>
-                        </div>
+                          )}
+                        </For>
                       </div>
-                    )}
-                  </For>
+                    </Show>
 
-                  {/* Resposta em streaming em tempo real */}
-                  <Show when={isStreaming()}>
-                    <div class="message-row assistant">
-                      <div class="message-author">
-                        <span>{agent().name}</span>
-                        <span class={`provider-tag ${agent().provider}`}>
-                          {agent().provider} streaming
+                    <textarea
+                      class="chat-textarea"
+                      placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                      value={inputText()}
+                      onInput={(e) => setInputText(e.currentTarget.value)}
+                      onKeyDown={handleKeyDown}
+                    />
+                    <div class="chat-actions-bar">
+                      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                        <button
+                          type="button"
+                          class="btn-outline"
+                          style={{ padding: '4px 8px', 'font-size': '11px' }}
+                          onClick={handleSelectFiles}
+                          title="Anexar arquivos gerenciados"
+                        >
+                          📎 Anexar
+                        </button>
+                        <span>
+                          Workspace: <code>{agent().workspacePath}</code> |{' '}
+                          {isQueuePaused() ? '⏸ Fila Pausada' : `${pendingTasksCount()} na fila`}
                         </span>
                       </div>
-                      <div class="message-bubble assistant streaming">
-                        {streamingText() || 'Processando resposta...'}
-                        <div class="streaming-indicator">
-                          <span class="pulse-dot" />
-                          <span>{agent().provider.toUpperCase()} executando...</span>
-                        </div>
+
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <Show when={isStreaming()}>
+                          <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
+                            ⏹ Interromper
+                          </button>
+                        </Show>
+                        <button
+                          type="submit"
+                          class="btn-primary"
+                          disabled={!inputText().trim() && stagedFiles().length === 0}
+                        >
+                          Enviar
+                        </button>
                       </div>
                     </div>
-                  </Show>
-                </Show>
-
-                <div ref={messagesEndRef} />
-              </div>
-
-              {/* Alerta de erro se houver */}
-              <Show when={chatError()}>
-                <div class="error-banner">
-                  <span>⚠️ Erro na execução: {chatError()}</span>
-                  <button
-                    type="button"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'inherit',
-                      cursor: 'pointer',
-                    }}
-                    onClick={() => setChatError(null)}
-                  >
-                    ✕
-                  </button>
+                  </form>
                 </div>
               </Show>
 
-              {/* Barra de input do chat */}
-              <div class="chat-input-container">
-                <form class="chat-input-form" onSubmit={handleSendMessage}>
-                  {/* Arquivos staged antes do envio */}
-                  <Show when={stagedFiles().length > 0}>
-                    <div class="attachments-preview-bar">
-                      <For each={stagedFiles()}>
-                        {(file, index) => (
-                          <div class="attachment-chip">
-                            <span>
-                              📎 {file.fileName} ({formatFileSize(file.fileSize)})
-                            </span>
-                            <button
-                              type="button"
-                              class="attachment-chip-remove"
-                              onClick={() => removeStagedFile(index())}
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        )}
-                      </For>
-                    </div>
-                  </Show>
+              {/* Modo Navegador Embarcado (Fase 5) */}
+              <Show when={mainViewMode() === 'browser'}>
+                <div class="browser-workspace">
+                  {/* Strip de Abas */}
+                  <div class="browser-tabs-strip">
+                    <For
+                      each={browserTabs()}
+                      fallback={
+                        <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                          Nenhuma aba aberta
+                        </span>
+                      }
+                    >
+                      {(tab) => (
+                        <div
+                          role="tab"
+                          tabIndex={0}
+                          class={`browser-tab-chip ${activeTabId() === tab.id ? 'active' : ''}`}
+                          onClick={() => {
+                            setActiveTabId(tab.id)
+                            setBrowserUrlInput(tab.url)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              setActiveTabId(tab.id)
+                              setBrowserUrlInput(tab.url)
+                            }
+                          }}
+                        >
+                          <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                            {tab.isLoading ? '⏳ ' : '🌐 '}
+                            {tab.title || tab.url}
+                          </span>
+                          <button
+                            type="button"
+                            class="browser-tab-close"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleCloseBrowserTab(tab.id)
+                            }}
+                            title="Fechar aba"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                    </For>
+                    <button
+                      type="button"
+                      class="btn-new-tab"
+                      onClick={() => handleOpenBrowserTab('https://github.com')}
+                      title="Abrir nova aba"
+                    >
+                      + Nova Aba
+                    </button>
+                  </div>
 
-                  <textarea
-                    class="chat-textarea"
-                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
-                    value={inputText()}
-                    onInput={(e) => setInputText(e.currentTarget.value)}
-                    onKeyDown={handleKeyDown}
-                  />
-                  <div class="chat-actions-bar">
-                    <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                  {/* Barra de Navegação */}
+                  <div class="browser-navbar">
+                    <button
+                      type="button"
+                      class="browser-nav-btn"
+                      onClick={() => handleBrowserNavigate('back')}
+                      title="Voltar"
+                      disabled={!activeTabId()}
+                    >
+                      ⬅️
+                    </button>
+                    <button
+                      type="button"
+                      class="browser-nav-btn"
+                      onClick={() => handleBrowserNavigate('forward')}
+                      title="Avançar"
+                      disabled={!activeTabId()}
+                    >
+                      ➡️
+                    </button>
+                    <button
+                      type="button"
+                      class="browser-nav-btn"
+                      onClick={() => handleBrowserNavigate('reload')}
+                      title="Recarregar"
+                      disabled={!activeTabId()}
+                    >
+                      🔄
+                    </button>
+
+                    <input
+                      type="text"
+                      class="browser-url-input"
+                      placeholder="Digite uma URL (ex: https://github.com)..."
+                      value={browserUrlInput()}
+                      onInput={(e) => setBrowserUrlInput(e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleOpenBrowserTab(browserUrlInput())
+                        }
+                      }}
+                    />
+
+                    <button
+                      type="button"
+                      class="btn-primary"
+                      disabled={browserLoading() || !browserUrlInput().trim()}
+                      onClick={() => handleOpenBrowserTab(browserUrlInput())}
+                    >
+                      {browserLoading() ? 'Carregando...' : 'Ir'}
+                    </button>
+                  </div>
+
+                  {/* Barra de Supervisão e Ações */}
+                  <div class="browser-actions-bar">
+                    <div class="browser-actions-group">
                       <button
                         type="button"
                         class="btn-outline"
-                        style={{ padding: '4px 8px', 'font-size': '11px' }}
-                        onClick={handleSelectFiles}
-                        title="Anexar arquivos gerenciados"
+                        style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                        onClick={handleBrowserScreenshot}
+                        disabled={!activeTabId()}
+                        title="Capturar imagem atual da página"
                       >
-                        📎 Anexar
+                        📸 Capturar Tela
                       </button>
-                      <span>
-                        Workspace: <code>{agent().workspacePath}</code> |{' '}
-                        {isQueuePaused() ? '⏸ Fila Pausada' : `${pendingTasksCount()} na fila`}
-                      </span>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                        onClick={handleBrowserInspect}
+                        disabled={!activeTabId()}
+                        title="Inspecionar estrutura DOM e links sanitizados"
+                      >
+                        🔍 Inspecionar DOM
+                      </button>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <Show when={isStreaming()}>
-                        <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
-                          ⏹ Interromper
-                        </button>
-                      </Show>
-                      <button
-                        type="submit"
-                        class="btn-primary"
-                        disabled={!inputText().trim() && stagedFiles().length === 0}
+                    <div class="browser-actions-group">
+                      <span
+                        class="supervision-badge"
+                        title="Sessão particionada exclusiva do agente com bloqueio de popups e downloads arbitrários"
                       >
-                        Enviar
-                      </button>
+                        🛡️ persist:agent-{agent().id.slice(0, 8)}
+                      </span>
                     </div>
                   </div>
-                </form>
-              </div>
+
+                  {/* Banner de status / mensagem de ação do navegador */}
+                  <Show when={browserStatusMsg()}>
+                    <div
+                      class="error-banner"
+                      style={{
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        'border-color': 'rgba(16, 185, 129, 0.4)',
+                        color: '#34d399',
+                        margin: '10px 16px 0 16px',
+                      }}
+                    >
+                      <span>✅ {browserStatusMsg()}</span>
+                    </div>
+                  </Show>
+
+                  {/* Layout Viewport + Inspector */}
+                  <div class="browser-viewport-layout">
+                    <div class="browser-main-view">
+                      <Show
+                        when={currentActiveTab()}
+                        fallback={
+                          <div class="browser-empty-state">
+                            <div class="browser-empty-icon">🌐</div>
+                            <h3
+                              style={{
+                                'font-size': '15px',
+                                'margin-bottom': '8px',
+                                color: 'var(--text-main)',
+                              }}
+                            >
+                              Navegador Isolado do Agente
+                            </h3>
+                            <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
+                              Abra páginas web com segurança em uma partição isolada com cookies e
+                              cache próprios deste agente. O agente pode extrair dados, inspecionar
+                              links e interagir com supervisão.
+                            </p>
+                            <div class="browser-shortcut-chips">
+                              <button
+                                type="button"
+                                class="shortcut-chip"
+                                onClick={() => handleOpenBrowserTab('https://github.com')}
+                              >
+                                GitHub
+                              </button>
+                              <button
+                                type="button"
+                                class="shortcut-chip"
+                                onClick={() => handleOpenBrowserTab('https://news.ycombinator.com')}
+                              >
+                                Hacker News
+                              </button>
+                              <button
+                                type="button"
+                                class="shortcut-chip"
+                                onClick={() => handleOpenBrowserTab('https://wikipedia.org')}
+                              >
+                                Wikipédia
+                              </button>
+                            </div>
+                          </div>
+                        }
+                      >
+                        {(tab) => (
+                          <>
+                            <div class="browser-card">
+                              <div class="browser-card-title">
+                                <span>{tab().title}</span>
+                                <span
+                                  style={{
+                                    'font-size': '11px',
+                                    color: 'var(--text-muted)',
+                                    'font-weight': 'normal',
+                                  }}
+                                >
+                                  ID: {tab().id}
+                                </span>
+                              </div>
+                              <div
+                                style={{
+                                  'font-size': '12px',
+                                  color: '#60a5fa',
+                                  'word-break': 'break-all',
+                                }}
+                              >
+                                {tab().url}
+                              </div>
+                            </div>
+
+                            {/* Visualizador de Screenshot */}
+                            <div class="browser-card">
+                              <div class="browser-card-title">
+                                <span>Visualização em Tempo Real</span>
+                                <button
+                                  type="button"
+                                  class="btn-outline"
+                                  style={{ padding: '2px 6px', 'font-size': '10.5px' }}
+                                  onClick={handleBrowserScreenshot}
+                                >
+                                  Atualizar Visão
+                                </button>
+                              </div>
+                              <Show
+                                when={browserScreenshotUrl()}
+                                fallback={
+                                  <div
+                                    style={{
+                                      padding: '30px',
+                                      'text-align': 'center',
+                                      color: 'var(--text-muted)',
+                                      'font-size': '12px',
+                                    }}
+                                  >
+                                    📸 Clique em "Capturar Tela" para renderizar o snapshot da
+                                    página.
+                                  </div>
+                                }
+                              >
+                                <img
+                                  src={browserScreenshotUrl() || ''}
+                                  alt="Screenshot da página"
+                                  class="browser-screenshot-img"
+                                />
+                              </Show>
+                            </div>
+
+                            {/* Ações Rápidas de Interação Supervisionada */}
+                            <div class="browser-card">
+                              <div class="browser-card-title">
+                                <span>Interação Supervisionada (Clique & Preenchimento)</span>
+                              </div>
+                              <div class="quick-interact-bar">
+                                <div class="quick-interact-form">
+                                  <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                    Clicar Elemento
+                                  </span>
+                                  <input
+                                    type="text"
+                                    class="quick-interact-input"
+                                    placeholder="Seletor CSS (ex: #btn, .submit)"
+                                    value={browserClickSelector()}
+                                    onInput={(e) => setBrowserClickSelector(e.currentTarget.value)}
+                                  />
+                                  <button
+                                    type="button"
+                                    class="btn-outline"
+                                    style={{ 'font-size': '11px', padding: '4px' }}
+                                    onClick={() => handleBrowserClick(browserClickSelector())}
+                                    disabled={!browserClickSelector().trim()}
+                                  >
+                                    👆 Executar Clique
+                                  </button>
+                                </div>
+
+                                <div class="quick-interact-form">
+                                  <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                    Preencher Formulário
+                                  </span>
+                                  <input
+                                    type="text"
+                                    class="quick-interact-input"
+                                    placeholder="Seletor CSS (ex: #search-box)"
+                                    value={browserFillSelector()}
+                                    onInput={(e) => setBrowserFillSelector(e.currentTarget.value)}
+                                  />
+                                  <input
+                                    type="text"
+                                    class="quick-interact-input"
+                                    placeholder="Valor a digitar..."
+                                    value={browserFillValue()}
+                                    onInput={(e) => setBrowserFillValue(e.currentTarget.value)}
+                                  />
+                                  <button
+                                    type="button"
+                                    class="btn-outline"
+                                    style={{ 'font-size': '11px', padding: '4px' }}
+                                    onClick={() =>
+                                      handleBrowserFill(browserFillSelector(), browserFillValue())
+                                    }
+                                    disabled={!browserFillSelector().trim()}
+                                  >
+                                    ✏️ Preencher Campo
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </Show>
+                    </div>
+
+                    {/* Painel Lateral: Inspetor DOM Sanitizado */}
+                    <div class="browser-inspect-pane">
+                      <div
+                        style={{
+                          'font-weight': '700',
+                          'font-size': '13px',
+                          display: 'flex',
+                          'align-items': 'center',
+                          'justify-content': 'space-between',
+                        }}
+                      >
+                        <span>Inspeção DOM Sanitizada</span>
+                        <Show when={browserInspectData()}>
+                          <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
+                            {browserInspectData()?.links.length || 0} links •{' '}
+                            {browserInspectData()?.inputs.length || 0} campos
+                          </span>
+                        </Show>
+                      </div>
+
+                      <Show
+                        when={browserInspectData()}
+                        fallback={
+                          <div
+                            style={{
+                              color: 'var(--text-muted)',
+                              'font-size': '12px',
+                              'line-height': '1.5',
+                              margin: 'auto',
+                              'text-align': 'center',
+                              padding: '20px',
+                            }}
+                          >
+                            🔍 Clique em <strong>"Inspecionar DOM"</strong> para extrair a estrutura
+                            de links, campos e resumo textual sanitizado da página sem risco de
+                            scripts adversários.
+                          </div>
+                        }
+                      >
+                        {(data) => (
+                          <>
+                            <div>
+                              <div
+                                style={{
+                                  'font-weight': '600',
+                                  'font-size': '11.5px',
+                                  'margin-bottom': '4px',
+                                }}
+                              >
+                                Resumo Textual
+                              </div>
+                              <div class="inspect-summary-box">
+                                {data().textSummary || 'Nenhum texto detectado no corpo da página.'}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div
+                                style={{
+                                  'font-weight': '600',
+                                  'font-size': '11.5px',
+                                  'margin-bottom': '4px',
+                                }}
+                              >
+                                Links Detectados ({data().links.length})
+                              </div>
+                              <div class="inspect-links-list">
+                                <For
+                                  each={data().links}
+                                  fallback={
+                                    <span
+                                      style={{ 'font-size': '11px', color: 'var(--text-muted)' }}
+                                    >
+                                      Nenhum link
+                                    </span>
+                                  }
+                                >
+                                  {(link) => (
+                                    <button
+                                      type="button"
+                                      class="inspect-link-btn"
+                                      onClick={() => handleOpenBrowserTab(link.href)}
+                                      title={`Abrir ${link.href}`}
+                                    >
+                                      🔗 {link.text || link.href}
+                                    </button>
+                                  )}
+                                </For>
+                              </div>
+                            </div>
+
+                            <div>
+                              <div
+                                style={{
+                                  'font-weight': '600',
+                                  'font-size': '11.5px',
+                                  'margin-bottom': '4px',
+                                }}
+                              >
+                                Campos de Formulário ({data().inputs.length})
+                              </div>
+                              <div class="inspect-inputs-list">
+                                <For
+                                  each={data().inputs}
+                                  fallback={
+                                    <span
+                                      style={{ 'font-size': '11px', color: 'var(--text-muted)' }}
+                                    >
+                                      Nenhum campo
+                                    </span>
+                                  }
+                                >
+                                  {(input) => (
+                                    <div class="inspect-input-row">
+                                      <div>
+                                        <span style={{ 'font-weight': '600' }}>
+                                          {input.name || input.id || input.selector}
+                                        </span>
+                                        <span
+                                          style={{
+                                            color: 'var(--text-muted)',
+                                            'margin-left': '4px',
+                                          }}
+                                        >
+                                          ({input.type})
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        class="queue-btn-action"
+                                        onClick={() => {
+                                          setBrowserFillSelector(input.selector)
+                                        }}
+                                        title="Selecionar para preenchimento"
+                                      >
+                                        Selecionar
+                                      </button>
+                                    </div>
+                                  )}
+                                </For>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </Show>
+                    </div>
+                  </div>
+                </div>
+              </Show>
             </div>
           )}
         </Show>

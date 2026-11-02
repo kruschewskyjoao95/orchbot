@@ -116,6 +116,45 @@ export interface TaskStatusChangedEvent {
   task: TaskQueueItem
 }
 
+export interface BrowserTab {
+  id: string
+  agentId: string
+  url: string
+  title: string
+  isLoading: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BrowserPageLink {
+  text: string
+  href: string
+}
+
+export interface BrowserPageInput {
+  name?: string
+  id?: string
+  type?: string
+  placeholder?: string
+  selector: string
+}
+
+export interface BrowserPageContent {
+  tabId: string
+  url: string
+  title: string
+  textSummary: string
+  links: BrowserPageLink[]
+  inputs: BrowserPageInput[]
+}
+
+export interface BrowserBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface OrchbotApi {
   getAgents: () => Promise<Agent[]>
   getAgent: (id: string) => Promise<Agent | null>
@@ -140,10 +179,29 @@ export interface OrchbotApi {
   selectFiles: () => Promise<SelectedFile[]>
   openAttachment: (filePath: string) => Promise<boolean>
   delegateTask: (input: DelegationInput) => Promise<{ task: TaskQueueItem; message: Message }>
+  browserGetTabs: (agentId: string) => Promise<BrowserTab[]>
+  browserOpenTab: (agentId: string, url: string) => Promise<BrowserTab>
+  browserCloseTab: (agentId: string, tabId: string) => Promise<boolean>
+  browserNavigate: (
+    agentId: string,
+    tabId: string,
+    action: 'back' | 'forward' | 'reload',
+  ) => Promise<BrowserTab>
+  browserInspect: (agentId: string, tabId: string) => Promise<BrowserPageContent>
+  browserClick: (agentId: string, tabId: string, selector: string) => Promise<boolean>
+  browserFill: (agentId: string, tabId: string, selector: string, value: string) => Promise<boolean>
+  browserScreenshot: (agentId: string, tabId: string) => Promise<{ base64: string }>
+  browserRunScript: (agentId: string, tabId: string, script: string) => Promise<unknown>
+  browserSetBounds?: (
+    agentId: string,
+    tabId: string,
+    bounds: BrowserBounds | null,
+  ) => Promise<boolean>
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => () => void
   onTurnFinished: (listener: (data: TurnFinishedEvent) => void) => () => void
   onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void
   onTaskStatusChanged: (listener: (data: TaskStatusChangedEvent) => void) => () => void
+  onBrowserTabUpdated: (listener: (tab: BrowserTab) => void) => () => void
 }
 
 export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
