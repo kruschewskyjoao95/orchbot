@@ -27,12 +27,26 @@ export interface Thread {
   createdAt: string
 }
 
+export interface Attachment {
+  id: string
+  messageId: string
+  fileName: string
+  filePath: string
+  fileSize: number
+  mimeType: string
+  hash: string
+  createdAt: string
+}
+
 export interface Message {
   id: string
   threadId: string
   role: 'user' | 'assistant' | 'system'
   text: string
   createdAt: string
+  attachments?: Attachment[]
+  senderAgentId?: string
+  recipientAgentId?: string
 }
 
 export type TaskStatus =
@@ -53,6 +67,20 @@ export interface TaskQueueItem {
   createdAt: string
   startedAt?: string | null
   completedAt?: string | null
+  delegationDepth?: number
+}
+
+export interface DelegationInput {
+  fromAgentId: string
+  toAgentId: string
+  prompt: string
+  parentTaskId?: string
+}
+
+export interface SelectedFile {
+  fileName: string
+  filePath: string
+  fileSize: number
 }
 
 export interface SystemStatus {
@@ -100,6 +128,7 @@ export interface OrchbotApi {
   sendMessage: (
     threadId: string,
     text: string,
+    attachmentFilePaths?: string[],
   ) => Promise<{ userMessage: Message; task: TaskQueueItem }>
   interruptTurn: (threadId: string) => Promise<boolean>
   getQueue: (agentId: string) => Promise<TaskQueueItem[]>
@@ -108,6 +137,9 @@ export interface OrchbotApi {
   resumeQueue: (agentId: string) => Promise<boolean>
   cancelTask: (taskId: string) => Promise<boolean>
   retryTask: (taskId: string) => Promise<boolean>
+  selectFiles: () => Promise<SelectedFile[]>
+  openAttachment: (filePath: string) => Promise<boolean>
+  delegateTask: (input: DelegationInput) => Promise<{ task: TaskQueueItem; message: Message }>
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => () => void
   onTurnFinished: (listener: (data: TurnFinishedEvent) => void) => () => void
   onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void

@@ -1,15 +1,20 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { BrowserWindow, app, ipcMain, shell } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { DelegationService } from '../backend/delegation/delegation-service'
 import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
+import { AttachmentManager } from '../backend/storage/attachment-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
+import type { DelegationInput } from '../shared/types'
 import { validateCreateAgentInput } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let db: OrchbotDatabase | null = null
 let registry: ProviderRegistry | null = null
 let queueManager: QueueManager | null = null
+let attachmentManager: AttachmentManager | null = null
+let delegationService: DelegationService | null = null
 
 function getDatabase(): OrchbotDatabase {
   if (!db) {
@@ -47,6 +52,20 @@ function getQueueManager(): QueueManager {
     })
   }
   return queueManager
+}
+
+function getAttachmentManager(): AttachmentManager {
+  if (!attachmentManager) {
+    attachmentManager = new AttachmentManager(app.getPath('userData'), getDatabase())
+  }
+  return attachmentManager
+}
+
+function getDelegationService(): DelegationService {
+  if (!delegationService) {
+    delegationService = new DelegationService(getDatabase(), getQueueManager())
+  }
+  return delegationService
 }
 
 function createWindow(): void {
@@ -90,6 +109,8 @@ function registerIpcHandlers(): void {
   const database = getDatabase()
   const providerRegistry = getProviderRegistry()
   const queue = getQueueManager()
+  const attachments = getAttachmentManager()
+  const delegation = getDelegationService()
 
   ipcMain.handle('orchbot:get-agents', () => {
     return database.listAgents()
@@ -105,8 +126,9 @@ function registerIpcHandlers(): void {
     return database.createAgent(validated)
   })
 
-  ipcMain.handle('orchbot:delete-agent', (_event, id: string) => {
+  ipcMain.handle('orchbot:delete-agent', async (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('ID inválido')
+    await attachments.removeAgentAttachments(id)
     return database.deleteAgent(id)
   })
 
@@ -134,8 +156,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'orchbot:send-message',
-    async (_event, payload: { threadId: string; text: string }) => {
-      const { threadId, text } = payload
+    async (_event, payload: { threadId: string; text: string; attachmentFilePaths?: string[] }) => {
+      const { threadId, text, attachmentFilePaths } = payload
       if (!threadId || typeof threadId !== 'string') throw new Error('Thread ID obrigatório')
       if (!text || typeof text !== 'string' || !text.trim()) throw new Error('Mensagem vazia')
 
@@ -147,12 +169,62 @@ function registerIpcHandlers(): void {
       // 1. Salva a mensagem do usuário no SQLite
       const userMessage = database.addMessage(threadId, 'user', text.trim())
 
-      // 2. Enfileira a tarefa na fila durável FIFO do agente
-      const task = queue.enqueue(agent.id, threadId, text.trim())
+      // 2. Processa anexos gerenciados se fornecidos
+      const savedAttachments = []
+      let attachmentsContext = ''
+
+      if (attachmentFilePaths && attachmentFilePaths.length > 0) {
+        for (const filePath of attachmentFilePaths) {
+          const att = await attachments.saveAttachment(filePath, userMessage.id, agent.id)
+          savedAttachments.push(att)
+        }
+        userMessage.attachments = savedAttachments
+
+        const attachmentList = savedAttachments
+          .map((a) => `${a.fileName} (${a.filePath})`)
+          .join(', ')
+        attachmentsContext = `\n\n[Arquivos anexados pelo usuário na pasta gerenciada: ${attachmentList}]`
+      }
+
+      // 3. Monta o prompt incluindo o contexto dos anexos
+      const effectivePrompt = text.trim() + attachmentsContext
+
+      // 4. Enfileira a tarefa na fila durável FIFO do agente
+      const task = queue.enqueue(agent.id, threadId, effectivePrompt)
 
       return { userMessage, task }
     },
   )
+
+  ipcMain.handle('orchbot:select-files', async () => {
+    if (!mainWindow) return []
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Selecionar arquivos para anexar',
+      properties: ['openFile', 'multiSelections'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return []
+
+    return Promise.all(
+      result.filePaths.map(async (filePath) => {
+        const stat = await fs.promises.stat(filePath)
+        return {
+          fileName: path.basename(filePath),
+          filePath,
+          fileSize: stat.size,
+        }
+      }),
+    )
+  })
+
+  ipcMain.handle('orchbot:open-attachment', async (_event, filePath: string) => {
+    if (typeof filePath !== 'string') throw new Error('Caminho inválido')
+    await shell.openPath(filePath)
+    return true
+  })
+
+  ipcMain.handle('orchbot:delegate-task', async (_event, input: DelegationInput) => {
+    return await delegation.delegate(input)
+  })
 
   ipcMain.handle('orchbot:interrupt-turn', (_event, threadId: string) => {
     if (typeof threadId !== 'string') throw new Error('Thread ID inválido')

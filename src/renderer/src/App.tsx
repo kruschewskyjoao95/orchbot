@@ -3,6 +3,7 @@ import type {
   Agent,
   Message,
   ProviderInfo,
+  SelectedFile,
   SupportedProvider,
   SystemStatus,
   TaskQueueItem,
@@ -24,6 +25,16 @@ export const App: Component = () => {
   const [tasks, setTasks] = createSignal<TaskQueueItem[]>([])
   const [isQueuePaused, setIsQueuePaused] = createSignal(false)
   const [showQueuePanel, setShowQueuePanel] = createSignal(false)
+
+  // Anexos staged signals
+  const [stagedFiles, setStagedFiles] = createSignal<SelectedFile[]>([])
+
+  // Delegação entre agentes signals
+  const [showDelegationModal, setShowDelegationModal] = createSignal(false)
+  const [delegationTargetId, setDelegationTargetId] = createSignal<string>('')
+  const [delegationPrompt, setDelegationPrompt] = createSignal('')
+  const [delegationLoading, setDelegationLoading] = createSignal(false)
+  const [delegationError, setDelegationError] = createSignal<string | null>(null)
 
   // Chat signals
   const [inputText, setInputText] = createSignal('')
@@ -47,6 +58,12 @@ export const App: Component = () => {
 
   const scrollToBottom = () => {
     messagesEndRef?.scrollIntoView({ behavior: 'smooth' })
+  }
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
   const loadAgents = async () => {
@@ -181,6 +198,7 @@ export const App: Component = () => {
       setStreamingText('')
       setIsStreaming(false)
       setChatError(null)
+      setStagedFiles([])
       loadThreadAndMessages(id)
       loadQueue(id)
     }
@@ -189,6 +207,11 @@ export const App: Component = () => {
   const currentAgent = () => {
     const id = selectedAgentId()
     return agents().find((a) => a.id === id) || null
+  }
+
+  const otherAgents = () => {
+    const id = selectedAgentId()
+    return agents().filter((a) => a.id !== id)
   }
 
   const pendingTasksCount = () => {
@@ -255,24 +278,90 @@ export const App: Component = () => {
     }
   }
 
+  const handleSelectFiles = async () => {
+    if (!window.orchbot) return
+    try {
+      const files = await window.orchbot.selectFiles()
+      if (files.length > 0) {
+        setStagedFiles((prev) => [...prev, ...files])
+      }
+    } catch (err) {
+      console.error('Erro ao selecionar arquivos:', err)
+    }
+  }
+
+  const removeStagedFile = (index: number) => {
+    setStagedFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleOpenFile = async (filePath: string) => {
+    if (!window.orchbot) return
+    try {
+      await window.orchbot.openAttachment(filePath)
+    } catch (err) {
+      console.error('Erro ao abrir anexo:', err)
+    }
+  }
+
   const handleSendMessage = async (e: Event) => {
     e.preventDefault()
     const text = inputText().trim()
     const thread = activeThread()
     if (!text || !thread) return
 
+    const filePaths = stagedFiles().map((f) => f.filePath)
+
     setInputText('')
+    setStagedFiles([])
     setChatError(null)
 
     try {
       if (window.orchbot) {
-        const res = await window.orchbot.sendMessage(thread.id, text)
+        const res = await window.orchbot.sendMessage(thread.id, text, filePaths)
         setMessages((prev) => [...prev, res.userMessage])
         setTasks((prev) => [res.task, ...prev])
         scrollToBottom()
       }
     } catch (err: unknown) {
       setChatError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleOpenDelegationModal = () => {
+    const others = otherAgents()
+    if (others.length === 0) {
+      alert('Você precisa ter pelo menos mais um agente cadastrado para delegar tarefas.')
+      return
+    }
+    setDelegationTargetId(others[0].id)
+    setDelegationPrompt('')
+    setDelegationError(null)
+    setShowDelegationModal(true)
+  }
+
+  const handleExecuteDelegation = async (e: Event) => {
+    e.preventDefault()
+    const from = currentAgent()
+    const toId = delegationTargetId()
+    const prompt = delegationPrompt().trim()
+    if (!from || !toId || !prompt || !window.orchbot) return
+
+    setDelegationLoading(true)
+    setDelegationError(null)
+
+    try {
+      await window.orchbot.delegateTask({
+        fromAgentId: from.id,
+        toAgentId: toId,
+        prompt,
+      })
+
+      setShowDelegationModal(false)
+      alert('Tarefa delegada com sucesso para o agente selecionado!')
+    } catch (err: unknown) {
+      setDelegationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDelegationLoading(false)
     }
   }
 
@@ -429,9 +518,9 @@ export const App: Component = () => {
               <div class="welcome-icon">🤖</div>
               <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
               <p class="welcome-desc">
-                Crie agentes persistentes com seus próprios workspaces locais. Escolha se prefere
-                conectar com <strong>Codex</strong> ou <strong>Claude</strong> para cada agente e
-                execute tarefas reais com streaming e fila FIFO crash-safe.
+                Crie múltiplos agentes com seus próprios workspaces locais. Envie arquivos anexados,
+                organize tarefas em fila durável e faça seus agentes colaborarem e delegarem tarefas
+                entre si.
               </p>
               <button
                 type="button"
@@ -467,6 +556,16 @@ export const App: Component = () => {
                 </div>
 
                 <div class="header-actions">
+                  {/* Botão Delegar para outro agente */}
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={handleOpenDelegationModal}
+                    title="Delegar uma subtarefa para outro agente disponível"
+                  >
+                    🤝 Delegar
+                  </button>
+
                   {/* Botão Pausar / Retomar Fila */}
                   <button
                     type="button"
@@ -582,8 +681,8 @@ export const App: Component = () => {
                         <strong>{agent().provider.toUpperCase()}</strong>.
                       </div>
                       <div style={{ 'margin-top': '8px' }}>
-                        Envie tarefas abaixo. Elas serão enfileiradas e executadas de forma
-                        organizada no workspace <code>{agent().workspacePath}</code>.
+                        Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas de
+                        forma organizada no workspace <code>{agent().workspacePath}</code>.
                       </div>
                     </div>
                   }
@@ -600,7 +699,39 @@ export const App: Component = () => {
                             })}
                           </span>
                         </div>
-                        <div class={`message-bubble ${msg.role}`}>{msg.text}</div>
+
+                        {/* Badge de Delegação se a mensagem veio de outro agente */}
+                        <Show when={msg.senderAgentId}>
+                          <span class="delegation-badge">🤝 Mensagem Delegada</span>
+                        </Show>
+
+                        <div class={`message-bubble ${msg.role}`}>
+                          {msg.text}
+
+                          {/* Lista de Anexos anexados na mensagem */}
+                          <Show when={msg.attachments && msg.attachments.length > 0}>
+                            <div class="message-attachments-list">
+                              <For each={msg.attachments}>
+                                {(att) => (
+                                  <button
+                                    type="button"
+                                    class="attachment-card"
+                                    onClick={() => handleOpenFile(att.filePath)}
+                                    title="Clique para abrir o arquivo no aplicativo padrão"
+                                  >
+                                    <span class="attachment-icon">📎</span>
+                                    <div class="attachment-info">
+                                      <span class="attachment-name">{att.fileName}</span>
+                                      <span class="attachment-size">
+                                        {formatFileSize(att.fileSize)} • {att.mimeType}
+                                      </span>
+                                    </div>
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                          </Show>
+                        </div>
                       </div>
                     )}
                   </For>
@@ -650,27 +781,63 @@ export const App: Component = () => {
               {/* Barra de input do chat */}
               <div class="chat-input-container">
                 <form class="chat-input-form" onSubmit={handleSendMessage}>
+                  {/* Arquivos staged antes do envio */}
+                  <Show when={stagedFiles().length > 0}>
+                    <div class="attachments-preview-bar">
+                      <For each={stagedFiles()}>
+                        {(file, index) => (
+                          <div class="attachment-chip">
+                            <span>
+                              📎 {file.fileName} ({formatFileSize(file.fileSize)})
+                            </span>
+                            <button
+                              type="button"
+                              class="attachment-chip-remove"
+                              onClick={() => removeStagedFile(index())}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+
                   <textarea
                     class="chat-textarea"
-                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter enfileira/envia, Shift+Enter pula linha)`}
+                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
                     value={inputText()}
                     onInput={(e) => setInputText(e.currentTarget.value)}
                     onKeyDown={handleKeyDown}
                   />
                   <div class="chat-actions-bar">
-                    <span>
-                      Workspace: <code>{agent().workspacePath}</code> |{' '}
-                      {isQueuePaused()
-                        ? '⏸ Fila Pausada'
-                        : `${pendingTasksCount()} tarefa(s) na fila`}
-                    </span>
+                    <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        style={{ padding: '4px 8px', 'font-size': '11px' }}
+                        onClick={handleSelectFiles}
+                        title="Anexar arquivos gerenciados"
+                      >
+                        📎 Anexar
+                      </button>
+                      <span>
+                        Workspace: <code>{agent().workspacePath}</code> |{' '}
+                        {isQueuePaused() ? '⏸ Fila Pausada' : `${pendingTasksCount()} na fila`}
+                      </span>
+                    </div>
+
                     <div style={{ display: 'flex', gap: '8px' }}>
                       <Show when={isStreaming()}>
                         <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
                           ⏹ Interromper
                         </button>
                       </Show>
-                      <button type="submit" class="btn-primary" disabled={!inputText().trim()}>
+                      <button
+                        type="submit"
+                        class="btn-primary"
+                        disabled={!inputText().trim() && stagedFiles().length === 0}
+                      >
                         Enviar
                       </button>
                     </div>
@@ -681,6 +848,98 @@ export const App: Component = () => {
           )}
         </Show>
       </main>
+
+      {/* Modal Delegar Tarefa para Outro Agente (Fase 4) */}
+      <Show when={showDelegationModal()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowDelegationModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowDelegationModal(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <span class="modal-title">Delegar Tarefa Entre Agentes</span>
+              <button
+                type="button"
+                class="modal-close"
+                onClick={() => setShowDelegationModal(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form class="modal-form" onSubmit={handleExecuteDelegation}>
+              <Show when={delegationError()}>
+                <div style={{ color: 'var(--danger)', 'font-size': '12px' }}>
+                  {delegationError()}
+                </div>
+              </Show>
+
+              <div class="form-group">
+                <label for="delegation-from">Agente de Origem</label>
+                <input
+                  id="delegation-from"
+                  type="text"
+                  value={currentAgent()?.name || ''}
+                  disabled
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="delegation-to">Delegar Para (Agente de Destino)</label>
+                <select
+                  id="delegation-to"
+                  value={delegationTargetId()}
+                  onChange={(e) => setDelegationTargetId(e.currentTarget.value)}
+                  required
+                >
+                  <For each={otherAgents()}>
+                    {(other) => (
+                      <option value={other.id}>
+                        {other.name} ({other.provider} • {other.model})
+                      </option>
+                    )}
+                  </For>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="delegation-prompt">Instrução / Tarefa a ser Delegada</label>
+                <textarea
+                  id="delegation-prompt"
+                  placeholder="Ex: Por favor, analise a consistência das funções exportadas neste arquivo..."
+                  value={delegationPrompt()}
+                  onInput={(e) => setDelegationPrompt(e.currentTarget.value)}
+                  required
+                />
+              </div>
+
+              <div class="modal-actions">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  onClick={() => setShowDelegationModal(false)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  class="btn-primary"
+                  disabled={delegationLoading() || !delegationPrompt().trim()}
+                >
+                  {delegationLoading() ? 'Delegando...' : 'Confirmar Delegação'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </dialog>
+      </Show>
 
       {/* Modal Criar Agente com Escolha de Provedor (Codex ou Claude) */}
       <Show when={showModal()}>

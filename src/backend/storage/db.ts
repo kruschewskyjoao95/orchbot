@@ -4,6 +4,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type {
   Agent,
+  Attachment,
   CreateAgentInput,
   Message,
   TaskQueueItem,
@@ -58,8 +59,23 @@ export class OrchbotDatabase {
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
         role TEXT NOT NULL,
         text TEXT NOT NULL,
+        sender_agent_id TEXT,
+        recipient_agent_id TEXT,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS attachments (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        mime_type TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments(message_id);
 
       CREATE TABLE IF NOT EXISTS task_queue (
         id TEXT PRIMARY KEY,
@@ -68,6 +84,7 @@ export class OrchbotDatabase {
         prompt TEXT NOT NULL,
         status TEXT NOT NULL,
         error TEXT,
+        delegation_depth INTEGER DEFAULT 1,
         created_at TEXT NOT NULL,
         started_at TEXT,
         completed_at TEXT
@@ -80,6 +97,16 @@ export class OrchbotDatabase {
         applied_at TEXT NOT NULL
       );
     `)
+
+    try {
+      this.db.exec(`
+        ALTER TABLE messages ADD COLUMN sender_agent_id TEXT;
+        ALTER TABLE messages ADD COLUMN recipient_agent_id TEXT;
+        ALTER TABLE task_queue ADD COLUMN delegation_depth INTEGER DEFAULT 1;
+      `)
+    } catch {
+      // Ignora se as colunas já existirem no banco
+    }
   }
 
   public listAgents(): Agent[] {
@@ -178,18 +205,31 @@ export class OrchbotDatabase {
 
   public listMessages(threadId: string): Message[] {
     const stmt = this.db.prepare(`
-      SELECT id, thread_id AS threadId, role, text, created_at AS createdAt
+      SELECT 
+        id, 
+        thread_id AS threadId, 
+        role, 
+        text, 
+        sender_agent_id AS senderAgentId, 
+        recipient_agent_id AS recipientAgentId, 
+        created_at AS createdAt
       FROM messages
       WHERE thread_id = ?
       ORDER BY created_at ASC
     `)
-    return stmt.all(threadId) as unknown as Message[]
+    const rows = stmt.all(threadId) as unknown as Message[]
+    for (const msg of rows) {
+      msg.attachments = this.getAttachments(msg.id)
+    }
+    return rows
   }
 
   public addMessage(
     threadId: string,
     role: 'user' | 'assistant' | 'system',
     text: string,
+    senderAgentId?: string,
+    recipientAgentId?: string,
   ): Message {
     const now = new Date().toISOString()
     const id = randomUUID()
@@ -198,15 +238,82 @@ export class OrchbotDatabase {
       threadId,
       role,
       text,
+      senderAgentId,
+      recipientAgentId,
+      createdAt: now,
+      attachments: [],
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO messages (id, thread_id, role, text, sender_agent_id, recipient_agent_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    stmt.run(
+      msg.id,
+      msg.threadId,
+      msg.role,
+      msg.text,
+      msg.senderAgentId ?? null,
+      msg.recipientAgentId ?? null,
+      msg.createdAt,
+    )
+    return msg
+  }
+
+  public addAttachment(
+    messageId: string,
+    fileName: string,
+    filePath: string,
+    fileSize: number,
+    mimeType: string,
+    hash: string,
+  ): Attachment {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const attachment: Attachment = {
+      id,
+      messageId,
+      fileName,
+      filePath,
+      fileSize,
+      mimeType,
+      hash,
       createdAt: now,
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO messages (id, thread_id, role, text, created_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO attachments (id, message_id, file_name, file_path, file_size, mime_type, hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    stmt.run(msg.id, msg.threadId, msg.role, msg.text, msg.createdAt)
-    return msg
+    stmt.run(
+      attachment.id,
+      attachment.messageId,
+      attachment.fileName,
+      attachment.filePath,
+      attachment.fileSize,
+      attachment.mimeType,
+      attachment.hash,
+      attachment.createdAt,
+    )
+    return attachment
+  }
+
+  public getAttachments(messageId: string): Attachment[] {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        message_id AS messageId, 
+        file_name AS fileName, 
+        file_path AS filePath, 
+        file_size AS fileSize, 
+        mime_type AS mimeType, 
+        hash, 
+        created_at AS createdAt
+      FROM attachments
+      WHERE message_id = ?
+      ORDER BY created_at ASC
+    `)
+    return stmt.all(messageId) as unknown as Attachment[]
   }
 
   public getThread(threadId: string): Thread | null {
@@ -239,7 +346,12 @@ export class OrchbotDatabase {
     return result ?? null
   }
 
-  public enqueueTask(agentId: string, threadId: string, prompt: string): TaskQueueItem {
+  public enqueueTask(
+    agentId: string,
+    threadId: string,
+    prompt: string,
+    delegationDepth = 1,
+  ): TaskQueueItem {
     const id = randomUUID()
     const now = new Date().toISOString()
     const item: TaskQueueItem = {
@@ -249,14 +361,15 @@ export class OrchbotDatabase {
       prompt,
       status: 'pending',
       error: null,
+      delegationDepth,
       createdAt: now,
       startedAt: null,
       completedAt: null,
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO task_queue (id, agent_id, thread_id, prompt, status, error, created_at, started_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO task_queue (id, agent_id, thread_id, prompt, status, error, delegation_depth, created_at, started_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       item.id,
@@ -265,6 +378,7 @@ export class OrchbotDatabase {
       item.prompt,
       item.status,
       item.error ?? null,
+      item.delegationDepth ?? 1,
       item.createdAt,
       item.startedAt ?? null,
       item.completedAt ?? null,
@@ -281,6 +395,7 @@ export class OrchbotDatabase {
         prompt, 
         status, 
         error, 
+        delegation_depth AS delegationDepth, 
         created_at AS createdAt, 
         started_at AS startedAt, 
         completed_at AS completedAt
@@ -300,6 +415,7 @@ export class OrchbotDatabase {
         prompt, 
         status, 
         error, 
+        delegation_depth AS delegationDepth, 
         created_at AS createdAt, 
         started_at AS startedAt, 
         completed_at AS completedAt
@@ -346,6 +462,7 @@ export class OrchbotDatabase {
         prompt, 
         status, 
         error, 
+        delegation_depth AS delegationDepth, 
         created_at AS createdAt, 
         started_at AS startedAt, 
         completed_at AS completedAt

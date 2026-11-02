@@ -494,6 +494,100 @@ body {
   border-bottom-left-radius: 2px;
 }
 
+/* Attachments in message */
+.message-attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background-color: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  text-align: left;
+}
+
+.attachment-card:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.attachment-icon {
+  font-size: 16px;
+}
+
+.attachment-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.attachment-name {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.attachment-size {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Staged files bar before sending */
+.attachments-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  background-color: rgba(0, 0, 0, 0.2);
+  border-bottom: 1px solid var(--border);
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.attachment-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
+.attachment-chip-remove:hover {
+  color: var(--danger);
+}
+
+/* Delegation Badge */
+.delegation-badge {
+  background-color: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  display: inline-block;
+}
+
 .message-bubble.streaming {
   border-color: #60a5fa;
   box-shadow: 0 0 10px rgba(96, 165, 250, 0.15);

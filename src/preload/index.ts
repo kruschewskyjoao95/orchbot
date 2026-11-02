@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CreateAgentInput,
+  DelegationInput,
   OrchbotApi,
   StreamChunkEvent,
   TaskStatusChangedEvent,
@@ -17,8 +18,8 @@ const api: OrchbotApi = {
   getMessages: (threadId: string) => ipcRenderer.invoke('orchbot:get-messages', threadId),
   getSystemStatus: () => ipcRenderer.invoke('orchbot:get-system-status'),
   getProviderStatus: () => ipcRenderer.invoke('orchbot:get-provider-status'),
-  sendMessage: (threadId: string, text: string) =>
-    ipcRenderer.invoke('orchbot:send-message', { threadId, text }),
+  sendMessage: (threadId: string, text: string, attachmentFilePaths?: string[]) =>
+    ipcRenderer.invoke('orchbot:send-message', { threadId, text, attachmentFilePaths }),
   interruptTurn: (threadId: string) => ipcRenderer.invoke('orchbot:interrupt-turn', threadId),
 
   getQueue: (agentId: string) => ipcRenderer.invoke('orchbot:get-queue', agentId),
@@ -27,6 +28,10 @@ const api: OrchbotApi = {
   resumeQueue: (agentId: string) => ipcRenderer.invoke('orchbot:resume-queue', agentId),
   cancelTask: (taskId: string) => ipcRenderer.invoke('orchbot:cancel-task', taskId),
   retryTask: (taskId: string) => ipcRenderer.invoke('orchbot:retry-task', taskId),
+
+  selectFiles: () => ipcRenderer.invoke('orchbot:select-files'),
+  openAttachment: (filePath: string) => ipcRenderer.invoke('orchbot:open-attachment', filePath),
+  delegateTask: (input: DelegationInput) => ipcRenderer.invoke('orchbot:delegate-task', input),
 
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => {
     const handler = (_event: unknown, data: StreamChunkEvent) => listener(data)

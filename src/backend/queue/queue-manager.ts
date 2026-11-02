@@ -53,8 +53,13 @@ export class QueueManager {
     return true
   }
 
-  public enqueue(agentId: string, threadId: string, prompt: string): TaskQueueItem {
-    const task = this.db.enqueueTask(agentId, threadId, prompt)
+  public enqueue(
+    agentId: string,
+    threadId: string,
+    prompt: string,
+    delegationDepth = 1,
+  ): TaskQueueItem {
+    const task = this.db.enqueueTask(agentId, threadId, prompt, delegationDepth)
     this.events?.onTaskStatusChanged?.({ task })
 
     // Dispara processamento
