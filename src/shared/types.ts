@@ -41,6 +41,29 @@ export interface SystemStatus {
   dbPath: string
 }
 
+export interface ProviderInfo {
+  available: boolean
+  version?: string
+  path?: string
+  error?: string
+}
+
+export interface StreamChunkEvent {
+  threadId: string
+  chunk: string
+  fullText: string
+}
+
+export interface TurnFinishedEvent {
+  threadId: string
+  message: Message
+}
+
+export interface TurnErrorEvent {
+  threadId: string
+  error: string
+}
+
 export interface OrchbotApi {
   getAgents: () => Promise<Agent[]>
   getAgent: (id: string) => Promise<Agent | null>
@@ -49,6 +72,12 @@ export interface OrchbotApi {
   getThreads: (agentId: string) => Promise<Thread[]>
   getMessages: (threadId: string) => Promise<Message[]>
   getSystemStatus: () => Promise<SystemStatus>
+  getProviderStatus: () => Promise<Record<SupportedProvider, ProviderInfo>>
+  sendMessage: (threadId: string, text: string) => Promise<Message>
+  interruptTurn: (threadId: string) => Promise<boolean>
+  onStreamChunk: (listener: (data: StreamChunkEvent) => void) => () => void
+  onTurnFinished: (listener: (data: TurnFinishedEvent) => void) => () => void
+  onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void
 }
 
 export function validateCreateAgentInput(raw: unknown): CreateAgentInput {

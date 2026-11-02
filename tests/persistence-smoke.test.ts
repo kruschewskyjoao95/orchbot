@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { describe, expect, it } from 'vitest'
 import { OrchbotDatabase } from '../src/backend/storage/db'
 import { validateCreateAgentInput } from '../src/shared/types'
 
@@ -20,7 +20,7 @@ describe('DoD Fase 1: Persistência após reinicialização', () => {
       provider: 'codex',
       model: 'gpt-4o',
       workspacePath: '/home/joao/Documents/Orchbot',
-      instructions: 'Instruções persistentes de teste'
+      instructions: 'Instruções persistentes de teste',
     })
 
     const createdAgent = session1.createAgent(input)

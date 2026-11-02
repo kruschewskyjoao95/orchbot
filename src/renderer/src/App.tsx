@@ -1,10 +1,31 @@
-import { type Component, For, Show, createSignal, onMount } from 'solid-js'
-import type { Agent, SupportedProvider, SystemStatus } from '../../shared/types'
+import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import type {
+  Agent,
+  Message,
+  ProviderInfo,
+  SupportedProvider,
+  SystemStatus,
+  Thread,
+} from '../../shared/types'
 
 export const App: Component = () => {
   const [agents, setAgents] = createSignal<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null)
+  const [activeThread, setActiveThread] = createSignal<Thread | null>(null)
+  const [messages, setMessages] = createSignal<Message[]>([])
   const [systemStatus, setSystemStatus] = createSignal<SystemStatus | null>(null)
+  const [providerStatuses, setProviderStatuses] = createSignal<Record<
+    SupportedProvider,
+    ProviderInfo
+  > | null>(null)
+
+  // Chat signals
+  const [inputText, setInputText] = createSignal('')
+  const [isStreaming, setIsStreaming] = createSignal(false)
+  const [streamingText, setStreamingText] = createSignal('')
+  const [chatError, setChatError] = createSignal<string | null>(null)
+
+  // Modal signals
   const [showModal, setShowModal] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null)
@@ -15,6 +36,12 @@ export const App: Component = () => {
   const [model, setModel] = createSignal('gpt-4o')
   const [workspacePath, setWorkspacePath] = createSignal('/home/joao/Documents/Orchbot')
   const [instructions, setInstructions] = createSignal('')
+
+  let messagesEndRef: HTMLDivElement | undefined
+
+  const scrollToBottom = () => {
+    messagesEndRef?.scrollIntoView({ behavior: 'smooth' })
+  }
 
   const loadAgents = async () => {
     try {
@@ -30,6 +57,17 @@ export const App: Component = () => {
     }
   }
 
+  const loadProviderStatuses = async () => {
+    try {
+      if (window.orchbot) {
+        const statuses = await window.orchbot.getProviderStatus()
+        setProviderStatuses(statuses)
+      }
+    } catch (err) {
+      console.error('Erro ao verificar provedores:', err)
+    }
+  }
+
   const loadSystemStatus = async () => {
     try {
       if (window.orchbot) {
@@ -41,9 +79,74 @@ export const App: Component = () => {
     }
   }
 
+  const loadThreadAndMessages = async (agentId: string) => {
+    try {
+      if (window.orchbot) {
+        const threads = await window.orchbot.getThreads(agentId)
+        if (threads.length > 0) {
+          const currentThread = threads[0]
+          setActiveThread(currentThread)
+          const msgs = await window.orchbot.getMessages(currentThread.id)
+          setMessages(msgs)
+          setTimeout(scrollToBottom, 50)
+        } else {
+          setActiveThread(null)
+          setMessages([])
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao carregar mensagens:', err)
+    }
+  }
+
   onMount(() => {
     loadAgents()
+    loadProviderStatuses()
     loadSystemStatus()
+
+    if (!window.orchbot) return
+
+    // Registra listeners de streaming IPC
+    const unsubChunk = window.orchbot.onStreamChunk((data) => {
+      if (activeThread() && data.threadId === activeThread()?.id) {
+        setStreamingText(data.fullText)
+        scrollToBottom()
+      }
+    })
+
+    const unsubFinished = window.orchbot.onTurnFinished((data) => {
+      if (activeThread() && data.threadId === activeThread()?.id) {
+        setMessages((prev) => [...prev, data.message])
+        setStreamingText('')
+        setIsStreaming(false)
+        scrollToBottom()
+      }
+    })
+
+    const unsubError = window.orchbot.onTurnError((data) => {
+      if (activeThread() && data.threadId === activeThread()?.id) {
+        setChatError(data.error)
+        setIsStreaming(false)
+        setStreamingText('')
+      }
+    })
+
+    onCleanup(() => {
+      unsubChunk()
+      unsubFinished()
+      unsubError()
+    })
+  })
+
+  // Efeito quando troca de agente selecionado
+  createEffect(() => {
+    const id = selectedAgentId()
+    if (id) {
+      setStreamingText('')
+      setIsStreaming(false)
+      setChatError(null)
+      loadThreadAndMessages(id)
+    }
   })
 
   const currentAgent = () => {
@@ -100,11 +203,71 @@ export const App: Component = () => {
         await window.orchbot.deleteAgent(id)
         if (selectedAgentId() === id) {
           setSelectedAgentId(null)
+          setActiveThread(null)
+          setMessages([])
         }
         await loadAgents()
       }
     } catch (err) {
       alert(`Erro ao deletar agente: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSendMessage = async (e: Event) => {
+    e.preventDefault()
+    const text = inputText().trim()
+    const thread = activeThread()
+    if (!text || !thread || isStreaming()) return
+
+    setInputText('')
+    setChatError(null)
+    setIsStreaming(true)
+    setStreamingText('')
+
+    try {
+      if (window.orchbot) {
+        const userMsg = await window.orchbot.sendMessage(thread.id, text)
+        setMessages((prev) => [...prev, userMsg])
+        scrollToBottom()
+      }
+    } catch (err: unknown) {
+      setChatError(err instanceof Error ? err.message : String(err))
+      setIsStreaming(false)
+    }
+  }
+
+  const handleInterrupt = async () => {
+    const thread = activeThread()
+    if (!thread) return
+
+    try {
+      if (window.orchbot) {
+        await window.orchbot.interruptTurn(thread.id)
+        setIsStreaming(false)
+        if (streamingText()) {
+          // Mantém o que já tinha chegado como resposta parcial
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `interrupted-${Date.now()}`,
+              threadId: thread.id,
+              role: 'assistant',
+              text: `${streamingText()}\n\n[Execução interrompida pelo usuário]`,
+              createdAt: new Date().toISOString(),
+            },
+          ])
+          setStreamingText('')
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao interromper turno:', err)
+    }
+  }
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSendMessage(e)
     }
   }
 
@@ -117,7 +280,15 @@ export const App: Component = () => {
             <span class="logo-badge">LOCAL-FIRST</span>
             <span class="logo-title">Orchbot</span>
           </div>
-          <button type="button" class="btn-primary" onClick={() => setShowModal(true)}>
+          <button
+            type="button"
+            class="btn-primary"
+            onClick={() => {
+              setProvider('codex')
+              setModel('gpt-4o')
+              setShowModal(true)
+            }}
+          >
             + Novo
           </button>
         </div>
@@ -155,18 +326,35 @@ export const App: Component = () => {
         </div>
 
         <div class="sidebar-footer">
-          <div>SQLite Local Ativo</div>
+          <div style={{ 'font-weight': '600', 'margin-bottom': '2px' }}>Provedores Locais:</div>
+          <div class="provider-status-list">
+            <div class="provider-status-item">
+              <span class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`} />
+              <span>Codex: {providerStatuses()?.codex.available ? 'Pronto' : 'Ausente'}</span>
+            </div>
+            <div class="provider-status-item">
+              <span class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`} />
+              <span>Claude: {providerStatuses()?.claude.available ? 'Pronto' : 'Ausente'}</span>
+            </div>
+          </div>
           <Show when={systemStatus()}>
             {(status) => (
-              <div style={{ 'font-size': '10px', opacity: 0.7, 'word-break': 'break-all' }}>
-                {status().dbPath}
+              <div
+                style={{
+                  'font-size': '9.5px',
+                  opacity: 0.6,
+                  'margin-top': '4px',
+                  'word-break': 'break-all',
+                }}
+              >
+                SQLite: {status().dbPath}
               </div>
             )}
           </Show>
         </div>
       </aside>
 
-      {/* Main Content */}
+      {/* Main Workspace */}
       <main class="main-content">
         <Show
           when={currentAgent()}
@@ -175,17 +363,27 @@ export const App: Component = () => {
               <div class="welcome-icon">🤖</div>
               <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
               <p class="welcome-desc">
-                Seu workspace local-first para agentes de IA persistentes. Seus dados, conversas e
-                instruções residem com segurança no seu disco local.
+                Crie agentes persistentes com seus próprios workspaces locais. Escolha se prefere
+                conectar com <strong>Codex</strong> ou <strong>Claude</strong> para cada agente e
+                execute tarefas reais com streaming direto na interface.
               </p>
-              <button type="button" class="btn-primary" onClick={() => setShowModal(true)}>
+              <button
+                type="button"
+                class="btn-primary"
+                onClick={() => {
+                  setProvider('codex')
+                  setModel('gpt-4o')
+                  setShowModal(true)
+                }}
+              >
                 Criar Primeiro Agente
               </button>
             </div>
           }
         >
           {(agent) => (
-            <>
+            <div class="chat-workspace">
+              {/* Header do Agente */}
               <header class="agent-detail-header">
                 <div class="agent-info">
                   <h2>
@@ -201,38 +399,147 @@ export const App: Component = () => {
                     </span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  class="btn-danger"
-                  onClick={() => handleDeleteAgent(agent().id)}
-                >
-                  Remover Agente
-                </button>
+                <div class="header-actions">
+                  <button
+                    type="button"
+                    class="btn-danger"
+                    onClick={() => handleDeleteAgent(agent().id)}
+                  >
+                    Remover Agente
+                  </button>
+                </div>
               </header>
 
-              <div class="agent-body">
-                <div class="card">
-                  <div class="card-title">Instruções do Agente</div>
-                  <div class="instructions-text">
-                    {agent().instructions || 'Nenhuma instrução personalizada definida.'}
+              {/* Lista de Mensagens / Conversa */}
+              <div class="chat-messages">
+                <Show when={agent().instructions}>
+                  <div
+                    class="card"
+                    style={{
+                      'margin-bottom': '12px',
+                      padding: '10px 14px',
+                      'font-size': '12px',
+                    }}
+                  >
+                    <div class="card-title" style={{ 'font-size': '11px', 'margin-bottom': '4px' }}>
+                      Instruções do Agente
+                    </div>
+                    <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
                   </div>
-                </div>
+                </Show>
 
-                <div class="card">
-                  <div class="card-title">Conversa & Execução</div>
-                  <p style={{ 'font-size': '13px', color: 'var(--text-muted)' }}>
-                    A infraestrutura local e o banco de dados estão prontos. A próxima etapa (Fase
-                    2) habilitará a conexão direta via streaming com a CLI/App Server do provedor (
-                    {agent().provider}).
-                  </p>
-                </div>
+                <Show
+                  when={messages().length > 0 || isStreaming()}
+                  fallback={
+                    <div class="chat-empty">
+                      <div>
+                        👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
+                        <strong>{agent().provider.toUpperCase()}</strong>.
+                      </div>
+                      <div style={{ 'margin-top': '8px' }}>
+                        Envie uma tarefa ou pergunta abaixo para iniciarmos os trabalhos na pasta{' '}
+                        <code>{agent().workspacePath}</code>.
+                      </div>
+                    </div>
+                  }
+                >
+                  <For each={messages()}>
+                    {(msg) => (
+                      <div class={`message-row ${msg.role}`}>
+                        <div class="message-author">
+                          <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
+                          <span style={{ 'font-size': '10px', opacity: 0.6 }}>
+                            {new Date(msg.createdAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                        <div class={`message-bubble ${msg.role}`}>{msg.text}</div>
+                      </div>
+                    )}
+                  </For>
+
+                  {/* Resposta em streaming em tempo real */}
+                  <Show when={isStreaming()}>
+                    <div class="message-row assistant">
+                      <div class="message-author">
+                        <span>{agent().name}</span>
+                        <span class={`provider-tag ${agent().provider}`}>
+                          {agent().provider} streaming
+                        </span>
+                      </div>
+                      <div class="message-bubble assistant streaming">
+                        {streamingText() || 'Processando resposta...'}
+                        <div class="streaming-indicator">
+                          <span class="pulse-dot" />
+                          <span>{agent().provider.toUpperCase()} executando...</span>
+                        </div>
+                      </div>
+                    </div>
+                  </Show>
+                </Show>
+
+                <div ref={messagesEndRef} />
               </div>
-            </>
+
+              {/* Alerta de erro se houver */}
+              <Show when={chatError()}>
+                <div class="error-banner">
+                  <span>⚠️ Erro na execução: {chatError()}</span>
+                  <button
+                    type="button"
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => setChatError(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </Show>
+
+              {/* Barra de input do chat */}
+              <div class="chat-input-container">
+                <form class="chat-input-form" onSubmit={handleSendMessage}>
+                  <textarea
+                    class="chat-textarea"
+                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                    value={inputText()}
+                    onInput={(e) => setInputText(e.currentTarget.value)}
+                    onKeyDown={handleKeyDown}
+                    disabled={isStreaming()}
+                  />
+                  <div class="chat-actions-bar">
+                    <span>
+                      Workspace ativo: <code>{agent().workspacePath}</code>
+                    </span>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <Show when={isStreaming()}>
+                        <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
+                          ⏹ Interromper
+                        </button>
+                      </Show>
+                      <button
+                        type="submit"
+                        class="btn-primary"
+                        disabled={!inputText().trim() || isStreaming()}
+                      >
+                        {isStreaming() ? 'Executando...' : 'Enviar'}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
           )}
         </Show>
       </main>
 
-      {/* Modal Criar Agente */}
+      {/* Modal Criar Agente com Escolha de Provedor (Codex ou Claude) */}
       <Show when={showModal()}>
         <dialog
           class="modal-overlay"
@@ -263,23 +570,53 @@ export const App: Component = () => {
                 <input
                   id="agent-name"
                   type="text"
-                  placeholder="Ex: Refactor Bot"
+                  placeholder="Ex: Codex Engineer ou Claude Reviewer"
                   value={name()}
                   onInput={(e) => setName(e.currentTarget.value)}
                   required
                 />
               </div>
 
+              {/* Seleção Interativa do Provedor (Codex ou Claude) */}
               <div class="form-group">
-                <label for="agent-provider">Provedor</label>
-                <select
-                  id="agent-provider"
-                  value={provider()}
-                  onChange={(e) => handleProviderChange(e.currentTarget.value as SupportedProvider)}
-                >
-                  <option value="codex">Codex (CLI Oficial)</option>
-                  <option value="claude">Claude Code</option>
-                </select>
+                <span class="form-label-title">Escolha o Provedor de IA</span>
+                <div class="provider-cards-grid">
+                  <button
+                    type="button"
+                    class={`provider-card ${provider() === 'codex' ? 'selected codex' : ''}`}
+                    onClick={() => handleProviderChange('codex')}
+                  >
+                    <div class="provider-card-title">
+                      <span>Codex</span>
+                      <span
+                        class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`}
+                      />
+                    </div>
+                    <div class="provider-card-sub">
+                      {providerStatuses()?.codex.available
+                        ? 'CLI Oficial OpenAI (Pronto)'
+                        : 'CLI não encontrada'}
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    class={`provider-card ${provider() === 'claude' ? 'selected claude' : ''}`}
+                    onClick={() => handleProviderChange('claude')}
+                  >
+                    <div class="provider-card-title">
+                      <span>Claude Code</span>
+                      <span
+                        class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`}
+                      />
+                    </div>
+                    <div class="provider-card-sub">
+                      {providerStatuses()?.claude.available
+                        ? 'Claude CLI Anthropic (Pronto)'
+                        : 'CLI não encontrada'}
+                    </div>
+                  </button>
+                </div>
               </div>
 
               <div class="form-group">
@@ -289,6 +626,9 @@ export const App: Component = () => {
                   type="text"
                   value={model()}
                   onInput={(e) => setModel(e.currentTarget.value)}
+                  placeholder={
+                    provider() === 'codex' ? 'Ex: gpt-4o, o3-mini' : 'Ex: claude-3-7-sonnet'
+                  }
                   required
                 />
               </div>
@@ -305,10 +645,10 @@ export const App: Component = () => {
               </div>
 
               <div class="form-group">
-                <label for="agent-instructions">Instruções Específicas</label>
+                <label for="agent-instructions">Instruções Personalizadas</label>
                 <textarea
                   id="agent-instructions"
-                  placeholder="Ex: Atue como especialista em TypeScript..."
+                  placeholder="Ex: Você é um desenvolvedor focado em testes limpos..."
                   value={instructions()}
                   onInput={(e) => setInstructions(e.currentTarget.value)}
                 />
@@ -319,7 +659,7 @@ export const App: Component = () => {
                   Cancelar
                 </button>
                 <button type="submit" class="btn-primary" disabled={loading()}>
-                  {loading() ? 'Salvando...' : 'Criar Agente'}
+                  {loading() ? 'Criando...' : 'Criar Agente'}
                 </button>
               </div>
             </form>

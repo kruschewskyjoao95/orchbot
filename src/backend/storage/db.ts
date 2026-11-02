@@ -164,6 +164,59 @@ export class OrchbotDatabase {
     return stmt.all(threadId) as unknown as Message[]
   }
 
+  public addMessage(
+    threadId: string,
+    role: 'user' | 'assistant' | 'system',
+    text: string,
+  ): Message {
+    const now = new Date().toISOString()
+    const id = randomUUID()
+    const msg: Message = {
+      id,
+      threadId,
+      role,
+      text,
+      createdAt: now,
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO messages (id, thread_id, role, text, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    stmt.run(msg.id, msg.threadId, msg.role, msg.text, msg.createdAt)
+    return msg
+  }
+
+  public getThread(threadId: string): Thread | null {
+    const stmt = this.db.prepare(`
+      SELECT id, agent_id AS agentId, title, created_at AS createdAt
+      FROM threads
+      WHERE id = ?
+    `)
+    const result = stmt.get(threadId) as unknown as Thread | undefined
+    return result ?? null
+  }
+
+  public getAgentByThreadId(threadId: string): Agent | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        a.id, 
+        a.name, 
+        a.provider, 
+        a.model, 
+        a.instructions, 
+        a.workspace_path AS workspacePath, 
+        a.avatar, 
+        a.created_at AS createdAt, 
+        a.updated_at AS updatedAt
+      FROM agents a
+      JOIN threads t ON t.agent_id = a.id
+      WHERE t.id = ?
+    `)
+    const result = stmt.get(threadId) as unknown as Agent | undefined
+    return result ?? null
+  }
+
   public close(): void {
     this.db.close()
   }
