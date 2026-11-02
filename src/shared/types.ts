@@ -35,6 +35,26 @@ export interface Message {
   createdAt: string
 }
 
+export type TaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
+export interface TaskQueueItem {
+  id: string
+  agentId: string
+  threadId: string
+  prompt: string
+  status: TaskStatus
+  error?: string | null
+  createdAt: string
+  startedAt?: string | null
+  completedAt?: string | null
+}
+
 export interface SystemStatus {
   appVersion: string
   platform: string
@@ -64,6 +84,10 @@ export interface TurnErrorEvent {
   error: string
 }
 
+export interface TaskStatusChangedEvent {
+  task: TaskQueueItem
+}
+
 export interface OrchbotApi {
   getAgents: () => Promise<Agent[]>
   getAgent: (id: string) => Promise<Agent | null>
@@ -73,11 +97,21 @@ export interface OrchbotApi {
   getMessages: (threadId: string) => Promise<Message[]>
   getSystemStatus: () => Promise<SystemStatus>
   getProviderStatus: () => Promise<Record<SupportedProvider, ProviderInfo>>
-  sendMessage: (threadId: string, text: string) => Promise<Message>
+  sendMessage: (
+    threadId: string,
+    text: string,
+  ) => Promise<{ userMessage: Message; task: TaskQueueItem }>
   interruptTurn: (threadId: string) => Promise<boolean>
+  getQueue: (agentId: string) => Promise<TaskQueueItem[]>
+  isQueuePaused: (agentId: string) => Promise<boolean>
+  pauseQueue: (agentId: string) => Promise<boolean>
+  resumeQueue: (agentId: string) => Promise<boolean>
+  cancelTask: (taskId: string) => Promise<boolean>
+  retryTask: (taskId: string) => Promise<boolean>
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => () => void
   onTurnFinished: (listener: (data: TurnFinishedEvent) => void) => () => void
   onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void
+  onTaskStatusChanged: (listener: (data: TaskStatusChangedEvent) => void) => () => void
 }
 
 export function validateCreateAgentInput(raw: unknown): CreateAgentInput {

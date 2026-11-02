@@ -2,10 +2,18 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { Agent, CreateAgentInput, Message, Thread } from '../../shared/types'
+import type {
+  Agent,
+  CreateAgentInput,
+  Message,
+  TaskQueueItem,
+  TaskStatus,
+  Thread,
+} from '../../shared/types'
 
 export class OrchbotDatabase {
   private db: DatabaseSync
+  private open = true
 
   constructor(dbPath: string) {
     if (dbPath !== ':memory:') {
@@ -52,6 +60,20 @@ export class OrchbotDatabase {
         text TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS task_queue (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        prompt TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_task_queue_agent ON task_queue(agent_id, status);
 
       CREATE TABLE IF NOT EXISTS migrations (
         version INTEGER PRIMARY KEY,
@@ -217,7 +239,142 @@ export class OrchbotDatabase {
     return result ?? null
   }
 
+  public enqueueTask(agentId: string, threadId: string, prompt: string): TaskQueueItem {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const item: TaskQueueItem = {
+      id,
+      agentId,
+      threadId,
+      prompt,
+      status: 'pending',
+      error: null,
+      createdAt: now,
+      startedAt: null,
+      completedAt: null,
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO task_queue (id, agent_id, thread_id, prompt, status, error, created_at, started_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    stmt.run(
+      item.id,
+      item.agentId,
+      item.threadId,
+      item.prompt,
+      item.status,
+      item.error ?? null,
+      item.createdAt,
+      item.startedAt ?? null,
+      item.completedAt ?? null,
+    )
+    return item
+  }
+
+  public getTask(id: string): TaskQueueItem | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        agent_id AS agentId, 
+        thread_id AS threadId, 
+        prompt, 
+        status, 
+        error, 
+        created_at AS createdAt, 
+        started_at AS startedAt, 
+        completed_at AS completedAt
+      FROM task_queue
+      WHERE id = ?
+    `)
+    const result = stmt.get(id) as unknown as TaskQueueItem | undefined
+    return result ?? null
+  }
+
+  public getNextPendingTask(agentId: string): TaskQueueItem | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        agent_id AS agentId, 
+        thread_id AS threadId, 
+        prompt, 
+        status, 
+        error, 
+        created_at AS createdAt, 
+        started_at AS startedAt, 
+        completed_at AS completedAt
+      FROM task_queue
+      WHERE agent_id = ? AND status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `)
+    const result = stmt.get(agentId) as unknown as TaskQueueItem | undefined
+    return result ?? null
+  }
+
+  public updateTaskStatus(id: string, status: TaskStatus, error?: string | null): TaskQueueItem {
+    const now = new Date().toISOString()
+    if (status === 'running') {
+      const stmt = this.db.prepare(`
+        UPDATE task_queue 
+        SET status = ?, started_at = COALESCE(started_at, ?), error = ?
+        WHERE id = ?
+      `)
+      stmt.run(status, now, error ?? null, id)
+    } else {
+      const stmt = this.db.prepare(`
+        UPDATE task_queue 
+        SET status = ?, completed_at = ?, error = ?
+        WHERE id = ?
+      `)
+      stmt.run(status, now, error ?? null, id)
+    }
+
+    const updated = this.getTask(id)
+    if (!updated) {
+      throw new Error(`Tarefa ${id} não encontrada para atualização`)
+    }
+    return updated
+  }
+
+  public listTasks(agentId: string): TaskQueueItem[] {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id, 
+        agent_id AS agentId, 
+        thread_id AS threadId, 
+        prompt, 
+        status, 
+        error, 
+        created_at AS createdAt, 
+        started_at AS startedAt, 
+        completed_at AS completedAt
+      FROM task_queue
+      WHERE agent_id = ?
+      ORDER BY created_at DESC
+    `)
+    return stmt.all(agentId) as unknown as TaskQueueItem[]
+  }
+
+  public reconcileRunningTasks(): number {
+    const now = new Date().toISOString()
+    const stmt = this.db.prepare(`
+      UPDATE task_queue
+      SET status = 'interrupted',
+          completed_at = ?,
+          error = 'Interrompido por encerramento inesperado do aplicativo'
+      WHERE status = 'running'
+    `)
+    const info = stmt.run(now)
+    return Number(info.changes)
+  }
+
+  public isOpen(): boolean {
+    return this.open
+  }
+
   public close(): void {
+    this.open = false
     this.db.close()
   }
 }

@@ -2,12 +2,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { BrowserWindow, app, ipcMain, shell } from 'electron'
 import { ProviderRegistry } from '../backend/providers/registry'
+import { QueueManager } from '../backend/queue/queue-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
 import { validateCreateAgentInput } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let db: OrchbotDatabase | null = null
 let registry: ProviderRegistry | null = null
+let queueManager: QueueManager | null = null
 
 function getDatabase(): OrchbotDatabase {
   if (!db) {
@@ -22,6 +24,29 @@ function getProviderRegistry(): ProviderRegistry {
     registry = new ProviderRegistry()
   }
   return registry
+}
+
+function getQueueManager(): QueueManager {
+  if (!queueManager) {
+    queueManager = new QueueManager(getDatabase(), getProviderRegistry())
+
+    // Configura os eventos de streaming e ciclo de vida para repassar à janela
+    queueManager.setEvents({
+      onStreamChunk: (event) => {
+        mainWindow?.webContents.send('orchbot:stream-chunk', event)
+      },
+      onTurnFinished: (event) => {
+        mainWindow?.webContents.send('orchbot:turn-finished', event)
+      },
+      onTurnError: (event) => {
+        mainWindow?.webContents.send('orchbot:turn-error', event)
+      },
+      onTaskStatusChanged: (event) => {
+        mainWindow?.webContents.send('orchbot:task-status-changed', event)
+      },
+    })
+  }
+  return queueManager
 }
 
 function createWindow(): void {
@@ -64,6 +89,7 @@ function createWindow(): void {
 function registerIpcHandlers(): void {
   const database = getDatabase()
   const providerRegistry = getProviderRegistry()
+  const queue = getQueueManager()
 
   ipcMain.handle('orchbot:get-agents', () => {
     return database.listAgents()
@@ -118,59 +144,49 @@ function registerIpcHandlers(): void {
         throw new Error('Agente não encontrado para esta conversa')
       }
 
-      // 1. Salva imediatamente a mensagem do usuário no SQLite
-      const userMsg = database.addMessage(threadId, 'user', text.trim())
+      // 1. Salva a mensagem do usuário no SQLite
+      const userMessage = database.addMessage(threadId, 'user', text.trim())
 
-      // 2. Obtém o adapter correspondente ao provedor configurado no agente (Codex ou Claude)
-      const adapter = providerRegistry.getAdapter(agent.provider)
+      // 2. Enfileira a tarefa na fila durável FIFO do agente
+      const task = queue.enqueue(agent.id, threadId, text.trim())
 
-      // 3. Executa o turno com streaming assíncrono para a UI
-      const execution = adapter.executeTurn(
-        text.trim(),
-        {
-          workspacePath: agent.workspacePath,
-          model: agent.model,
-          instructions: agent.instructions,
-        },
-        {
-          onChunk: (chunk, fullText) => {
-            mainWindow?.webContents.send('orchbot:stream-chunk', {
-              threadId,
-              chunk,
-              fullText,
-            })
-          },
-          onError: (error) => {
-            providerRegistry.removeActiveExecution(threadId)
-            mainWindow?.webContents.send('orchbot:turn-error', {
-              threadId,
-              error,
-            })
-          },
-          onDone: (fullText) => {
-            providerRegistry.removeActiveExecution(threadId)
-            // 4. Salva a resposta do assistente no SQLite
-            const assistantMsg = database.addMessage(
-              threadId,
-              'assistant',
-              fullText.trim() || '(Nenhum conteúdo retornado)',
-            )
-            mainWindow?.webContents.send('orchbot:turn-finished', {
-              threadId,
-              message: assistantMsg,
-            })
-          },
-        },
-      )
-
-      providerRegistry.registerActiveExecution(threadId, execution)
-      return userMsg
+      return { userMessage, task }
     },
   )
 
   ipcMain.handle('orchbot:interrupt-turn', (_event, threadId: string) => {
     if (typeof threadId !== 'string') throw new Error('Thread ID inválido')
     return providerRegistry.interruptThread(threadId)
+  })
+
+  ipcMain.handle('orchbot:get-queue', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('Agent ID inválido')
+    return queue.listTasks(agentId)
+  })
+
+  ipcMain.handle('orchbot:is-queue-paused', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('Agent ID inválido')
+    return queue.isPaused(agentId)
+  })
+
+  ipcMain.handle('orchbot:pause-queue', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('Agent ID inválido')
+    return queue.pause(agentId)
+  })
+
+  ipcMain.handle('orchbot:resume-queue', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('Agent ID inválido')
+    return queue.resume(agentId)
+  })
+
+  ipcMain.handle('orchbot:cancel-task', (_event, taskId: string) => {
+    if (typeof taskId !== 'string') throw new Error('Task ID inválido')
+    return queue.cancel(taskId)
+  })
+
+  ipcMain.handle('orchbot:retry-task', (_event, taskId: string) => {
+    if (typeof taskId !== 'string') throw new Error('Task ID inválido')
+    return queue.retry(taskId)
   })
 }
 

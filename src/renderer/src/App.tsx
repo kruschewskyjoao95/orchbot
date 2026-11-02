@@ -5,6 +5,7 @@ import type {
   ProviderInfo,
   SupportedProvider,
   SystemStatus,
+  TaskQueueItem,
   Thread,
 } from '../../shared/types'
 
@@ -18,6 +19,11 @@ export const App: Component = () => {
     SupportedProvider,
     ProviderInfo
   > | null>(null)
+
+  // Fila FIFO signals
+  const [tasks, setTasks] = createSignal<TaskQueueItem[]>([])
+  const [isQueuePaused, setIsQueuePaused] = createSignal(false)
+  const [showQueuePanel, setShowQueuePanel] = createSignal(false)
 
   // Chat signals
   const [inputText, setInputText] = createSignal('')
@@ -79,6 +85,19 @@ export const App: Component = () => {
     }
   }
 
+  const loadQueue = async (agentId: string) => {
+    try {
+      if (window.orchbot) {
+        const queueList = await window.orchbot.getQueue(agentId)
+        setTasks(queueList)
+        const paused = await window.orchbot.isQueuePaused(agentId)
+        setIsQueuePaused(paused)
+      }
+    } catch (err) {
+      console.error('Erro ao carregar fila:', err)
+    }
+  }
+
   const loadThreadAndMessages = async (agentId: string) => {
     try {
       if (window.orchbot) {
@@ -110,6 +129,7 @@ export const App: Component = () => {
     const unsubChunk = window.orchbot.onStreamChunk((data) => {
       if (activeThread() && data.threadId === activeThread()?.id) {
         setStreamingText(data.fullText)
+        setIsStreaming(true)
         scrollToBottom()
       }
     })
@@ -131,10 +151,26 @@ export const App: Component = () => {
       }
     })
 
+    const unsubTask = window.orchbot.onTaskStatusChanged((data) => {
+      const agentId = selectedAgentId()
+      if (agentId && data.task.agentId === agentId) {
+        setTasks((prev) => {
+          const index = prev.findIndex((t) => t.id === data.task.id)
+          if (index >= 0) {
+            const next = [...prev]
+            next[index] = data.task
+            return next
+          }
+          return [data.task, ...prev]
+        })
+      }
+    })
+
     onCleanup(() => {
       unsubChunk()
       unsubFinished()
       unsubError()
+      unsubTask()
     })
   })
 
@@ -146,12 +182,17 @@ export const App: Component = () => {
       setIsStreaming(false)
       setChatError(null)
       loadThreadAndMessages(id)
+      loadQueue(id)
     }
   })
 
   const currentAgent = () => {
     const id = selectedAgentId()
     return agents().find((a) => a.id === id) || null
+  }
+
+  const pendingTasksCount = () => {
+    return tasks().filter((t) => t.status === 'pending' || t.status === 'running').length
   }
 
   const handleProviderChange = (p: SupportedProvider) => {
@@ -205,6 +246,7 @@ export const App: Component = () => {
           setSelectedAgentId(null)
           setActiveThread(null)
           setMessages([])
+          setTasks([])
         }
         await loadAgents()
       }
@@ -217,22 +259,20 @@ export const App: Component = () => {
     e.preventDefault()
     const text = inputText().trim()
     const thread = activeThread()
-    if (!text || !thread || isStreaming()) return
+    if (!text || !thread) return
 
     setInputText('')
     setChatError(null)
-    setIsStreaming(true)
-    setStreamingText('')
 
     try {
       if (window.orchbot) {
-        const userMsg = await window.orchbot.sendMessage(thread.id, text)
-        setMessages((prev) => [...prev, userMsg])
+        const res = await window.orchbot.sendMessage(thread.id, text)
+        setMessages((prev) => [...prev, res.userMessage])
+        setTasks((prev) => [res.task, ...prev])
         scrollToBottom()
       }
     } catch (err: unknown) {
       setChatError(err instanceof Error ? err.message : String(err))
-      setIsStreaming(false)
     }
   }
 
@@ -245,7 +285,6 @@ export const App: Component = () => {
         await window.orchbot.interruptTurn(thread.id)
         setIsStreaming(false)
         if (streamingText()) {
-          // Mantém o que já tinha chegado como resposta parcial
           setMessages((prev) => [
             ...prev,
             {
@@ -262,6 +301,33 @@ export const App: Component = () => {
     } catch (err) {
       console.error('Erro ao interromper turno:', err)
     }
+  }
+
+  const togglePauseQueue = async () => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot) return
+
+    if (isQueuePaused()) {
+      await window.orchbot.resumeQueue(agent.id)
+      setIsQueuePaused(false)
+    } else {
+      await window.orchbot.pauseQueue(agent.id)
+      setIsQueuePaused(true)
+    }
+  }
+
+  const handleCancelTask = async (taskId: string) => {
+    if (!window.orchbot) return
+    await window.orchbot.cancelTask(taskId)
+    const agent = currentAgent()
+    if (agent) loadQueue(agent.id)
+  }
+
+  const handleRetryTask = async (taskId: string) => {
+    if (!window.orchbot) return
+    await window.orchbot.retryTask(taskId)
+    const agent = currentAgent()
+    if (agent) loadQueue(agent.id)
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -365,7 +431,7 @@ export const App: Component = () => {
               <p class="welcome-desc">
                 Crie agentes persistentes com seus próprios workspaces locais. Escolha se prefere
                 conectar com <strong>Codex</strong> ou <strong>Claude</strong> para cada agente e
-                execute tarefas reais com streaming direto na interface.
+                execute tarefas reais com streaming e fila FIFO crash-safe.
               </p>
               <button
                 type="button"
@@ -399,7 +465,27 @@ export const App: Component = () => {
                     </span>
                   </div>
                 </div>
+
                 <div class="header-actions">
+                  {/* Botão Pausar / Retomar Fila */}
+                  <button
+                    type="button"
+                    class={`btn-outline ${isQueuePaused() ? 'active' : ''}`}
+                    onClick={togglePauseQueue}
+                    title="Pausa ou retoma a fila de execução de tarefas deste agente"
+                  >
+                    {isQueuePaused() ? '▶ Retomar Fila' : '⏸ Pausar Fila'}
+                  </button>
+
+                  {/* Botão Painel da Fila */}
+                  <button
+                    type="button"
+                    class={`btn-outline ${showQueuePanel() ? 'active' : ''}`}
+                    onClick={() => setShowQueuePanel(!showQueuePanel())}
+                  >
+                    📋 Fila ({pendingTasksCount()})
+                  </button>
+
                   <button
                     type="button"
                     class="btn-danger"
@@ -409,6 +495,65 @@ export const App: Component = () => {
                   </button>
                 </div>
               </header>
+
+              {/* Drawer da Fila de Tarefas (Fase 3) */}
+              <Show when={showQueuePanel()}>
+                <div class="queue-panel">
+                  <div class="queue-panel-header">
+                    <span>Fila Durável do Agente (FIFO)</span>
+                    <span>{isQueuePaused() ? 'Status: PAUSADA' : 'Status: ATIVA'}</span>
+                  </div>
+
+                  <For
+                    each={tasks()}
+                    fallback={
+                      <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
+                        Nenhuma tarefa recente na fila deste agente.
+                      </div>
+                    }
+                  >
+                    {(task) => (
+                      <div class="queue-item">
+                        <div class="queue-item-left">
+                          <span class={`task-tag ${task.status}`}>{task.status}</span>
+                          <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
+                          <Show when={task.error}>
+                            <span style={{ color: '#f87171', 'font-size': '11px' }}>
+                              ({task.error})
+                            </span>
+                          </Show>
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <Show when={task.status === 'pending' || task.status === 'running'}>
+                            <button
+                              type="button"
+                              class="queue-btn-action"
+                              onClick={() => handleCancelTask(task.id)}
+                            >
+                              Cancelar
+                            </button>
+                          </Show>
+                          <Show
+                            when={
+                              task.status === 'failed' ||
+                              task.status === 'interrupted' ||
+                              task.status === 'cancelled'
+                            }
+                          >
+                            <button
+                              type="button"
+                              class="queue-btn-action"
+                              onClick={() => handleRetryTask(task.id)}
+                            >
+                              Repetir
+                            </button>
+                          </Show>
+                        </div>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
 
               {/* Lista de Mensagens / Conversa */}
               <div class="chat-messages">
@@ -437,8 +582,8 @@ export const App: Component = () => {
                         <strong>{agent().provider.toUpperCase()}</strong>.
                       </div>
                       <div style={{ 'margin-top': '8px' }}>
-                        Envie uma tarefa ou pergunta abaixo para iniciarmos os trabalhos na pasta{' '}
-                        <code>{agent().workspacePath}</code>.
+                        Envie tarefas abaixo. Elas serão enfileiradas e executadas de forma
+                        organizada no workspace <code>{agent().workspacePath}</code>.
                       </div>
                     </div>
                   }
@@ -507,15 +652,17 @@ export const App: Component = () => {
                 <form class="chat-input-form" onSubmit={handleSendMessage}>
                   <textarea
                     class="chat-textarea"
-                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                    placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter enfileira/envia, Shift+Enter pula linha)`}
                     value={inputText()}
                     onInput={(e) => setInputText(e.currentTarget.value)}
                     onKeyDown={handleKeyDown}
-                    disabled={isStreaming()}
                   />
                   <div class="chat-actions-bar">
                     <span>
-                      Workspace ativo: <code>{agent().workspacePath}</code>
+                      Workspace: <code>{agent().workspacePath}</code> |{' '}
+                      {isQueuePaused()
+                        ? '⏸ Fila Pausada'
+                        : `${pendingTasksCount()} tarefa(s) na fila`}
                     </span>
                     <div style={{ display: 'flex', gap: '8px' }}>
                       <Show when={isStreaming()}>
@@ -523,12 +670,8 @@ export const App: Component = () => {
                           ⏹ Interromper
                         </button>
                       </Show>
-                      <button
-                        type="submit"
-                        class="btn-primary"
-                        disabled={!inputText().trim() || isStreaming()}
-                      >
-                        {isStreaming() ? 'Executando...' : 'Enviar'}
+                      <button type="submit" class="btn-primary" disabled={!inputText().trim()}>
+                        Enviar
                       </button>
                     </div>
                   </div>

@@ -3,6 +3,7 @@ import type {
   CreateAgentInput,
   OrchbotApi,
   StreamChunkEvent,
+  TaskStatusChangedEvent,
   TurnErrorEvent,
   TurnFinishedEvent,
 } from '../shared/types'
@@ -19,6 +20,13 @@ const api: OrchbotApi = {
   sendMessage: (threadId: string, text: string) =>
     ipcRenderer.invoke('orchbot:send-message', { threadId, text }),
   interruptTurn: (threadId: string) => ipcRenderer.invoke('orchbot:interrupt-turn', threadId),
+
+  getQueue: (agentId: string) => ipcRenderer.invoke('orchbot:get-queue', agentId),
+  isQueuePaused: (agentId: string) => ipcRenderer.invoke('orchbot:is-queue-paused', agentId),
+  pauseQueue: (agentId: string) => ipcRenderer.invoke('orchbot:pause-queue', agentId),
+  resumeQueue: (agentId: string) => ipcRenderer.invoke('orchbot:resume-queue', agentId),
+  cancelTask: (taskId: string) => ipcRenderer.invoke('orchbot:cancel-task', taskId),
+  retryTask: (taskId: string) => ipcRenderer.invoke('orchbot:retry-task', taskId),
 
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => {
     const handler = (_event: unknown, data: StreamChunkEvent) => listener(data)
@@ -41,6 +49,14 @@ const api: OrchbotApi = {
     ipcRenderer.on('orchbot:turn-error', handler)
     return () => {
       ipcRenderer.removeListener('orchbot:turn-error', handler)
+    }
+  },
+
+  onTaskStatusChanged: (listener: (data: TaskStatusChangedEvent) => void) => {
+    const handler = (_event: unknown, data: TaskStatusChangedEvent) => listener(data)
+    ipcRenderer.on('orchbot:task-status-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('orchbot:task-status-changed', handler)
     }
   },
 }
