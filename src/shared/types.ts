@@ -608,6 +608,7 @@ export interface OrchbotApi {
     providerId: SupportedProvider,
     id: string,
   ) => Promise<{ success: boolean; message: string; status?: ProviderInfo }>
+  listConnections: () => Promise<ProviderConnection[]>
   getConnections: () => Promise<ProviderConnection[]>
   getProviderCatalog: () => Promise<ProviderCatalogEntry[]>
   updateConnection: (input: UpdateConnectionInput) => Promise<ProviderConnection>

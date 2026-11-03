@@ -4372,3 +4372,51 @@ dialog.modal-overlay,
   overflow: hidden;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
 }
+
+.connections-split {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.connections-split .connections-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+.connections-list {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.connections-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.connections-row:last-child {
+  border-bottom: none;
+}
+.connections-row.active {
+  background: var(--bg-sidebar);
+}
+.connections-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.connections-row-main small {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+}

@@ -696,6 +696,9 @@ ${out.slice(-800)}`,
   })
 
   const modelCache = new Map<string, { at: number; models: string[] }>()
+  // Lista imediata (sem sondar CLIs) para a tela de provedores não ficar vazia.
+  ipcMain.handle('orchbot:list-connections', () => database.listConnections())
+
   ipcMain.handle('orchbot:get-connections', async () => {
     const list = database.listConnections()
     const statuses = await checkConnections(list)

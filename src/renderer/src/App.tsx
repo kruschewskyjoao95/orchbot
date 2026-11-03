@@ -252,7 +252,11 @@ const SettingsGlyph: Component<{ id: SettingsPaneId }> = (props) => (
   </svg>
 )
 
-const Switch: Component<{ pressed: boolean; label: string; onChange: () => void }> = (props) => (
+const Switch: Component<{
+  pressed: boolean
+  label: string
+  onChange: () => void
+}> = (props) => (
   <button
     type="button"
     class="switch"
@@ -369,7 +373,9 @@ export const App: Component = () => {
   }
 
   // Configurações do app (Configurações ⚙) persistidas no banco
-  const [settings, setSettings] = createSignal<AppSettings>({ ...DEFAULT_APP_SETTINGS })
+  const [settings, setSettings] = createSignal<AppSettings>({
+    ...DEFAULT_APP_SETTINGS,
+  })
   // Configurações abrem por cima da tela atual (modal), então não são uma "seção".
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [settingsPane, setSettingsPane] = createSignal<SettingsPaneId>('geral')
@@ -509,6 +515,7 @@ export const App: Component = () => {
       }
     >
   >({})
+  const [selectedConnId, setSelectedConnId] = createSignal<string | null>(null)
   const [showCustomProvider, setShowCustomProvider] = createSignal(false)
   const [customPreset, setCustomPreset] =
     createSignal<keyof typeof CUSTOM_PROVIDER_PRESETS>('custom')
@@ -866,7 +873,10 @@ export const App: Component = () => {
   const handleSwitchContextMode = async (agentId: string, mode: ContextMode) => {
     try {
       if (window.orchbot) {
-        const updated = await window.orchbot.updateAgent({ id: agentId, contextMode: mode })
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          contextMode: mode,
+        })
         setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
       }
     } catch (err: unknown) {
@@ -877,7 +887,10 @@ export const App: Component = () => {
   const handleSwitchBrowserAccess = async (agentId: string, enabled: boolean) => {
     try {
       if (window.orchbot) {
-        const updated = await window.orchbot.updateAgent({ id: agentId, browserAccess: enabled })
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          browserAccess: enabled,
+        })
         setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
       }
     } catch (err: unknown) {
@@ -907,6 +920,7 @@ export const App: Component = () => {
   const loadConnections = async () => {
     try {
       if (window.orchbot) {
+        if (connections().length === 0) setConnections(await window.orchbot.listConnections())
         const list = await window.orchbot.getConnections()
         setConnections(list)
         const accountLists = await Promise.all(
@@ -2304,7 +2318,9 @@ export const App: Component = () => {
       <button
         type="button"
         class="agent-item"
-        classList={{ active: selectedAgentId() === agent.id && activeSection() === 'agents' }}
+        classList={{
+          active: selectedAgentId() === agent.id && activeSection() === 'agents',
+        }}
         onClick={() => openAgent(agent.id)}
       >
         <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
@@ -2695,7 +2711,9 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="settings-nav-btn"
-                        classList={{ active: currentSettingsPane()?.id === pane.id }}
+                        classList={{
+                          active: currentSettingsPane()?.id === pane.id,
+                        }}
                         onClick={() => selectSettingsPane(pane.id)}
                       >
                         <SettingsGlyph id={pane.id} />
@@ -2799,276 +2817,330 @@ export const App: Component = () => {
                             </div>
                           </div>
 
-                          <div class="connections-grid">
-                            <For each={connections()}>
-                              {(conn) => {
-                                const draft = () => connectionDrafts()[conn.providerId] || {}
-                                const isTesting = () => testingConnection() === conn.providerId
-                                const isSaving = () => savingConnection() === conn.providerId
-                                const testResult = () => testResults()[conn.providerId]
-                                const savedMsg = () => saveMessage()[conn.providerId]
-                                const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
-
-                                const getIcon = () => PROVIDER_ICONS[conn.providerId] || '🤖'
-
-                                return (
+                          <div class="connections-split">
+                            <div class="connections-list">
+                              <For each={connections()}>
+                                {(c) => (
                                   <div
-                                    class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
+                                    class="connections-row"
+                                    classList={{
+                                      active:
+                                        (selectedConnId() ?? connections()[0]?.providerId) ===
+                                        c.providerId,
+                                    }}
                                   >
-                                    <div class="connection-box-top">
-                                      <div class="connection-brand">
-                                        <span class="connection-icon-badge">{getIcon()}</span>
-                                        <div>
-                                          <div class="connection-name">{conn.name}</div>
-                                          <div
-                                            style={{
-                                              'font-size': '11px',
-                                              color: 'var(--text-muted)',
-                                            }}
-                                          >
-                                            ID: <code>{conn.providerId}</code>
-                                            <Show when={conn.version}>
-                                              {' • '}
-                                              <span style={{ color: 'var(--text-main)' }}>
-                                                {conn.version}
-                                              </span>
-                                            </Show>
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      <div
-                                        style={{
-                                          display: 'flex',
-                                          'align-items': 'center',
-                                          gap: '10px',
-                                        }}
-                                      >
-                                        <Show
-                                          when={conn.enabled}
-                                          fallback={
-                                            <span class="connection-status-pill disabled">
-                                              ○ Desativado
-                                            </span>
-                                          }
-                                        >
-                                          <span
-                                            class={`connection-status-pill ${conn.readiness === 'ready' ? 'online' : 'warning'}`}
-                                            title={conn.error || conn.version || ''}
-                                          >
-                                            {conn.readiness === 'ready' ? '●' : '⚠'}{' '}
-                                            {providerStatusLabel(conn)}
-                                          </span>
-                                        </Show>
-
-                                        <label
-                                          class="toggle-switch-wrapper"
-                                          title={
-                                            conn.enabled ? 'Desativar conexão' : 'Ativar conexão'
-                                          }
-                                        >
-                                          <div class="toggle-switch">
-                                            <input
-                                              type="checkbox"
-                                              checked={conn.enabled}
-                                              onChange={(e) =>
-                                                handleToggleConnection(
-                                                  conn,
-                                                  e.currentTarget.checked,
-                                                )
-                                              }
-                                            />
-                                            <span class="toggle-slider" />
-                                          </div>
-                                        </label>
-                                      </div>
-                                    </div>
-
-                                    <div class="connection-fields">
-                                      <div class="connection-field">
-                                        <label
-                                          class="connection-field-label"
-                                          for={`conn-model-${conn.providerId}`}
-                                        >
-                                          Modelo Padrão
-                                        </label>
+                                    <button
+                                      type="button"
+                                      class="connections-row-main"
+                                      onClick={() => setSelectedConnId(c.providerId)}
+                                    >
+                                      <span class="connection-icon-badge">
+                                        {PROVIDER_ICONS[c.providerId] || '🤖'}
+                                      </span>
+                                      <span>
+                                        <strong>{c.name}</strong>
+                                        <small>
+                                          {c.enabled ? providerStatusLabel(c) : 'Desativado'}
+                                        </small>
+                                      </span>
+                                    </button>
+                                    <label class="toggle-switch-wrapper" title="Ativar/desativar">
+                                      <div class="toggle-switch">
                                         <input
-                                          id={`conn-model-${conn.providerId}`}
-                                          list={`conn-models-${conn.providerId}`}
-                                          class="connection-input"
-                                          value={draft().defaultModel ?? conn.defaultModel}
-                                          onInput={(e) =>
-                                            updateDraftField(
-                                              conn.providerId,
-                                              'defaultModel',
-                                              e.currentTarget.value,
-                                            )
+                                          type="checkbox"
+                                          checked={c.enabled}
+                                          onChange={(e) =>
+                                            handleToggleConnection(c, e.currentTarget.checked)
                                           }
-                                          placeholder="Selecione na lista ou digite qualquer modelo..."
-                                          disabled={!conn.enabled}
                                         />
-                                        <datalist id={`conn-models-${conn.providerId}`}>
-                                          <For each={conn.models}>
-                                            {(m) => <option value={m} />}
-                                          </For>
-                                        </datalist>
+                                        <span class="toggle-slider" />
                                       </div>
+                                    </label>
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                            <div class="connections-grid">
+                              <For
+                                each={connections().filter(
+                                  (c) =>
+                                    c.providerId ===
+                                    (selectedConnId() ?? connections()[0]?.providerId),
+                                )}
+                              >
+                                {(conn) => {
+                                  const draft = () => connectionDrafts()[conn.providerId] || {}
+                                  const isTesting = () => testingConnection() === conn.providerId
+                                  const isSaving = () => savingConnection() === conn.providerId
+                                  const testResult = () => testResults()[conn.providerId]
+                                  const savedMsg = () => saveMessage()[conn.providerId]
+                                  const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
 
-                                      <div class="connection-field">
-                                        <label
-                                          class="connection-field-label"
-                                          for={`conn-key-${conn.providerId}`}
-                                        >
-                                          Chave de Acesso / API Key
-                                        </label>
-                                        <div class="api-key-group">
-                                          <input
-                                            id={`conn-key-${conn.providerId}`}
-                                            type={isKeyVisible() ? 'text' : 'password'}
-                                            class="connection-input"
-                                            placeholder={
-                                              conn.hasApiKey
-                                                ? 'Chave cadastrada; digite para substituir'
-                                                : 'CLI local / variável de ambiente / chave personalizada...'
-                                            }
-                                            value={draft().apiKey ?? ''}
-                                            onInput={(e) =>
-                                              updateDraftField(
-                                                conn.providerId,
-                                                'apiKey',
-                                                e.currentTarget.value,
-                                              )
-                                            }
-                                            disabled={!conn.enabled}
-                                          />
-                                          <button
-                                            type="button"
-                                            class="btn-icon-eye"
-                                            onClick={() => toggleShowApiKey(conn.providerId)}
-                                            title={
-                                              isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'
-                                            }
-                                            disabled={!conn.enabled}
-                                          >
-                                            {isKeyVisible() ? '🙈' : '👁️'}
-                                          </button>
+                                  const getIcon = () => PROVIDER_ICONS[conn.providerId] || '🤖'
+
+                                  return (
+                                    <div
+                                      class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
+                                    >
+                                      <div class="connection-box-top">
+                                        <div class="connection-brand">
+                                          <span class="connection-icon-badge">{getIcon()}</span>
+                                          <div>
+                                            <div class="connection-name">{conn.name}</div>
+                                            <div
+                                              style={{
+                                                'font-size': '11px',
+                                                color: 'var(--text-muted)',
+                                              }}
+                                            >
+                                              ID: <code>{conn.providerId}</code>
+                                              <Show when={conn.version}>
+                                                {' • '}
+                                                <span
+                                                  style={{
+                                                    color: 'var(--text-main)',
+                                                  }}
+                                                >
+                                                  {conn.version}
+                                                </span>
+                                              </Show>
+                                            </div>
+                                          </div>
                                         </div>
-                                        <Show when={conn.keyStorageError}>
-                                          <output>{conn.keyStorageError}</output>
-                                        </Show>
-                                        <Show when={conn.hasApiKey}>
-                                          <button
-                                            type="button"
-                                            disabled={!conn.enabled}
-                                            onClick={() =>
-                                              updateDraftField(conn.providerId, 'apiKey', '')
+
+                                        <div
+                                          style={{
+                                            display: 'flex',
+                                            'align-items': 'center',
+                                            gap: '10px',
+                                          }}
+                                        >
+                                          <Show
+                                            when={conn.enabled}
+                                            fallback={
+                                              <span class="connection-status-pill disabled">
+                                                ○ Desativado
+                                              </span>
                                             }
                                           >
-                                            Remover chave ao salvar
-                                          </button>
-                                          <Show when={draft().apiKey === ''}>
-                                            <output>A chave será removida ao salvar.</output>
+                                            <span
+                                              class={`connection-status-pill ${conn.readiness === 'ready' ? 'online' : 'warning'}`}
+                                              title={conn.error || conn.version || ''}
+                                            >
+                                              {conn.readiness === 'ready' ? '●' : '⚠'}{' '}
+                                              {providerStatusLabel(conn)}
+                                            </span>
                                           </Show>
-                                        </Show>
+
+                                          <label
+                                            class="toggle-switch-wrapper"
+                                            title={
+                                              conn.enabled ? 'Desativar conexão' : 'Ativar conexão'
+                                            }
+                                          >
+                                            <div class="toggle-switch">
+                                              <input
+                                                type="checkbox"
+                                                checked={conn.enabled}
+                                                onChange={(e) =>
+                                                  handleToggleConnection(
+                                                    conn,
+                                                    e.currentTarget.checked,
+                                                  )
+                                                }
+                                              />
+                                              <span class="toggle-slider" />
+                                            </div>
+                                          </label>
+                                        </div>
                                       </div>
 
-                                      <Show when={conn.providerId !== 'acp'}>
+                                      <div class="connection-fields">
                                         <div class="connection-field">
                                           <label
                                             class="connection-field-label"
-                                            for={`conn-endpoint-${conn.providerId}`}
+                                            for={`conn-model-${conn.providerId}`}
                                           >
-                                            {isCustomProvider(conn.providerId)
-                                              ? 'URL base da API'
-                                              : 'Endpoint Customizado (Opcional)'}
+                                            Modelo Padrão
                                           </label>
                                           <input
-                                            id={`conn-endpoint-${conn.providerId}`}
-                                            type="text"
+                                            id={`conn-model-${conn.providerId}`}
+                                            list={`conn-models-${conn.providerId}`}
                                             class="connection-input"
-                                            placeholder="Ex: https://api.x.ai/v1 ou proxy local..."
-                                            value={draft().endpoint ?? (conn.endpoint || '')}
+                                            value={draft().defaultModel ?? conn.defaultModel}
                                             onInput={(e) =>
                                               updateDraftField(
                                                 conn.providerId,
-                                                'endpoint',
+                                                'defaultModel',
                                                 e.currentTarget.value,
                                               )
                                             }
+                                            placeholder="Selecione na lista ou digite qualquer modelo..."
                                             disabled={!conn.enabled}
                                           />
+                                          <datalist id={`conn-models-${conn.providerId}`}>
+                                            <For each={conn.models}>
+                                              {(m) => <option value={m} />}
+                                            </For>
+                                          </datalist>
                                         </div>
-                                      </Show>
-                                    </div>
 
-                                    <Show when={testResult()}>
-                                      {(res) => (
-                                        <div
-                                          class={`connection-result-msg ${res().success ? 'success' : 'error'}`}
-                                        >
-                                          <strong>
-                                            {res().success ? '✓ Sucesso: ' : '✗ Erro: '}
-                                          </strong>
-                                          {res().message}
+                                        <div class="connection-field">
+                                          <label
+                                            class="connection-field-label"
+                                            for={`conn-key-${conn.providerId}`}
+                                          >
+                                            Chave de Acesso / API Key
+                                          </label>
+                                          <div class="api-key-group">
+                                            <input
+                                              id={`conn-key-${conn.providerId}`}
+                                              type={isKeyVisible() ? 'text' : 'password'}
+                                              class="connection-input"
+                                              placeholder={
+                                                conn.hasApiKey
+                                                  ? 'Chave cadastrada; digite para substituir'
+                                                  : 'CLI local / variável de ambiente / chave personalizada...'
+                                              }
+                                              value={draft().apiKey ?? ''}
+                                              onInput={(e) =>
+                                                updateDraftField(
+                                                  conn.providerId,
+                                                  'apiKey',
+                                                  e.currentTarget.value,
+                                                )
+                                              }
+                                              disabled={!conn.enabled}
+                                            />
+                                            <button
+                                              type="button"
+                                              class="btn-icon-eye"
+                                              onClick={() => toggleShowApiKey(conn.providerId)}
+                                              title={
+                                                isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'
+                                              }
+                                              disabled={!conn.enabled}
+                                            >
+                                              {isKeyVisible() ? '🙈' : '👁️'}
+                                            </button>
+                                          </div>
+                                          <Show when={conn.keyStorageError}>
+                                            <output>{conn.keyStorageError}</output>
+                                          </Show>
+                                          <Show when={conn.hasApiKey}>
+                                            <button
+                                              type="button"
+                                              disabled={!conn.enabled}
+                                              onClick={() =>
+                                                updateDraftField(conn.providerId, 'apiKey', '')
+                                              }
+                                            >
+                                              Remover chave ao salvar
+                                            </button>
+                                            <Show when={draft().apiKey === ''}>
+                                              <output>A chave será removida ao salvar.</output>
+                                            </Show>
+                                          </Show>
                                         </div>
-                                      )}
-                                    </Show>
 
-                                    <Show when={savedMsg()}>
-                                      {(msg) => (
-                                        <div class="connection-save-feedback">✓ {msg()}</div>
-                                      )}
-                                    </Show>
-
-                                    <div class="connection-card-actions">
-                                      <div
-                                        style={{
-                                          display: 'flex',
-                                          gap: '6px',
-                                          'align-items': 'center',
-                                        }}
-                                      >
-                                        <button
-                                          type="button"
-                                          class="btn-outline"
-                                          onClick={() => setAccountsProvider(conn.providerId)}
-                                        >
-                                          Contas ({providerAccounts()[conn.providerId]?.length ?? 1}
-                                          )
-                                        </button>
-                                        <button
-                                          type="button"
-                                          class="btn-icon-gear"
-                                          onClick={() => setConfigProviderId(conn.providerId)}
-                                          title={`Configurar ${conn.name} (CLI, esforço, modelos)`}
-                                          aria-label={`Configurar ${conn.name}`}
-                                        >
-                                          ⚙
-                                        </button>
-                                        <button
-                                          type="button"
-                                          class="btn-outline"
-                                          onClick={() => handleTestConnection(conn.providerId)}
-                                          disabled={!conn.enabled || isTesting()}
-                                          title="Testar comunicação com a CLI ou API do provedor"
-                                        >
-                                          {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
-                                        </button>
+                                        <Show when={conn.providerId !== 'acp'}>
+                                          <div class="connection-field">
+                                            <label
+                                              class="connection-field-label"
+                                              for={`conn-endpoint-${conn.providerId}`}
+                                            >
+                                              {isCustomProvider(conn.providerId)
+                                                ? 'URL base da API'
+                                                : 'Endpoint Customizado (Opcional)'}
+                                            </label>
+                                            <input
+                                              id={`conn-endpoint-${conn.providerId}`}
+                                              type="text"
+                                              class="connection-input"
+                                              placeholder="Ex: https://api.x.ai/v1 ou proxy local..."
+                                              value={draft().endpoint ?? (conn.endpoint || '')}
+                                              onInput={(e) =>
+                                                updateDraftField(
+                                                  conn.providerId,
+                                                  'endpoint',
+                                                  e.currentTarget.value,
+                                                )
+                                              }
+                                              disabled={!conn.enabled}
+                                            />
+                                          </div>
+                                        </Show>
                                       </div>
 
-                                      <button
-                                        type="button"
-                                        class="btn-primary"
-                                        onClick={() => handleSaveConnection(conn)}
-                                        disabled={!conn.enabled || isSaving()}
-                                      >
-                                        {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
-                                      </button>
+                                      <Show when={testResult()}>
+                                        {(res) => (
+                                          <div
+                                            class={`connection-result-msg ${res().success ? 'success' : 'error'}`}
+                                          >
+                                            <strong>
+                                              {res().success ? '✓ Sucesso: ' : '✗ Erro: '}
+                                            </strong>
+                                            {res().message}
+                                          </div>
+                                        )}
+                                      </Show>
+
+                                      <Show when={savedMsg()}>
+                                        {(msg) => (
+                                          <div class="connection-save-feedback">✓ {msg()}</div>
+                                        )}
+                                      </Show>
+
+                                      <div class="connection-card-actions">
+                                        <div
+                                          style={{
+                                            display: 'flex',
+                                            gap: '6px',
+                                            'align-items': 'center',
+                                          }}
+                                        >
+                                          <button
+                                            type="button"
+                                            class="btn-outline"
+                                            onClick={() => setAccountsProvider(conn.providerId)}
+                                          >
+                                            Contas (
+                                            {providerAccounts()[conn.providerId]?.length ?? 1})
+                                          </button>
+                                          <button
+                                            type="button"
+                                            class="btn-icon-gear"
+                                            onClick={() => setConfigProviderId(conn.providerId)}
+                                            title={`Configurar ${conn.name} (CLI, esforço, modelos)`}
+                                            aria-label={`Configurar ${conn.name}`}
+                                          >
+                                            ⚙
+                                          </button>
+                                          <button
+                                            type="button"
+                                            class="btn-outline"
+                                            onClick={() => handleTestConnection(conn.providerId)}
+                                            disabled={!conn.enabled || isTesting()}
+                                            title="Testar comunicação com a CLI ou API do provedor"
+                                          >
+                                            {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
+                                          </button>
+                                        </div>
+
+                                        <button
+                                          type="button"
+                                          class="btn-primary"
+                                          onClick={() => handleSaveConnection(conn)}
+                                          disabled={!conn.enabled || isSaving()}
+                                        >
+                                          {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
+                                        </button>
+                                      </div>
                                     </div>
-                                  </div>
-                                )
-                              }}
-                            </For>
+                                  )
+                                }}
+                              </For>
+                            </div>
                           </div>
                         </div>
                       </Show>
@@ -3107,7 +3179,11 @@ export const App: Component = () => {
                             <select
                               class="settings-select"
                               value={settings().language}
-                              onChange={(e) => updateSettings({ language: e.currentTarget.value })}
+                              onChange={(e) =>
+                                updateSettings({
+                                  language: e.currentTarget.value,
+                                })
+                              }
                             >
                               <option value="pt-BR">Português (Brasil)</option>
                             </select>
@@ -3123,7 +3199,9 @@ export const App: Component = () => {
                               class="settings-select"
                               value={settings().uiScale}
                               onChange={(e) =>
-                                updateSettings({ uiScale: Number(e.currentTarget.value) })
+                                updateSettings({
+                                  uiScale: Number(e.currentTarget.value),
+                                })
                               }
                             >
                               <option value={75}>75%</option>
@@ -3192,7 +3270,9 @@ export const App: Component = () => {
                               pressed={settings().showAgentSteps}
                               label="Mostrar etapas do agente"
                               onChange={() =>
-                                updateSettings({ showAgentSteps: !settings().showAgentSteps })
+                                updateSettings({
+                                  showAgentSteps: !settings().showAgentSteps,
+                                })
                               }
                             />
                           </div>
@@ -3237,7 +3317,9 @@ export const App: Component = () => {
                               pressed={settings().startAtLogin}
                               label="Iniciar o Orchbot ao entrar"
                               onChange={() =>
-                                updateSettings({ startAtLogin: !settings().startAtLogin })
+                                updateSettings({
+                                  startAtLogin: !settings().startAtLogin,
+                                })
                               }
                             />
                           </div>
@@ -3254,7 +3336,9 @@ export const App: Component = () => {
                               pressed={settings().gitContext}
                               label="Contexto Git no turno"
                               onChange={() =>
-                                updateSettings({ gitContext: !settings().gitContext })
+                                updateSettings({
+                                  gitContext: !settings().gitContext,
+                                })
                               }
                             />
                           </div>
@@ -3270,7 +3354,9 @@ export const App: Component = () => {
                               pressed={settings().quickConnection}
                               label="Conexão rápida a servidores"
                               onChange={() =>
-                                updateSettings({ quickConnection: !settings().quickConnection })
+                                updateSettings({
+                                  quickConnection: !settings().quickConnection,
+                                })
                               }
                             />
                           </div>
@@ -3307,7 +3393,9 @@ export const App: Component = () => {
                               pressed={settings().restoreWorkspace}
                               label="Restaurar o último espaço de trabalho ao iniciar"
                               onChange={() =>
-                                updateSettings({ restoreWorkspace: !settings().restoreWorkspace })
+                                updateSettings({
+                                  restoreWorkspace: !settings().restoreWorkspace,
+                                })
                               }
                             />
                           </div>
@@ -3501,7 +3589,9 @@ export const App: Component = () => {
                               pressed={settings().shareAnalytics}
                               label="Compartilhar análises do produto"
                               onChange={() =>
-                                updateSettings({ shareAnalytics: !settings().shareAnalytics })
+                                updateSettings({
+                                  shareAnalytics: !settings().shareAnalytics,
+                                })
                               }
                             />
                           </div>
@@ -3708,7 +3798,11 @@ export const App: Component = () => {
                                   <div class="model-usage-row">
                                     <span>{m.model}</span>
                                     <div class="model-usage-bar">
-                                      <span style={{ width: `${Math.max(3, m.percent)}%` }} />
+                                      <span
+                                        style={{
+                                          width: `${Math.max(3, m.percent)}%`,
+                                        }}
+                                      />
                                     </div>
                                     <strong>{m.percent}%</strong>
                                   </div>
@@ -3728,7 +3822,11 @@ export const App: Component = () => {
                           id="profile-name"
                           type="text"
                           value={settings().profileName}
-                          onInput={(e) => updateSettings({ profileName: e.currentTarget.value })}
+                          onInput={(e) =>
+                            updateSettings({
+                              profileName: e.currentTarget.value,
+                            })
+                          }
                         />
                       </div>
                       <div class="form-group">
@@ -3737,7 +3835,11 @@ export const App: Component = () => {
                           id="profile-email"
                           type="email"
                           value={settings().profileEmail}
-                          onInput={(e) => updateSettings({ profileEmail: e.currentTarget.value })}
+                          onInput={(e) =>
+                            updateSettings({
+                              profileEmail: e.currentTarget.value,
+                            })
+                          }
                         />
                         <span class="settings-section-desc">Usado para entrar no Orchbot.</span>
                       </div>
@@ -4095,7 +4197,13 @@ export const App: Component = () => {
                         Selecione um colega na barra lateral, veja toda a equipe no Quadro Geral ou
                         crie um novo agente.
                       </p>
-                      <div style={{ display: 'flex', gap: '10px', 'justify-content': 'center' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '10px',
+                          'justify-content': 'center',
+                        }}
+                      >
                         <button
                           type="button"
                           class="btn-outline"
@@ -4164,7 +4272,13 @@ export const App: Component = () => {
                         Diga o que ele deve fazer ou escolha um modelo pronto (Foreman, Engenheiro,
                         Auditor).
                       </p>
-                      <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: '8px',
+                          'flex-wrap': 'wrap',
+                        }}
+                      >
                         <button
                           type="button"
                           class="btn-primary"
@@ -4727,7 +4841,12 @@ export const App: Component = () => {
                     <For
                       each={tasks()}
                       fallback={
-                        <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
+                        <div
+                          style={{
+                            color: 'var(--text-muted)',
+                            'font-size': '12px',
+                          }}
+                        >
                           Nenhuma tarefa recente na fila deste agente.
                         </div>
                       }
@@ -4738,7 +4857,12 @@ export const App: Component = () => {
                             <span class={`task-tag ${task.status}`}>{task.status}</span>
                             <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
                             <Show when={task.error}>
-                              <span style={{ color: '#f87171', 'font-size': '11px' }}>
+                              <span
+                                style={{
+                                  color: '#f87171',
+                                  'font-size': '11px',
+                                }}
+                              >
                                 ({task.error})
                               </span>
                             </Show>
@@ -4842,7 +4966,10 @@ export const App: Component = () => {
                       >
                         <div
                           class="card-title"
-                          style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                          style={{
+                            'font-size': '11px',
+                            'margin-bottom': '4px',
+                          }}
                         >
                           Instruções do Agente
                         </div>
@@ -5195,7 +5322,12 @@ export const App: Component = () => {
                       <For
                         each={browserTabs()}
                         fallback={
-                          <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                          <span
+                            style={{
+                              'font-size': '11px',
+                              color: 'var(--text-muted)',
+                            }}
+                          >
                             Nenhuma aba aberta
                           </span>
                         }
@@ -5216,7 +5348,12 @@ export const App: Component = () => {
                               }
                             }}
                           >
-                            <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                            <span
+                              style={{
+                                overflow: 'hidden',
+                                'text-overflow': 'ellipsis',
+                              }}
+                            >
                               {tab.isLoading ? '⏳ ' : '🌐 '}
                               {tab.title || tab.url}
                             </span>
@@ -5365,7 +5502,12 @@ export const App: Component = () => {
                               >
                                 Navegador Isolado do Agente
                               </h3>
-                              <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
+                              <p
+                                style={{
+                                  'font-size': '12.5px',
+                                  'line-height': '1.5',
+                                }}
+                              >
                                 Abra páginas web com segurança em uma partição isolada com cookies e
                                 cache próprios deste agente. O agente pode extrair dados,
                                 inspecionar links e interagir com supervisão.
@@ -5431,7 +5573,10 @@ export const App: Component = () => {
                                   <button
                                     type="button"
                                     class="btn-outline"
-                                    style={{ padding: '2px 6px', 'font-size': '10.5px' }}
+                                    style={{
+                                      padding: '2px 6px',
+                                      'font-size': '10.5px',
+                                    }}
                                     onClick={handleBrowserScreenshot}
                                   >
                                     Atualizar Visão
@@ -5468,7 +5613,12 @@ export const App: Component = () => {
                                 </div>
                                 <div class="quick-interact-bar">
                                   <div class="quick-interact-form">
-                                    <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                    <span
+                                      style={{
+                                        'font-size': '11px',
+                                        'font-weight': '600',
+                                      }}
+                                    >
                                       Clicar Elemento
                                     </span>
                                     <input
@@ -5483,7 +5633,10 @@ export const App: Component = () => {
                                     <button
                                       type="button"
                                       class="btn-outline"
-                                      style={{ 'font-size': '11px', padding: '4px' }}
+                                      style={{
+                                        'font-size': '11px',
+                                        padding: '4px',
+                                      }}
                                       onClick={() => handleBrowserClick(browserClickSelector())}
                                       disabled={!browserClickSelector().trim()}
                                     >
@@ -5492,7 +5645,12 @@ export const App: Component = () => {
                                   </div>
 
                                   <div class="quick-interact-form">
-                                    <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                    <span
+                                      style={{
+                                        'font-size': '11px',
+                                        'font-weight': '600',
+                                      }}
+                                    >
                                       Preencher Formulário
                                     </span>
                                     <input
@@ -5512,7 +5670,10 @@ export const App: Component = () => {
                                     <button
                                       type="button"
                                       class="btn-outline"
-                                      style={{ 'font-size': '11px', padding: '4px' }}
+                                      style={{
+                                        'font-size': '11px',
+                                        padding: '4px',
+                                      }}
                                       onClick={() =>
                                         handleBrowserFill(browserFillSelector(), browserFillValue())
                                       }
@@ -5541,7 +5702,12 @@ export const App: Component = () => {
                         >
                           <span>Inspeção DOM Sanitizada</span>
                           <Show when={browserInspectData()}>
-                            <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
+                            <span
+                              style={{
+                                'font-size': '10.5px',
+                                color: 'var(--text-muted)',
+                              }}
+                            >
                               {browserInspectData()?.links.length || 0} links •{' '}
                               {browserInspectData()?.inputs.length || 0} campos
                             </span>
@@ -5736,7 +5902,10 @@ export const App: Component = () => {
                   onChange={(e) => {
                     const preset = e.currentTarget.value as keyof typeof CUSTOM_PROVIDER_PRESETS
                     setCustomPreset(preset)
-                    setCustomForm({ ...CUSTOM_PROVIDER_PRESETS[preset], apiKey: '' })
+                    setCustomForm({
+                      ...CUSTOM_PROVIDER_PRESETS[preset],
+                      apiKey: '',
+                    })
                   }}
                 >
                   <option value="custom">OpenAI-compatible</option>
@@ -5753,7 +5922,12 @@ export const App: Component = () => {
                   maxLength={100}
                   value={customForm().name}
                   disabled={creatingProvider()}
-                  onInput={(e) => setCustomForm({ ...customForm(), name: e.currentTarget.value })}
+                  onInput={(e) =>
+                    setCustomForm({
+                      ...customForm(),
+                      name: e.currentTarget.value,
+                    })
+                  }
                 />
               </div>
               <div class="form-group">
@@ -5766,7 +5940,10 @@ export const App: Component = () => {
                   disabled={creatingProvider()}
                   placeholder="http://localhost:11434/v1"
                   onInput={(e) =>
-                    setCustomForm({ ...customForm(), endpoint: e.currentTarget.value })
+                    setCustomForm({
+                      ...customForm(),
+                      endpoint: e.currentTarget.value,
+                    })
                   }
                 />
                 <small>
@@ -5784,7 +5961,10 @@ export const App: Component = () => {
                   disabled={creatingProvider()}
                   placeholder="ID exato do modelo disponível no provedor"
                   onInput={(e) =>
-                    setCustomForm({ ...customForm(), defaultModel: e.currentTarget.value })
+                    setCustomForm({
+                      ...customForm(),
+                      defaultModel: e.currentTarget.value,
+                    })
                   }
                 />
               </div>
@@ -5796,7 +5976,12 @@ export const App: Component = () => {
                   autocomplete="new-password"
                   value={customForm().apiKey}
                   disabled={creatingProvider()}
-                  onInput={(e) => setCustomForm({ ...customForm(), apiKey: e.currentTarget.value })}
+                  onInput={(e) =>
+                    setCustomForm({
+                      ...customForm(),
+                      apiKey: e.currentTarget.value,
+                    })
+                  }
                 />
               </div>
               <Show when={customProviderError()}>
@@ -5965,7 +6150,13 @@ export const App: Component = () => {
                     <datalist id="cfg-models-list">
                       <For each={models()}>{(m) => <option value={m} />}</For>
                     </datalist>
-                    <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '8px',
+                        'align-items': 'center',
+                      }}
+                    >
                       <button
                         type="button"
                         class="btn-outline"
@@ -5977,7 +6168,12 @@ export const App: Component = () => {
                           : '↻ Descobrir modelos via CLI'}
                       </button>
                       <Show when={discoverMessage()[conn().providerId]}>
-                        <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                        <span
+                          style={{
+                            'font-size': '11px',
+                            color: 'var(--text-muted)',
+                          }}
+                        >
                           {discoverMessage()[conn().providerId]}
                         </span>
                       </Show>
@@ -6472,7 +6668,12 @@ export const App: Component = () => {
                     </option>
                   </select>
                   <Show when={agentRole() === 'orchestrator'}>
-                    <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                    <div
+                      style={{
+                        'font-size': '11px',
+                        color: 'var(--text-muted)',
+                      }}
+                    >
                       Você fala só com ele: ele distribui subtarefas aos especialistas do mesmo
                       projeto e resume os resultados aqui.
                     </div>
@@ -6618,7 +6819,13 @@ export const App: Component = () => {
                   <span class="form-label-title">
                     Permissões deste agente (Padrão = as das Configurações)
                   </span>
-                  <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '8px' }}>
+                  <div
+                    style={{
+                      display: 'grid',
+                      'grid-template-columns': '1fr 1fr',
+                      gap: '8px',
+                    }}
+                  >
                     <label style={{ 'font-size': '12px' }}>
                       Scripts locais
                       <select
@@ -6720,7 +6927,11 @@ export const App: Component = () => {
               <div>
                 <span class="modal-title">⏰ Agendamentos & Rotinas em Background (Cron)</span>
                 <div
-                  style={{ 'font-size': '11px', color: 'var(--text-muted)', 'margin-top': '2px' }}
+                  style={{
+                    'font-size': '11px',
+                    color: 'var(--text-muted)',
+                    'margin-top': '2px',
+                  }}
                 >
                   Agente ativo: <strong>{currentAgent()?.name}</strong> • Automação periódica de
                   tarefas e monitoramento de páginas
@@ -6827,7 +7038,11 @@ export const App: Component = () => {
                   }}
                 >
                   <span
-                    style={{ 'font-size': '12px', 'font-weight': '600', color: 'var(--text-main)' }}
+                    style={{
+                      'font-size': '12px',
+                      'font-weight': '600',
+                      color: 'var(--text-main)',
+                    }}
                   >
                     Rotinas Cadastradas ({scheduledTasks().length})
                   </span>
@@ -6860,22 +7075,45 @@ export const App: Component = () => {
                     </div>
                   }
                 >
-                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      'flex-direction': 'column',
+                      gap: '10px',
+                    }}
+                  >
                     <For each={scheduledTasks()}>
                       {(task) => (
                         <div class={`cron-task-card ${task.enabled ? 'active' : 'disabled'}`}>
                           <div class="cron-task-header">
-                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                'align-items': 'center',
+                                gap: '8px',
+                              }}
+                            >
                               <span class={`cron-type-badge ${task.taskType}`}>
                                 {task.taskType === 'browser_monitor'
                                   ? '🌐 Monitoramento Web'
                                   : '📋 Rotina'}
                               </span>
-                              <strong style={{ 'font-size': '13px', color: 'var(--text-main)' }}>
+                              <strong
+                                style={{
+                                  'font-size': '13px',
+                                  color: 'var(--text-main)',
+                                }}
+                              >
                                 {task.title}
                               </strong>
                             </div>
-                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                            <div
+                              style={{
+                                display: 'flex',
+                                'align-items': 'center',
+                                gap: '8px',
+                              }}
+                            >
                               <button
                                 type="button"
                                 class={`cron-toggle-btn ${task.enabled ? 'enabled' : 'disabled'}`}
@@ -6889,7 +7127,10 @@ export const App: Component = () => {
                               <button
                                 type="button"
                                 class="btn-outline"
-                                style={{ padding: '3px 8px', 'font-size': '11px' }}
+                                style={{
+                                  padding: '3px 8px',
+                                  'font-size': '11px',
+                                }}
                                 disabled={cronRunningId() === task.id}
                                 onClick={() => handleRunScheduledTaskNow(task)}
                                 title="Executar imediatamente sem esperar o cronômetro"
@@ -6899,7 +7140,10 @@ export const App: Component = () => {
                               <button
                                 type="button"
                                 class="btn-danger"
-                                style={{ padding: '3px 6px', 'font-size': '11px' }}
+                                style={{
+                                  padding: '3px 6px',
+                                  'font-size': '11px',
+                                }}
                                 onClick={() => handleDeleteScheduledTask(task)}
                                 title="Excluir agendamento"
                               >
@@ -6984,7 +7228,13 @@ export const App: Component = () => {
                     />
                   </div>
 
-                  <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '12px' }}>
+                  <div
+                    style={{
+                      display: 'grid',
+                      'grid-template-columns': '1fr 1fr',
+                      gap: '12px',
+                    }}
+                  >
                     <div class="form-group">
                       <label for="cron-type">Tipo de Tarefa</label>
                       <select
@@ -7041,7 +7291,13 @@ export const App: Component = () => {
 
                   <div class="form-group">
                     <label for="cron-expr-input">Expressão Cron Customizada</label>
-                    <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        'align-items': 'center',
+                        gap: '8px',
+                      }}
+                    >
                       <input
                         id="cron-expr-input"
                         type="text"
@@ -7084,7 +7340,11 @@ export const App: Component = () => {
                   </div>
 
                   <div
-                    style={{ display: 'flex', 'justify-content': 'flex-end', 'margin-top': '8px' }}
+                    style={{
+                      display: 'flex',
+                      'justify-content': 'flex-end',
+                      'margin-top': '8px',
+                    }}
                   >
                     <button
                       type="submit"
@@ -7153,7 +7413,12 @@ export const App: Component = () => {
               <Show when={editDraft()}>
                 {(draft) => (
                   <>
-                    <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                    <div
+                      style={{
+                        'font-size': '11px',
+                        color: 'var(--text-muted)',
+                      }}
+                    >
                       {draft().source === 'model'
                         ? 'Revise e edite o rascunho. Nada foi salvo ainda.'
                         : 'Nenhum provedor respondeu: rascunho offline simples. Nada foi salvo ainda.'}
@@ -7166,7 +7431,12 @@ export const App: Component = () => {
                         maxLength={8}
                         style={{ width: '90px' }}
                         value={draft().avatar}
-                        onInput={(e) => setEditDraft({ ...draft(), avatar: e.currentTarget.value })}
+                        onInput={(e) =>
+                          setEditDraft({
+                            ...draft(),
+                            avatar: e.currentTarget.value,
+                          })
+                        }
                       />
                     </div>
                     <div class="form-group">
@@ -7175,7 +7445,12 @@ export const App: Component = () => {
                         id="ai-edit-name"
                         type="text"
                         value={draft().name}
-                        onInput={(e) => setEditDraft({ ...draft(), name: e.currentTarget.value })}
+                        onInput={(e) =>
+                          setEditDraft({
+                            ...draft(),
+                            name: e.currentTarget.value,
+                          })
+                        }
                       />
                     </div>
                     <div class="form-group">
@@ -7185,7 +7460,10 @@ export const App: Component = () => {
                         type="text"
                         value={draft().description}
                         onInput={(e) =>
-                          setEditDraft({ ...draft(), description: e.currentTarget.value })
+                          setEditDraft({
+                            ...draft(),
+                            description: e.currentTarget.value,
+                          })
                         }
                       />
                     </div>
@@ -7195,7 +7473,10 @@ export const App: Component = () => {
                         id="ai-edit-role"
                         value={draft().role}
                         onChange={(e) =>
-                          setEditDraft({ ...draft(), role: e.currentTarget.value as AgentRole })
+                          setEditDraft({
+                            ...draft(),
+                            role: e.currentTarget.value as AgentRole,
+                          })
                         }
                       >
                         <option value="worker">🛠️ Especialista</option>
@@ -7209,7 +7490,10 @@ export const App: Component = () => {
                         rows={9}
                         value={draft().instructions}
                         onInput={(e) =>
-                          setEditDraft({ ...draft(), instructions: e.currentTarget.value })
+                          setEditDraft({
+                            ...draft(),
+                            instructions: e.currentTarget.value,
+                          })
                         }
                       />
                     </div>
@@ -7251,7 +7535,11 @@ export const App: Component = () => {
             </div>
             <div style={{ padding: '16px 20px', 'overflow-y': 'auto', flex: 1 }}>
               <div
-                style={{ 'font-size': '12px', color: 'var(--text-muted)', 'margin-bottom': '12px' }}
+                style={{
+                  'font-size': '12px',
+                  color: 'var(--text-muted)',
+                  'margin-bottom': '12px',
+                }}
               >
                 Guardadas só neste computador. O robô também cria e apaga memórias sozinho durante
                 as conversas.
@@ -7294,7 +7582,13 @@ export const App: Component = () => {
                         'border-bottom': '1px solid rgba(128,128,128,.2)',
                       }}
                     >
-                      <span style={{ flex: 1, 'font-size': '13px', 'white-space': 'pre-wrap' }}>
+                      <span
+                        style={{
+                          flex: 1,
+                          'font-size': '13px',
+                          'white-space': 'pre-wrap',
+                        }}
+                      >
                         {m.text}
                       </span>
                       <button
@@ -7588,7 +7882,8 @@ export const App: Component = () => {
                 each={paletteItems()}
                 fallback={
                   <div class="command-palette-empty">
-                    Nenhum comando ou agente encontrado para &ldquo;{paletteQuery()}&rdquo;.
+                    Nenhum comando ou agente encontrado para &ldquo;
+                    {paletteQuery()}&rdquo;.
                   </div>
                 }
               >
