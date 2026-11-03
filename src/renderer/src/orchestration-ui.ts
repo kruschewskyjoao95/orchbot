@@ -16,80 +16,109 @@ export interface CoworkerTemplate {
 export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
   {
     id: 'foreman',
-    name: 'Foreman (Orquestrador)',
+    name: 'Líder da Equipe (Coordenador)',
     avatar: '👑',
     role: 'orchestrator',
-    badge: 'Líder de Equipe',
+    badge: 'Coordena tudo p/ você',
     description:
-      'Coordena sua equipe, planeja subtarefas, delega aos especialistas e consolida o resultado.',
+      'Recebe seu pedido em linguagem simples, divide as tarefas entre os colegas da equipe e te entrega o resultado pronto.',
     instructions:
-      'Você é o Foreman, líder e orquestrador da equipe. Seu papel é entender o objetivo do usuário em linguagem simples, dividir o trabalho em subtarefas claras, delegar para os especialistas certos do projeto usando blocos [[DELEGAR:Nome]] e sintetizar as respostas com objetividade.',
+      'Você é o Líder e Coordenador da equipe. Seu papel é entender o objetivo do usuário em linguagem simples, dividir o trabalho em subtarefas claras, delegar para os especialistas certos do projeto usando blocos [[DELEGAR:Nome]] e sintetizar as respostas com clareza e objetividade.',
     effort: 'high',
     autonomyLevel: 'autonomous',
   },
   {
     id: 'software-architect',
-    name: 'Engenheiro de Software',
+    name: 'Criador de Apps & Sites',
     avatar: '🛠️',
     role: 'worker',
-    badge: 'Código & Testes',
+    badge: 'Programação & Correções',
     description:
-      'Implementa features, refatora código com segurança e mantém a suíte de testes verde.',
+      'Cria funcionalidades, corrige problemas no sistema e garante que tudo funcione sem erros.',
     instructions:
-      'Você é um engenheiro de software sênior. Escreva código limpo, tipado e enxuto, valide mudanças com testes automatizados e explique decisões técnicas de forma direta.',
+      'Você é um engenheiro de software sênior prestativo e didático. Escreva código limpo, tipado e enxuto, valide mudanças com testes automatizados e explique o que foi feito em linguagem simples.',
     effort: 'high',
     autonomyLevel: 'autonomous',
   },
   {
     id: 'code-reviewer',
-    name: 'Auditor & Revisor',
+    name: 'Revisor de Qualidade',
     avatar: '🛡️',
     role: 'worker',
-    badge: 'Qualidade & Segurança',
+    badge: 'Segurança & Revisão',
     description:
-      'Analisa diffs, encontra regressões, falhas de segurança e sugere correções precisas.',
+      'Confere se o trabalho feito está seguro, sem falhas escondidas e pronto para uso.',
     instructions:
-      'Você é um revisor de código rigoroso e objetivo. Procure bugs reais, condições de corrida, vazamento de segredos, quebras de contrato e falta de testes. Priorize problemas críticos primeiro.',
+      'Você é um revisor de qualidade rigoroso e claro. Procure problemas reais, falhas de segurança e pontos frágeis, explicando de forma simples o que precisa ser corrigido.',
     effort: 'high',
     autonomyLevel: 'cautious',
   },
   {
     id: 'web-researcher',
-    name: 'Pesquisador & Analista',
+    name: 'Pesquisador da Internet',
     avatar: '🔍',
     role: 'worker',
-    badge: 'Pesquisa & Dados',
+    badge: 'Pesquisa & Comparação',
     description:
-      'Investiga documentações, analisa dados do projeto e monitora páginas no navegador.',
+      'Navega em sites, pesquisa informações atualizadas, compara opções e traz resumos claros.',
     instructions:
-      'Você é um analista e pesquisador técnico. Colete evidências concretas nos arquivos e no navegador embarcado, compare alternativas em tabelas claras e cite sempre a fonte.',
+      'Você é um analista e pesquisador. Colete informações concretas nos arquivos e no navegador, compare alternativas em listas fáceis de ler e cite sempre as fontes.',
     effort: 'medium',
     autonomyLevel: 'autonomous',
   },
   {
     id: 'qa-automation',
-    name: 'Especialista de QA',
+    name: 'Testador Automático',
     avatar: '🧪',
     role: 'worker',
-    badge: 'Automação & Rotinas',
+    badge: 'Testes & Verificação',
     description:
-      'Cria casos de teste, reproduz bugs e executa verificações periódicas de integridade.',
+      'Testa funcionalidades passo a passo, encontra defeitos e verifica se tudo continua funcionando.',
     instructions:
-      'Você é especialista em qualidade e testes automatizados. Reproduza falhas com passos mínimos, escreva testes determinísticos e verifique casos de borda.',
+      'Você é especialista em testes e qualidade. Reproduza falhas com passos claros, crie verificações automáticas e avise de forma simples se algo quebrar.',
     effort: 'medium',
     autonomyLevel: 'autonomous',
   },
   {
     id: 'ops-assistant',
-    name: 'Assistente Executivo',
+    name: 'Assistente Pessoal',
     avatar: '📋',
     role: 'worker',
-    badge: 'Organização & Docs',
-    description: 'Organiza roadmaps, resume reuniões/threads, atualiza documentação e checklists.',
+    badge: 'Organização & Textos',
+    description:
+      'Organiza ideias, escreve textos, monta planejamentos, checklists e resume conversas longas.',
     instructions:
-      'Você é um assistente executivo e redator técnico. Mantenha a documentação sincronizada com o código, estruture planos de ação claros e resuma progresso sem ruído.',
+      'Você é um assistente executivo claro e organizado. Ajude a planejar tarefas, escrever documentos bem estruturados e resumir informações importantes sem jargões técnicos.',
     effort: 'low',
     autonomyLevel: 'cautious',
+  },
+]
+
+export interface StarterTeamPreset {
+  id: string
+  title: string
+  subtitle: string
+  icon: string
+  badge: string
+  templateIds: string[]
+}
+
+export const STARTER_TEAM_PRESETS: StarterTeamPreset[] = [
+  {
+    id: 'full-product-team',
+    title: 'Equipe Completa de Projeto',
+    subtitle: '1 Líder Coordenador + Criador de Apps + Revisor de Qualidade',
+    icon: '🚀',
+    badge: 'Recomendado p/ começar',
+    templateIds: ['foreman', 'software-architect', 'code-reviewer'],
+  },
+  {
+    id: 'research-assistant-team',
+    title: 'Equipe de Pesquisa & Organização',
+    subtitle: '1 Líder Coordenador + Pesquisador da Internet + Assistente Pessoal',
+    icon: '🧭',
+    badge: 'Ideal para estudos e negócios',
+    templateIds: ['foreman', 'web-researcher', 'ops-assistant'],
   },
 ]
 
@@ -210,13 +239,13 @@ export function parseComposerInput(raw: string, roster: Agent[]): ParsedComposer
     const cmdRaw = (spaceIdx === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIdx)).toLowerCase()
     const rest = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim()
 
-    if (cmdRaw === 'quadro' || cmdRaw === 'board') {
+    if (cmdRaw === 'quadro' || cmdRaw === 'board' || cmdRaw === 'inicio') {
       return { kind: 'slash', command: 'quadro', argumentText: rest }
     }
     if (cmdRaw === 'equipe' || cmdRaw === 'team') {
       return { kind: 'slash', command: 'equipe', argumentText: rest }
     }
-    if (cmdRaw === 'delegar' || cmdRaw === 'delegate') {
+    if (cmdRaw === 'delegar' || cmdRaw === 'delegate' || cmdRaw === 'pedir') {
       return { kind: 'slash', command: 'delegar', argumentText: rest }
     }
     if (
@@ -270,48 +299,48 @@ export function buildCommandPaletteItems(
       id: 'nav:board',
       kind: 'section',
       sectionId: 'board',
-      label: 'Ir para o Quadro da Equipe',
-      sublabel: 'Visão geral de todos os agentes, filas, canais e orquestradores',
+      label: 'Ir para a Central da Equipe (Início)',
+      sublabel: 'Ver todos os assistentes, pedir uma tarefa ou contratar colegas com 1 clique',
       shortcut: 'Ctrl+1',
-      icon: '🗺️',
-      keywords: 'quadro board visão geral equipe coworkers orquestracao',
+      icon: '🏠',
+      keywords: 'inicio central quadro board visão geral equipe coworkers orquestracao',
     },
     {
       id: 'nav:chat',
       kind: 'section',
       sectionId: 'agents',
-      label: 'Ir para Conversa Direta & Terminal',
-      sublabel: 'Abrir área de chat e delegação rápida com o agente atual',
+      label: 'Ir para Conversa Individual',
+      sublabel: 'Conversar diretamente com o assistente selecionado',
       shortcut: 'Ctrl+2',
       icon: '💬',
-      keywords: 'chat conversa terminal agente',
+      keywords: 'chat conversa individual assistente agente',
     },
     {
       id: 'nav:channels',
       kind: 'section',
       sectionId: 'channels',
-      label: 'Ir para Canais Multi-Agentes (#)',
-      sublabel: 'Salas de colaboração entre especialistas e orquestradores',
+      label: 'Ir para Salas em Grupo (#)',
+      sublabel: 'Colocar vários assistentes para trabalhar juntos em uma mesma missão',
       shortcut: 'Ctrl+3',
-      icon: '#',
-      keywords: 'canais channels salas multi-agentes',
+      icon: '👥',
+      keywords: 'canais channels salas grupo multi-agentes',
     },
     {
       id: 'action:new-agent',
       kind: 'action',
       actionId: 'new-agent',
-      label: 'Contratar Novo Agente (Coworker)',
-      sublabel: 'Criar especialista ou orquestrador a partir de template ou IA',
+      label: 'Criar Assistente Personalizado',
+      sublabel: 'Descreva o que você precisa e a IA monta o assistente para você',
       shortcut: 'Ctrl+N',
       icon: '➕',
-      keywords: 'novo agente criar coworker bot especialista',
+      keywords: 'novo agente criar assistente coworker bot especialista',
     },
     {
       id: 'action:new-foreman',
       kind: 'template',
       templateId: 'foreman',
-      label: 'Contratar Foreman (Orquestrador de Equipe)',
-      sublabel: 'Líder que entrevista você, planeja e delega para os especialistas',
+      label: 'Contratar Líder da Equipe (Coordenador)',
+      sublabel: 'Ele recebe seu pedido e distribui o trabalho para os outros assistentes',
       icon: '👑',
       keywords: 'foreman orquestrador lider coordenador equipe',
     },
@@ -319,26 +348,26 @@ export function buildCommandPaletteItems(
       id: 'action:delegate',
       kind: 'action',
       actionId: 'delegate',
-      label: 'Delegar Tarefa entre Agentes',
-      sublabel: 'Enviar subtarefa do agente ativo para outro especialista da equipe',
+      label: 'Passar Tarefa para Outro Assistente',
+      sublabel: 'Pedir ajuda de outro membro da equipe na conversa atual',
       icon: '🤝',
-      keywords: 'delegar tarefa handoff especialista',
+      keywords: 'delegar passar tarefa handoff especialista',
     },
     {
       id: 'action:new-channel',
       kind: 'action',
       actionId: 'new-channel',
-      label: 'Novo Canal de Colaboração (#)',
-      sublabel: 'Reúna múltiplos agentes em uma missão com um dono responsável',
-      icon: '#',
-      keywords: 'canal channel sala colaboracao',
+      label: 'Criar Nova Sala em Grupo (#)',
+      sublabel: 'Reúna vários assistentes em uma missão conjunta',
+      icon: '👥',
+      keywords: 'canal channel sala grupo colaboracao',
     },
     {
       id: 'action:new-project',
       kind: 'action',
       actionId: 'new-project',
-      label: 'Novo Projeto (Workspace)',
-      sublabel: 'Agrupar agentes em uma pasta de trabalho dedicada no disco',
+      label: 'Nova Pasta de Projeto',
+      sublabel: 'Organizar assistentes por cliente, assunto ou trabalho',
       icon: '📁',
       keywords: 'projeto pasta workspace diretorio',
     },
@@ -346,35 +375,35 @@ export function buildCommandPaletteItems(
       id: 'nav:skills',
       kind: 'section',
       sectionId: 'skills',
-      label: 'Abrir Skills & Servidores MCP',
-      sublabel: 'Gerenciar habilidades reutilizáveis e integrações de ferramentas',
+      label: 'Abrir Habilidades & Extras',
+      sublabel: 'Ativar poderes extras e ferramentas para seus assistentes',
       icon: '🧩',
-      keywords: 'skills plugins mcp ferramentas catalogo',
+      keywords: 'skills plugins mcp ferramentas habilidades catalogo',
     },
     {
       id: 'action:search-memory',
       kind: 'action',
       actionId: 'search-memory',
-      label: 'Busca Rápida em Memórias & Código (FTS5)',
-      sublabel: 'Pesquisar instantaneamente em conversas passadas e arquivos do repositório',
+      label: 'Pesquisar no Histórico de Conversas e Arquivos',
+      sublabel: 'Encontrar rapidamente qualquer mensagem antiga ou documento',
       icon: '🔍',
-      keywords: 'busca pesquisar memoria rag fts5 sqlite',
+      keywords: 'busca pesquisar memoria rag fts5 sqlite historico',
     },
     {
       id: 'nav:providers',
       kind: 'action',
       actionId: 'providers',
-      label: 'Configurar Provedores & Modelos (CLIs / APIs)',
-      sublabel: 'Codex, Claude, Grok, Gemini, Ollama e contas conectadas',
+      label: 'Conectar Inteligências Artificiais (Contas)',
+      sublabel: 'Ativar ChatGPT (Codex), Claude, Gemini, Grok ou modelos locais',
       icon: '🔌',
-      keywords: 'provedores conexoes modelos api cli login',
+      keywords: 'provedores conexoes modelos api cli login contas',
     },
     {
       id: 'nav:settings',
       kind: 'action',
       actionId: 'settings',
-      label: 'Abrir Configurações do Orchbot',
-      sublabel: 'Tema, aparência, atalhos, autonomia padrão e diagnóstico',
+      label: 'Abrir Configurações e Aparência',
+      sublabel: 'Tema claro/escuro, tamanho da letra e preferências simples',
       shortcut: 'Ctrl+,',
       icon: '⚙️',
       keywords: 'configuracoes ajustes tema aparencia',
@@ -388,9 +417,9 @@ export function buildCommandPaletteItems(
       id: `agent:${agent.id}`,
       kind: 'agent',
       agentId: agent.id,
-      label: agent.name,
-      sublabel: `${agent.role === 'orchestrator' ? '👑 Orquestrador' : '🛠️ Especialista'} • ${agent.provider}/${agent.model}${proj ? ` • 📁 ${proj.name}` : ''}`,
-      shortcut: AGENT_STATE_LABEL[st] || (agent.role === 'orchestrator' ? 'Foreman' : 'Ativo'),
+      label: `Conversar com ${agent.name}`,
+      sublabel: `${agent.role === 'orchestrator' ? '👑 Líder da Equipe' : '🛠️ Especialista'}${proj ? ` • 📁 ${proj.name}` : ''}${agent.description ? ` — ${agent.description}` : ''}`,
+      shortcut: AGENT_STATE_LABEL[st] || (agent.role === 'orchestrator' ? 'Líder' : 'Pronto'),
       icon: agent.avatar || (agent.role === 'orchestrator' ? '👑' : '🤖'),
       keywords:
         `${agent.name} ${agent.provider} ${agent.model} ${agent.description ?? ''} ${proj?.name ?? ''}`.toLowerCase(),
@@ -402,11 +431,11 @@ export function buildCommandPaletteItems(
       id: `template:${tpl.id}`,
       kind: 'template',
       templateId: tpl.id,
-      label: `Template: ${tpl.name}`,
+      label: `Contratar: ${tpl.name}`,
       sublabel: tpl.description,
       shortcut: tpl.badge,
       icon: tpl.avatar,
-      keywords: `template ${tpl.name} ${tpl.badge} ${tpl.description}`.toLowerCase(),
+      keywords: `template contratar ${tpl.name} ${tpl.badge} ${tpl.description}`.toLowerCase(),
     })
   }
 

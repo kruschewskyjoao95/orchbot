@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentState } from '../src/renderer/src/agent-state'
 import {
   COWORKER_TEMPLATES,
+  STARTER_TEAM_PRESETS,
   buildCommandPaletteItems,
   computeBoardSummary,
   filterPaletteItems,
@@ -70,13 +71,21 @@ const sampleProjects: Project[] = [
 ]
 
 describe('orchestration-ui helpers (Quadro da Equipe & Paleta de Comandos)', () => {
-  it('exposes coworker templates including a Foreman orchestrator', () => {
+  it('exposes coworker templates and 1-click starter team presets for laypeople', () => {
     expect(COWORKER_TEMPLATES.length).toBeGreaterThanOrEqual(5)
     const foreman = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
     expect(foreman).toBeDefined()
     expect(foreman?.role).toBe('orchestrator')
     const workers = COWORKER_TEMPLATES.filter((t) => t.role === 'worker')
     expect(workers.length).toBeGreaterThanOrEqual(4)
+
+    expect(STARTER_TEAM_PRESETS.length).toBeGreaterThanOrEqual(2)
+    for (const preset of STARTER_TEAM_PRESETS) {
+      expect(preset.templateIds.length).toBeGreaterThanOrEqual(2)
+      for (const tplId of preset.templateIds) {
+        expect(COWORKER_TEMPLATES.some((t) => t.id === tplId)).toBe(true)
+      }
+    }
   })
 
   it('computes board summary metrics accurately', () => {
