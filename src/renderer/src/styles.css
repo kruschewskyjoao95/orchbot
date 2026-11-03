@@ -4814,6 +4814,21 @@ dialog.modal-overlay,
   justify-content: center;
   flex-wrap: wrap;
 }
+.board-min-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.board-min-row select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  max-width: 100%;
+}
 .board-team-draft,
 .approval-card {
   display: flex;

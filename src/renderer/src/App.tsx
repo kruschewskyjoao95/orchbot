@@ -304,6 +304,7 @@ export const App: Component = () => {
   const [boardFilterProject, setBoardFilterProject] = createSignal<string>('all')
   const [boardForemanPrompt, setBoardForemanPrompt] = createSignal('')
   const [boardForemanTargetId, setBoardForemanTargetId] = createSignal('')
+  const [boardProviderId, setBoardProviderId] = createSignal('')
   const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
   const [approvals, setApprovals] = createSignal<Approval[]>([])
   const [teamDraft, setTeamDraft] = createSignal<AgentDraft[] | null>(null)
@@ -1954,11 +1955,23 @@ export const App: Component = () => {
 
   const getDefaultProviderAndModel = (): { provider: SupportedProvider; model: string } => {
     const enabled = connections().filter((c) => c.enabled)
-    const first = enabled.find((c) => c.readiness === 'ready') ?? enabled[0]
+    const first =
+      enabled.find((c) => c.providerId === boardProviderId()) ??
+      enabled.find((c) => c.readiness === 'ready') ??
+      enabled[0]
     const prov = first?.providerId ?? 'codex'
     const mod =
       first?.defaultModel ?? DEFAULT_PROVIDER_MODELS[prov] ?? DEFAULT_PROVIDER_MODELS.codex
     return { provider: prov, model: mod }
+  }
+
+  // Várias equipes = vários líderes: "Líder", "Líder 2", ...
+  const uniqueAgentName = (base: string) => {
+    const taken = new Set(agents().map((a) => a.name.toLowerCase()))
+    let n = 1
+    let name = base
+    while (taken.has(name.toLowerCase())) name = `${base} ${++n}`
+    return name
   }
 
   const handleQuickHireTemplate = async (tpl: CoworkerTemplate, openChatAfter = false) => {
@@ -1973,7 +1986,7 @@ export const App: Component = () => {
       const projectId =
         projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
       const created = await window.orchbot.createAgent({
-        name: tpl.name,
+        name: tpl.role === 'orchestrator' ? uniqueAgentName(tpl.name) : tpl.name,
         avatar: tpl.avatar,
         role: tpl.role,
         description: tpl.description,
@@ -2060,17 +2073,18 @@ export const App: Component = () => {
     const prompt = boardForemanPrompt().trim()
     if (!prompt || !window.orchbot) return
 
-    let targetId = boardForemanTargetId() || orchestratorsList()[0]?.id || agents()[0]?.id || null
+    const choice = boardForemanTargetId() || orchestratorsList()[0]?.id || 'new'
+    let targetId: string | null = choice === 'new' ? null : choice
 
     try {
-      // Se o usuário ainda não tem nenhum assistente, cria o Líder da Equipe automaticamente!
+      // Sem líder escolhido (ou "Nova equipe"): cria um líder com a IA escolhida.
       if (!targetId) {
         const foremanTpl =
           COWORKER_TEMPLATES.find((t) => t.id === 'foreman') ?? COWORKER_TEMPLATES[0]
         if (foremanTpl) {
           const { provider: prov, model: mod } = getDefaultProviderAndModel()
           const created = await window.orchbot.createAgent({
-            name: foremanTpl.name,
+            name: uniqueAgentName(foremanTpl.name),
             avatar: foremanTpl.avatar,
             role: foremanTpl.role,
             description: foremanTpl.description,
@@ -2714,7 +2728,7 @@ export const App: Component = () => {
                       if (tpl) void handleQuickHireTemplate(tpl, true)
                     }}
                   >
-                    👑 Criar Líder da Equipe (1 clique)
+                    👑 Nova equipe (novo líder)
                   </button>
                   <button
                     type="button"
@@ -4189,6 +4203,39 @@ export const App: Component = () => {
                   }
                 }}
               />
+              <div class="board-min-row">
+                <select
+                  aria-label="Quem recebe o pedido"
+                  value={boardForemanTargetId() || orchestratorsList()[0]?.id || 'new'}
+                  onChange={(e) => setBoardForemanTargetId(e.currentTarget.value)}
+                >
+                  <For each={orchestratorsList()}>
+                    {(a) => (
+                      <option value={a.id}>
+                        {a.avatar ?? '👑'} {a.name}
+                      </option>
+                    )}
+                  </For>
+                  <option value="new">➕ Nova equipe (novo líder)</option>
+                </select>
+                <Show
+                  when={(boardForemanTargetId() || orchestratorsList()[0]?.id || 'new') === 'new'}
+                >
+                  <select
+                    aria-label="IA do novo líder"
+                    value={getDefaultProviderAndModel().provider}
+                    onChange={(e) => setBoardProviderId(e.currentTarget.value)}
+                  >
+                    <For each={connections().filter((c) => c.enabled)}>
+                      {(c) => (
+                        <option value={c.providerId}>
+                          {PROVIDER_ICONS[c.providerId] || '🔗'} {c.name}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </Show>
+              </div>
               <div class="board-min-actions">
                 <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
                   Começar
