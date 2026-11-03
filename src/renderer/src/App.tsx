@@ -8,6 +8,7 @@ import type {
   AgentMemory,
   AgentRole,
   AppSettings,
+  Approval,
   AutonomyLevel,
   BrowserPageContent,
   BrowserTab,
@@ -30,6 +31,7 @@ import type {
   SystemStatus,
   TaskQueueItem,
   Thread,
+  WebhookTrigger,
   WorkspaceRulesInfo,
 } from '../../shared/types'
 import { DEFAULT_APP_SETTINGS, effectiveCapabilities } from '../../shared/types'
@@ -92,9 +94,22 @@ export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
 }
 
 const BOARD_SUGGESTIONS = [
-  { title: 'Planejar um projeto', desc: 'Plano passo a passo e primeira etapa', prompt: 'Crie um plano simples passo a passo para o meu projeto e comece a primeira etapa.' },
-  { title: 'Entender meu projeto', desc: 'Explicar os arquivos da pasta', prompt: 'Analise os arquivos desta pasta, explique de forma simples como tudo funciona e sugira melhorias.' },
-  { title: 'Pesquisar um assunto', desc: 'Resumo claro em tópicos', prompt: 'Pesquise informações atualizadas sobre este tema e monte um resumo claro em tópicos.' },
+  {
+    title: 'Planejar um projeto',
+    desc: 'Plano passo a passo e primeira etapa',
+    prompt: 'Crie um plano simples passo a passo para o meu projeto e comece a primeira etapa.',
+  },
+  {
+    title: 'Entender meu projeto',
+    desc: 'Explicar os arquivos da pasta',
+    prompt:
+      'Analise os arquivos desta pasta, explique de forma simples como tudo funciona e sugira melhorias.',
+  },
+  {
+    title: 'Pesquisar um assunto',
+    desc: 'Resumo claro em tópicos',
+    prompt: 'Pesquise informações atualizadas sobre este tema e monte um resumo claro em tópicos.',
+  },
 ]
 
 const LOGO_COLORS = [
@@ -290,6 +305,14 @@ export const App: Component = () => {
   const [boardForemanPrompt, setBoardForemanPrompt] = createSignal('')
   const [boardForemanTargetId, setBoardForemanTargetId] = createSignal('')
   const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
+  const [approvals, setApprovals] = createSignal<Approval[]>([])
+  const [teamDraft, setTeamDraft] = createSignal<AgentDraft[] | null>(null)
+  const [teamDrafting, setTeamDrafting] = createSignal(false)
+  const [showAutomationModal, setShowAutomationModal] = createSignal(false)
+  const [webhooks, setWebhooks] = createSignal<WebhookTrigger[]>([])
+  const [webhookBase, setWebhookBase] = createSignal<string | null>(null)
+  const [webhookTitle, setWebhookTitle] = createSignal('')
+  const [webhookInstruction, setWebhookInstruction] = createSignal('')
   const [allAgentQueues, setAllAgentQueues] = createSignal<Record<string, TaskQueueItem[]>>({})
   const [allAgentPaused, setAllAgentPaused] = createSignal<Record<string, boolean>>({})
   const [profileStats, setProfileStats] = createSignal<ProfileStats | null>(null)
@@ -1222,6 +1245,7 @@ export const App: Component = () => {
         showRulesModal() ||
         showSearchModal() ||
         showCronModal() ||
+        showAutomationModal() ||
         showDelegationModal() ||
         showCustomProvider() ||
         accountsProvider()
@@ -1276,9 +1300,11 @@ export const App: Component = () => {
       }
     })
 
+    void loadApprovals()
     const unsubFinished = window.orchbot.onTurnFinished((data) => {
       // Respostas de agentes em canais mudam o resumo do canal na barra lateral.
       void loadChannels()
+      void loadApprovals()
       if (activeThread() && data.threadId === activeThread()?.id) {
         setMessages((prev) => [...prev, data.message])
         setStreamingText('')
@@ -2081,6 +2107,141 @@ export const App: Component = () => {
     } catch (err: unknown) {
       alert(`Erro ao enviar pedido: ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  // --- Aprovações, Foreman (montar equipe), webhooks e cadeia ---
+  const loadApprovals = async () => {
+    if (window.orchbot) setApprovals(await window.orchbot.listApprovals())
+  }
+
+  const decideApproval = async (approval: Approval, approved: boolean) => {
+    try {
+      await window.orchbot.decideApproval(approval.id, approved)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err))
+    }
+    await loadApprovals()
+  }
+
+  const ApprovalCard = (p: { approval: Approval }) => (
+    <div class="approval-card">
+      <strong>
+        ✋ {agents().find((a) => a.id === p.approval.agentId)?.name ?? 'Um assistente'} pede sua
+        aprovação
+      </strong>
+      <div class="approval-card-text">{p.approval.text}</div>
+      <div class="approval-card-actions">
+        <button
+          type="button"
+          class="btn-primary"
+          onClick={() => void decideApproval(p.approval, true)}
+        >
+          Aprovar
+        </button>
+        <button
+          type="button"
+          class="btn-secondary"
+          onClick={() => void decideApproval(p.approval, false)}
+        >
+          Recusar
+        </button>
+      </div>
+    </div>
+  )
+
+  const handleDraftTeam = async () => {
+    const prompt = boardForemanPrompt().trim()
+    if (!prompt || !window.orchbot) return
+    setTeamDrafting(true)
+    try {
+      setTeamDraft(await window.orchbot.draftTeam(prompt))
+    } catch (err: unknown) {
+      alert(`Erro ao montar a equipe: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTeamDrafting(false)
+    }
+  }
+
+  /** Contrata a equipe sugerida e manda o pedido para o líder dela. */
+  const handleHireTeam = async () => {
+    const team = teamDraft()
+    if (!team || !window.orchbot) return
+    setTeamDrafting(true)
+    try {
+      const { provider: prov, model: mod } = getDefaultProviderAndModel()
+      const projectFilter = boardFilterProject()
+      const projectId =
+        projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
+      let leaderId = ''
+      for (const draft of team) {
+        const created = await window.orchbot.createAgent({
+          name: draft.name,
+          avatar: draft.avatar,
+          role: draft.role,
+          description: draft.description,
+          projectId,
+          provider: prov,
+          model: mod,
+          effort: 'medium',
+          contextMode: 'padrao',
+          browserAccess: true,
+          workspacePath: '',
+          instructions: draft.instructions,
+          autonomyLevel: 'autonomous',
+        })
+        if (created.role === 'orchestrator' && !leaderId) leaderId = created.id
+      }
+      await loadAgents()
+      setTeamDraft(null)
+      setBoardForemanTargetId(leaderId)
+      await handleBoardForemanDispatch(new Event('submit'))
+    } catch (err: unknown) {
+      alert(`Erro ao contratar a equipe: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTeamDrafting(false)
+    }
+  }
+
+  const openAutomationModal = async () => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot) return
+    setShowAutomationModal(true)
+    setWebhookBase(await window.orchbot.getWebhookBaseUrl())
+    setWebhooks(await window.orchbot.listWebhookTriggers(agent.id))
+  }
+
+  const handleSetHandoff = async (agentId: string, handoffAgentId: string) => {
+    try {
+      await window.orchbot.updateAgent({ id: agentId, handoffAgentId: handoffAgentId || null })
+      await loadAgents()
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleCreateWebhook = async (e: Event) => {
+    e.preventDefault()
+    const agent = currentAgent()
+    if (!agent) return
+    try {
+      await window.orchbot.createWebhookTrigger(agent.id, webhookTitle(), webhookInstruction())
+      setWebhookTitle('')
+      setWebhookInstruction('')
+      setWebhooks(await window.orchbot.listWebhookTriggers(agent.id))
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleDeleteWebhook = async (trigger: WebhookTrigger) => {
+    if (
+      !confirm(
+        `Apagar o webhook "${trigger.title}"? Quem usa esta URL deixa de conseguir chamar o assistente.`,
+      )
+    )
+      return
+    await window.orchbot.deleteWebhookTrigger(trigger.id)
+    setWebhooks(await window.orchbot.listWebhookTriggers(trigger.agentId))
   }
 
   const handleToggleAgentQueueFromBoard = async (agent: Agent) => {
@@ -4028,17 +4189,74 @@ export const App: Component = () => {
                   }
                 }}
               />
-              <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
-                Começar
-              </button>
+              <div class="board-min-actions">
+                <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
+                  Começar
+                </button>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  disabled={!boardForemanPrompt().trim() || teamDrafting()}
+                  onClick={() => void handleDraftTeam()}
+                >
+                  {teamDrafting() ? 'Montando a equipe…' : 'Montar uma equipe para isso'}
+                </button>
+              </div>
               <Show when={boardDispatchMsg()}>
                 {(msg) => <div class="foreman-dispatch-feedback">{msg()}</div>}
               </Show>
+              <Show when={teamDraft()}>
+                {(team) => (
+                  <div class="board-team-draft">
+                    <strong>Equipe sugerida</strong>
+                    <For each={team()}>
+                      {(d) => (
+                        <div class="board-team-member">
+                          <span class="board-team-avatar">{d.avatar}</span>
+                          <div>
+                            <strong>
+                              {d.name}
+                              {d.role === 'orchestrator' ? ' · líder' : ''}
+                            </strong>
+                            <span>{d.description}</span>
+                          </div>
+                        </div>
+                      )}
+                    </For>
+                    <div class="approval-card-actions">
+                      <button
+                        type="button"
+                        class="btn-primary"
+                        disabled={teamDrafting()}
+                        onClick={() => void handleHireTeam()}
+                      >
+                        Contratar e começar
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-secondary"
+                        onClick={() => setTeamDraft(null)}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Show>
             </form>
+            <Show when={approvals().length > 0}>
+              <div class="board-min-card">
+                <For each={approvals()}>{(a) => <ApprovalCard approval={a} />}</For>
+              </div>
+            </Show>
             <div class="board-min-suggestions">
               <For each={BOARD_SUGGESTIONS}>
                 {(s) => (
-                  <button type="button" class="board-min-chip" onClick={() => setBoardForemanPrompt(s.prompt)}>
+                  <button
+                    type="button"
+                    class="board-min-chip"
+                    onClick={() => setBoardForemanPrompt(s.prompt)}
+                  >
                     <strong>{s.title}</strong>
                     <span>{s.desc}</span>
                   </button>
@@ -4334,6 +4552,17 @@ export const App: Component = () => {
                           >
                             ⏰ Tarefas automáticas com horário
                             {scheduledTasks().length > 0 ? ` (${scheduledTasks().length})` : ''}
+                          </button>
+                          <button
+                            type="button"
+                            class="dropdown-item"
+                            role="menuitem"
+                            onClick={() => {
+                              setShowAgentMenu(false)
+                              void openAutomationModal()
+                            }}
+                          >
+                            🔗 Webhooks e cadeia
                           </button>
                           <button
                             type="button"
@@ -4977,6 +5206,10 @@ export const App: Component = () => {
                       </button>
                     </div>
                   </Show>
+
+                  <For each={approvals().filter((a) => a.threadId === activeThread()?.id)}>
+                    {(a) => <ApprovalCard approval={a} />}
+                  </For>
 
                   {/* Barra de input do chat — Simples e Intuitiva */}
                   <div class="chat-input-container">
@@ -6682,6 +6915,128 @@ export const App: Component = () => {
             </form>
           </div>
         </dialog>
+      </Show>
+
+      {/* Modal de Webhooks e Cadeia */}
+      <Show when={showAutomationModal() && currentAgent()}>
+        {(agent) => (
+          <dialog
+            class="modal-overlay"
+            open
+            onClick={() => setShowAutomationModal(false)}
+            onKeyDown={(e) => e.key === 'Escape' && setShowAutomationModal(false)}
+          >
+            <div
+              class="modal-content"
+              role="document"
+              style={{ width: '640px', 'max-height': '85vh', 'overflow-y': 'auto' }}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <div class="modal-header">
+                <span class="modal-title">🔗 Webhooks e cadeia · {agent().name}</span>
+                <button
+                  type="button"
+                  class="modal-close"
+                  onClick={() => setShowAutomationModal(false)}
+                >
+                  ✕
+                </button>
+              </div>
+              <div class="automation-body">
+                <div class="form-group">
+                  <label for="handoff-select">
+                    Cadeia: ao terminar um pedido, passar o resultado para
+                  </label>
+                  <select
+                    id="handoff-select"
+                    value={agent().handoffAgentId ?? ''}
+                    onChange={(e) => void handleSetHandoff(agent().id, e.currentTarget.value)}
+                  >
+                    <option value="">Ninguém (sem cadeia)</option>
+                    <For each={agents().filter((a) => a.id !== agent().id)}>
+                      {(a) => (
+                        <option value={a.id}>
+                          {a.avatar ?? '🤖'} {a.name}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                  <span class="settings-section-desc">
+                    Ex.: um assistente acha os clientes, o próximo escreve para eles. A cadeia para
+                    sozinha depois de algumas etapas.
+                  </span>
+                </div>
+
+                <div class="form-group">
+                  <span class="form-label-title">Webhooks</span>
+                  <Show
+                    when={webhookBase()}
+                    fallback={
+                      <span class="settings-section-desc">
+                        ⚠️ O servidor de webhooks não abriu (a porta 47821 pode estar em uso).
+                      </span>
+                    }
+                  >
+                    <span class="settings-section-desc">
+                      Um POST nesta URL faz o assistente trabalhar, com o conteúdo recebido. A URL é
+                      a senha: não compartilhe. Ela só responde neste computador; para receber da
+                      internet, use um túnel (ex.: cloudflared).
+                    </span>
+                  </Show>
+                  <For each={webhooks()}>
+                    {(w) => (
+                      <div class="webhook-row">
+                        <div>
+                          <strong>{w.title}</strong>
+                          <code>{`${webhookBase() ?? ''}/${w.id}/${w.token}`}</code>
+                        </div>
+                        <button
+                          type="button"
+                          class="btn-secondary"
+                          onClick={() =>
+                            void navigator.clipboard.writeText(
+                              `${webhookBase() ?? ''}/${w.id}/${w.token}`,
+                            )
+                          }
+                        >
+                          Copiar
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-secondary"
+                          onClick={() => void handleDeleteWebhook(w)}
+                        >
+                          Apagar
+                        </button>
+                      </div>
+                    )}
+                  </For>
+                  <form class="webhook-form" onSubmit={handleCreateWebhook}>
+                    <input
+                      placeholder="Nome (ex.: Novo pedido na loja)"
+                      value={webhookTitle()}
+                      onInput={(e) => setWebhookTitle(e.currentTarget.value)}
+                    />
+                    <textarea
+                      rows={3}
+                      placeholder="O que o assistente faz quando for chamado (ex.: confira o pedido e avise se faltar estoque)"
+                      value={webhookInstruction()}
+                      onInput={(e) => setWebhookInstruction(e.currentTarget.value)}
+                    />
+                    <button
+                      type="submit"
+                      class="btn-primary"
+                      disabled={!webhookInstruction().trim()}
+                    >
+                      Criar webhook
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </dialog>
+        )}
       </Show>
 
       {/* Modal de Agendamentos & Tarefas em Background (Cron) */}

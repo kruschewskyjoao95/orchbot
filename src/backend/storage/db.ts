@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,6 +9,7 @@ import type {
   Agent,
   AgentMemory,
   AgentReaction,
+  Approval,
   Attachment,
   Channel,
   ChannelMember,
@@ -40,6 +41,7 @@ import type {
   UpdateProjectInput,
   UpdateProviderAccountInput,
   UpdateScheduledTaskInput,
+  WebhookTrigger,
 } from '../../shared/types'
 import { calculateNextRun, isValidCron } from '../cron/cron-parser'
 import { isSafeEnvKey } from '../mcp/mcp-launch'
@@ -170,6 +172,7 @@ function normalizeAgent(row: Agent): Agent {
     showPlanBeforeLongTasks: triState(row.showPlanBeforeLongTasks as unknown),
     steerMode: row.steerMode === 'imediato' || row.steerMode === 'fila' ? row.steerMode : undefined,
     computerUse: triState(row.computerUse as unknown),
+    handoffAgentId: row.handoffAgentId ?? undefined,
   }
 }
 
@@ -365,6 +368,27 @@ export class OrchbotDatabase {
     `)
 
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        task_id TEXT,
+        text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        note TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS webhook_triggers (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        instruction TEXT NOT NULL,
+        token TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS agent_memories (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -489,6 +513,7 @@ export class OrchbotDatabase {
       'ALTER TABLE task_queue ADD COLUMN browser_rounds INTEGER DEFAULT 0',
       'ALTER TABLE task_queue ADD COLUMN origin_thread_id TEXT',
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
+      'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
     ]) {
       try {
         this.db.exec(alter)
@@ -1411,6 +1436,7 @@ export class OrchbotDatabase {
         show_plan AS showPlanBeforeLongTasks,
         steer_mode AS steerMode,
         computer_use AS computerUse,
+        handoff_agent_id AS handoffAgentId,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -1442,6 +1468,7 @@ export class OrchbotDatabase {
         show_plan AS showPlanBeforeLongTasks,
         steer_mode AS steerMode,
         computer_use AS computerUse,
+        handoff_agent_id AS handoffAgentId,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -1580,10 +1607,22 @@ export class OrchbotDatabase {
       input.steerMode !== undefined ? (input.steerMode ?? undefined) : current.steerMode
     const computerUse =
       input.computerUse !== undefined ? (input.computerUse ?? undefined) : current.computerUse
+    if (
+      input.handoffAgentId &&
+      (input.handoffAgentId === input.id || !this.getAgent(input.handoffAgentId))
+    )
+      throw new Error('Robô da cadeia inválido.')
+    // Robô da cadeia apagado: a cadeia some em silêncio em vez de travar a edição.
+    const handoffAgentId =
+      input.handoffAgentId !== undefined
+        ? (input.handoffAgentId ?? undefined)
+        : current.handoffAgentId && this.getAgent(current.handoffAgentId)
+          ? current.handoffAgentId
+          : undefined
 
     const stmt = this.db.prepare(`
       UPDATE agents
-      SET name = ?, role = ?, description = ?, project_id = ?, provider = ?, account_id = ?, model = ?, effort = ?, instructions = ?, workspace_path = ?, autonomy_level = ?, context_mode = ?, browser_access = ?, local_scripts = ?, starts_new_chats = ?, show_plan = ?, steer_mode = ?, computer_use = ?, updated_at = ?
+      SET name = ?, role = ?, description = ?, project_id = ?, provider = ?, account_id = ?, model = ?, effort = ?, instructions = ?, workspace_path = ?, autonomy_level = ?, context_mode = ?, browser_access = ?, local_scripts = ?, starts_new_chats = ?, show_plan = ?, steer_mode = ?, computer_use = ?, handoff_agent_id = ?, updated_at = ?
       WHERE id = ?
     `)
 
@@ -1606,6 +1645,7 @@ export class OrchbotDatabase {
       triToDb(showPlanBeforeLongTasks),
       steerMode ?? null,
       triToDb(computerUse),
+      handoffAgentId ?? null,
       now,
       input.id,
     )
@@ -1896,6 +1936,7 @@ export class OrchbotDatabase {
         a.show_plan AS showPlanBeforeLongTasks,
         a.steer_mode AS steerMode,
         a.computer_use AS computerUse,
+        a.handoff_agent_id AS handoffAgentId,
         a.created_at AS createdAt, 
         a.updated_at AS updatedAt
       FROM agents a
@@ -2650,6 +2691,127 @@ export class OrchbotDatabase {
       .prepare(`INSERT INTO thread_summaries (thread_id, summary, covers_until, updated_at) VALUES (?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET summary = excluded.summary, covers_until = excluded.covers_until, updated_at = excluded.updated_at`)
       .run(threadId, summary, coversUntil, new Date().toISOString())
+  }
+
+  // --- Aprovações ---
+
+  public createApproval(input: {
+    agentId: string
+    threadId: string
+    taskId?: string
+    text: string
+  }): Approval {
+    const approval: Approval = {
+      id: randomUUID(),
+      ...input,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }
+    this.db
+      .prepare(
+        'INSERT INTO approvals (id, agent_id, thread_id, task_id, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        approval.id,
+        approval.agentId,
+        approval.threadId,
+        approval.taskId ?? null,
+        approval.text,
+        approval.status,
+        approval.createdAt,
+      )
+    return approval
+  }
+
+  private static readonly APPROVAL_COLS =
+    'id, agent_id AS agentId, thread_id AS threadId, task_id AS taskId, text, status, note, created_at AS createdAt, decided_at AS decidedAt'
+
+  private static normalizeApproval(row: Approval): Approval {
+    return {
+      ...row,
+      taskId: row.taskId ?? undefined,
+      note: row.note ?? undefined,
+      decidedAt: row.decidedAt ?? undefined,
+    }
+  }
+
+  public getApproval(id: string): Approval | null {
+    const row = this.db
+      .prepare(`SELECT ${OrchbotDatabase.APPROVAL_COLS} FROM approvals WHERE id = ?`)
+      .get(id) as unknown as Approval | undefined
+    return row ? OrchbotDatabase.normalizeApproval(row) : null
+  }
+
+  public listPendingApprovals(): Approval[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ${OrchbotDatabase.APPROVAL_COLS} FROM approvals WHERE status = 'pending' ORDER BY created_at`,
+      )
+      .all() as unknown as Approval[]
+    return rows.map(OrchbotDatabase.normalizeApproval)
+  }
+
+  /** Só decide pedidos pendentes: clicar duas vezes não dispara dois turnos. */
+  public decideApproval(id: string, status: 'approved' | 'declined', note?: string): Approval {
+    const result = this.db
+      .prepare(
+        "UPDATE approvals SET status = ?, note = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+      )
+      .run(status, note ?? null, new Date().toISOString(), id)
+    const approval = this.getApproval(id)
+    if (!approval) throw new Error('Pedido de aprovação não encontrado.')
+    if (result.changes === 0) throw new Error('Este pedido já foi respondido.')
+    return approval
+  }
+
+  // --- Gatilhos por webhook ---
+
+  public createWebhookTrigger(agentId: string, title: string, instruction: string): WebhookTrigger {
+    if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')
+    const trigger: WebhookTrigger = {
+      id: randomUUID(),
+      agentId,
+      title: title.trim().slice(0, 80) || 'Webhook',
+      instruction: instruction.trim(),
+      token: randomBytes(24).toString('base64url'),
+      createdAt: new Date().toISOString(),
+    }
+    this.db
+      .prepare(
+        'INSERT INTO webhook_triggers (id, agent_id, title, instruction, token, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        trigger.id,
+        trigger.agentId,
+        trigger.title,
+        trigger.instruction,
+        trigger.token,
+        trigger.createdAt,
+      )
+    return trigger
+  }
+
+  private static readonly TRIGGER_COLS =
+    'id, agent_id AS agentId, title, instruction, token, created_at AS createdAt'
+
+  public listWebhookTriggers(agentId: string): WebhookTrigger[] {
+    return this.db
+      .prepare(
+        `SELECT ${OrchbotDatabase.TRIGGER_COLS} FROM webhook_triggers WHERE agent_id = ? ORDER BY created_at`,
+      )
+      .all(agentId) as unknown as WebhookTrigger[]
+  }
+
+  public getWebhookTrigger(id: string): WebhookTrigger | null {
+    return (
+      (this.db
+        .prepare(`SELECT ${OrchbotDatabase.TRIGGER_COLS} FROM webhook_triggers WHERE id = ?`)
+        .get(id) as unknown as WebhookTrigger | undefined) ?? null
+    )
+  }
+
+  public deleteWebhookTrigger(id: string): boolean {
+    return this.db.prepare('DELETE FROM webhook_triggers WHERE id = ?').run(id).changes > 0
   }
 
   public setAgentPaused(agentId: string, paused: boolean): void {

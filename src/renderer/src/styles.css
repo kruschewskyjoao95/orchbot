@@ -4774,13 +4774,146 @@ dialog.modal-overlay,
 }
 
 /* Central minimalista (estado inicial) */
-.board-minimal { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; min-height: 100%; padding: 32px; }
-.board-min-card { display: flex; flex-direction: column; gap: 12px; width: min(560px, 100%); }
-.board-min-title { margin: 0; font-size: 22px; font-weight: 600; text-align: center; }
-.board-min-input { width: 100%; resize: none; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border, #2a2a2a); background: transparent; color: inherit; font: inherit; }
-.board-min-card .btn-primary { align-self: center; }
-.board-min-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 760px; }
-.board-min-chip { display: flex; flex-direction: column; gap: 2px; text-align: left; width: 220px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border, #2a2a2a); background: transparent; color: inherit; cursor: pointer; }
-.board-min-chip span { font-size: 12px; opacity: 0.6; }
-.board-min-chip:hover { background: rgba(255, 255, 255, 0.04); }
-.board-min-link { background: none; border: 0; color: inherit; opacity: 0.6; cursor: pointer; font-size: 12px; }
+.board-minimal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  min-height: 100%;
+  padding: 32px;
+}
+.board-min-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, 100%);
+}
+.board-min-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  text-align: center;
+}
+.board-min-input {
+  width: 100%;
+  resize: none;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.board-min-card .btn-primary {
+  align-self: center;
+}
+.board-min-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.board-team-draft,
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2a2a);
+}
+.approval-card {
+  margin: 0 16px 8px;
+  border-color: rgba(234, 179, 8, 0.45);
+}
+.board-min-card .approval-card {
+  margin: 0;
+}
+.approval-card-text {
+  white-space: pre-wrap;
+  font-size: 13px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.approval-card-actions {
+  display: flex;
+  gap: 8px;
+}
+.board-min-card .approval-card-actions .btn-primary {
+  align-self: auto;
+}
+.board-team-member {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.board-team-member span:not(.board-team-avatar) {
+  display: block;
+  font-size: 12px;
+  opacity: 0.6;
+}
+.board-team-avatar {
+  font-size: 20px;
+}
+.automation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 20px;
+}
+.webhook-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.webhook-row > div {
+  flex: 1;
+  min-width: 0;
+}
+.webhook-row code {
+  display: block;
+  font-size: 11px;
+  opacity: 0.7;
+  overflow-wrap: anywhere;
+}
+.webhook-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.board-min-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  max-width: 760px;
+}
+.board-min-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.board-min-chip span {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.board-min-chip:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.board-min-link {
+  background: none;
+  border: 0;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+  font-size: 12px;
+}

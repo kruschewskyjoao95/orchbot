@@ -235,6 +235,16 @@ const api: OrchbotApi = {
   getWorkspaceRules: (agentId: string) =>
     ipcRenderer.invoke('orchbot:get-workspace-rules', agentId),
   indexWorkspace: (agentId: string) => ipcRenderer.invoke('orchbot:index-workspace', agentId),
+  draftTeam: (prompt: string) => ipcRenderer.invoke('orchbot:draft-team', prompt),
+  listApprovals: () => ipcRenderer.invoke('orchbot:list-approvals'),
+  decideApproval: (id: string, approved: boolean, note?: string) =>
+    ipcRenderer.invoke('orchbot:decide-approval', { id, approved, note }),
+  listWebhookTriggers: (agentId: string) =>
+    ipcRenderer.invoke('orchbot:list-webhook-triggers', agentId),
+  createWebhookTrigger: (agentId: string, title: string, instruction: string) =>
+    ipcRenderer.invoke('orchbot:create-webhook-trigger', { agentId, title, instruction }),
+  deleteWebhookTrigger: (id: string) => ipcRenderer.invoke('orchbot:delete-webhook-trigger', id),
+  getWebhookBaseUrl: () => ipcRenderer.invoke('orchbot:webhook-base-url'),
   getScheduledTasks: (agentId?: string) =>
     ipcRenderer.invoke('orchbot:get-scheduled-tasks', agentId),
   createScheduledTask: (input: CreateScheduledTaskInput) =>

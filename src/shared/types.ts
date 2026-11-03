@@ -307,6 +307,8 @@ export interface Agent {
   showPlanBeforeLongTasks?: boolean
   steerMode?: SteerMode
   computerUse?: boolean
+  /** Cadeia: ao terminar um pedido, o resultado segue para este robô. */
+  handoffAgentId?: string
   createdAt: string
   updatedAt: string
 }
@@ -354,6 +356,7 @@ export interface UpdateAgentInput {
   showPlanBeforeLongTasks?: boolean | null
   steerMode?: SteerMode | null
   computerUse?: boolean | null
+  handoffAgentId?: string | null
 }
 
 export interface Thread {
@@ -686,6 +689,43 @@ export interface OrchbotApi {
   deleteScheduledTask: (id: string) => Promise<boolean>
   runScheduledTaskNow: (id: string) => Promise<boolean>
   onScheduledTaskTriggered: (listener: (task: ScheduledTask) => void) => () => void
+  draftTeam: (prompt: string) => Promise<AgentDraft[]>
+  listApprovals: () => Promise<Approval[]>
+  decideApproval: (id: string, approved: boolean, note?: string) => Promise<Approval>
+  listWebhookTriggers: (agentId: string) => Promise<WebhookTrigger[]>
+  createWebhookTrigger: (
+    agentId: string,
+    title: string,
+    instruction: string,
+  ) => Promise<WebhookTrigger>
+  deleteWebhookTrigger: (id: string) => Promise<boolean>
+  /** Endereço local do servidor de webhooks; null se ele não conseguiu abrir a porta. */
+  getWebhookBaseUrl: () => Promise<string | null>
+}
+
+export type ApprovalStatus = 'pending' | 'approved' | 'declined'
+
+/** Pedido do robô para fazer algo que mexe no mundo real (enviar, pagar, apagar). */
+export interface Approval {
+  id: string
+  agentId: string
+  threadId: string
+  taskId?: string
+  text: string
+  status: ApprovalStatus
+  note?: string
+  createdAt: string
+  decidedAt?: string
+}
+
+/** URL local que dispara um robô; o token na URL é a credencial. */
+export interface WebhookTrigger {
+  id: string
+  agentId: string
+  title: string
+  instruction: string
+  token: string
+  createdAt: string
 }
 
 export type ChannelStatus = 'active' | 'stopped'

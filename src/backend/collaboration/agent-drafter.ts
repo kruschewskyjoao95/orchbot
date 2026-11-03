@@ -79,6 +79,21 @@ export async function draftAgent(
     `\nPedido do usuário:\n${text}`,
   ].join('\n')
 
+  for await (const raw of askProviders(db, registry, instruction, base)) {
+    const draft = parseDraft(raw, base)
+    if (draft) return draft
+  }
+  return localDraft(text, base)
+}
+
+/** Pergunta aos provedores ligados, um por vez (até 3), e entrega cada resposta. */
+async function* askProviders(
+  db: OrchbotDatabase,
+  registry: ProviderRegistry,
+  instruction: string,
+  base?: Agent,
+  timeoutMs = 60_000,
+): AsyncGenerator<string> {
   const candidates = [
     ...(base ? [base.provider] : []),
     ...db
@@ -98,12 +113,82 @@ export async function draftAgent(
           : (db.getConnection(providerId)?.defaultModel ??
             getCatalogEntry(providerId)?.defaultModel ??
             '')
-      const raw = await runOneShot(adapter, config, model, instruction, 60_000)
-      const draft = raw ? parseDraft(raw, base) : null
-      if (draft) return draft
+      const raw = await runOneShot(adapter, config, model, instruction, timeoutMs)
+      if (raw) yield raw
     } catch {
       // tenta o próximo provedor
     }
   }
-  return localDraft(text, base)
+}
+
+const LEADER_INSTRUCTIONS =
+  'Você é o Líder da equipe. Entenda o objetivo do usuário, divida o trabalho em subtarefas claras, delegue aos especialistas com blocos [[DELEGAR:Nome]] e entregue um resumo final simples.'
+
+/** Equipe pronta: sempre 1 líder (orquestrador) primeiro, depois até 4 especialistas. */
+export function parseTeam(raw: string): AgentDraft[] {
+  const json = raw.match(/\{[\s\S]*\}/)?.[0]
+  if (!json) return []
+  let list: unknown
+  try {
+    list = (JSON.parse(json) as { team?: unknown }).team
+  } catch {
+    return []
+  }
+  if (!Array.isArray(list)) return []
+  const drafts = list
+    .map((item) => parseDraft(JSON.stringify(item)))
+    .filter((d): d is AgentDraft => d !== null)
+  const leader = drafts.find((d) => d.role === 'orchestrator')
+  const workers = drafts
+    .filter((d) => d !== leader)
+    .map((d) => ({ ...d, role: 'worker' as const }))
+    .slice(0, 4)
+  if (workers.length === 0) return []
+  return [
+    leader ?? {
+      name: 'Líder da Equipe',
+      description: 'Coordena a equipe e entrega o resultado.',
+      role: 'orchestrator',
+      avatar: '👑',
+      instructions: LEADER_INSTRUCTIONS,
+      source: 'local',
+    },
+    ...workers,
+  ]
+}
+
+/**
+ * Foreman: a partir de um pedido em linguagem simples, planeja uma equipe inteira.
+ * Não grava nada: a interface mostra a equipe para o usuário aprovar.
+ */
+export async function draftTeam(
+  db: OrchbotDatabase,
+  registry: ProviderRegistry,
+  prompt: string,
+): Promise<AgentDraft[]> {
+  const text = prompt.trim()
+  if (!text) throw new Error('Descreva o que você precisa.')
+  const instruction = [
+    'Você monta uma pequena equipe de agentes de IA para resolver o pedido do usuário.',
+    'Responda SOMENTE com JSON: {"team":[{"name":"nome curto","description":"1 frase","role":"orchestrator|worker","avatar":"um emoji","instructions":"instruções de sistema claras, em português, na 2ª pessoa"}]}',
+    'Regras: exatamente 1 agente "orchestrator" (o líder, que delega com blocos [[DELEGAR:Nome]]) e de 1 a 4 "worker", cada um com um trabalho diferente e bem definido.',
+    'Os nomes devem descrever a função (ex.: "Pesquisador de Clientes"). Antes de ações externas (enviar, publicar, pagar, apagar) eles pedem aprovação ao usuário.',
+    `\nPedido do usuário:\n${text}`,
+  ].join('\n')
+  for await (const raw of askProviders(db, registry, instruction, undefined, 90_000)) {
+    const team = parseTeam(raw)
+    if (team.length > 1) return team
+  }
+  const worker = localDraft(text)
+  return [
+    {
+      name: 'Líder da Equipe',
+      description: 'Coordena a equipe e entrega o resultado.',
+      role: 'orchestrator',
+      avatar: '👑',
+      instructions: LEADER_INSTRUCTIONS,
+      source: 'local',
+    },
+    { ...worker, role: 'worker' },
+  ]
 }
