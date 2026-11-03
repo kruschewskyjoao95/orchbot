@@ -14,8 +14,8 @@ import type {
 } from '../../shared/types'
 
 export const App: Component = () => {
-  // Seção ativa principal da aplicação: 'agents' | 'connections'
-  const [activeSection, setActiveSection] = createSignal<'agents' | 'connections'>('agents')
+  // Seção ativa principal da aplicação: inicia por padrão na tela de conexões/provedores
+  const [activeSection, setActiveSection] = createSignal<'agents' | 'connections'>('connections')
 
   // Conexões e Provedores signals
   const [connections, setConnections] = createSignal<ProviderConnection[]>([])
@@ -893,23 +893,39 @@ export const App: Component = () => {
                     anexados, organize tarefas em fila durável e faça seus agentes colaborarem e
                     delegarem tarefas entre si.
                   </p>
-                  <button
-                    type="button"
-                    class="btn-primary"
-                    onClick={() => {
-                      const enabled = connections().filter((c) => c.enabled)
-                      if (enabled.length > 0) {
-                        setProvider(enabled[0].providerId)
-                        setModel(enabled[0].defaultModel)
-                      } else {
-                        setProvider('codex')
-                        setModel('gpt-4o')
-                      }
-                      setShowModal(true)
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: '10px',
+                      'justify-content': 'center',
+                      'margin-top': '16px',
                     }}
                   >
-                    Criar Primeiro Agente
-                  </button>
+                    <button
+                      type="button"
+                      class="btn-primary"
+                      onClick={() => setActiveSection('connections')}
+                    >
+                      🔌 Selecionar e Configurar Conexões
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-outline"
+                      onClick={() => {
+                        const enabled = connections().filter((c) => c.enabled)
+                        if (enabled.length > 0) {
+                          setProvider(enabled[0].providerId)
+                          setModel(enabled[0].defaultModel)
+                        } else {
+                          setProvider('codex')
+                          setModel('gpt-4o')
+                        }
+                        setShowModal(true)
+                      }}
+                    >
+                      + Criar Primeiro Agente
+                    </button>
+                  </div>
                 </div>
               }
             >
@@ -1772,10 +1788,28 @@ export const App: Component = () => {
                   de conectividade em tempo real.
                 </p>
               </div>
-              <div>
+              <div style={{ display: 'flex', gap: '8px' }}>
                 <button
                   type="button"
                   class="btn-primary"
+                  onClick={() => {
+                    const enabled = connections().filter((c) => c.enabled)
+                    if (enabled.length > 0) {
+                      setProvider(enabled[0].providerId)
+                      setModel(enabled[0].defaultModel)
+                    } else {
+                      setProvider('codex')
+                      setModel('gpt-4o')
+                    }
+                    setShowModal(true)
+                  }}
+                  title="Criar novo agente com os provedores configurados"
+                >
+                  + Novo Agente
+                </button>
+                <button
+                  type="button"
+                  class="btn-outline"
                   onClick={() => {
                     loadConnections()
                     loadProviderStatuses()
