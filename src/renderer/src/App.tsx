@@ -54,7 +54,6 @@ import {
   COWORKER_TEMPLATES,
   type CoworkerTemplate,
   type PaletteItem,
-  STARTER_TEAM_PRESETS,
   type StarterTeamPreset,
   buildCommandPaletteItems,
   computeBoardSummary,
@@ -91,6 +90,12 @@ export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
   kimi: '🌙',
   acp: '🔌',
 }
+
+const BOARD_SUGGESTIONS = [
+  { title: 'Planejar um projeto', desc: 'Plano passo a passo e primeira etapa', prompt: 'Crie um plano simples passo a passo para o meu projeto e comece a primeira etapa.' },
+  { title: 'Entender meu projeto', desc: 'Explicar os arquivos da pasta', prompt: 'Analise os arquivos desta pasta, explique de forma simples como tudo funciona e sugira melhorias.' },
+  { title: 'Pesquisar um assunto', desc: 'Resumo claro em tópicos', prompt: 'Pesquise informações atualizadas sobre este tema e monte um resumo claro em tópicos.' },
+]
 
 const LOGO_COLORS = [
   '#e7a3a8',
@@ -4006,459 +4011,43 @@ export const App: Component = () => {
           </dialog>
         </Show>
         <Show when={activeSection() === 'board'}>
-          <div class="board-view">
-            <header class="board-header">
-              <div class="board-header-title-group">
-                <div class="board-eyebrow">✨ CENTRAL DA SUA EQUIPE INTELIGENTE</div>
-                <h1 class="board-title">O que vamos realizar hoje?</h1>
-                <p class="board-subtitle">
-                  Peça qualquer tarefa em português claro. Seu Líder da Equipe divide o trabalho
-                  entre os assistentes e entrega tudo pronto para você.
-                </p>
-              </div>
-              <div class="board-header-actions">
-                <button
-                  type="button"
-                  class="btn-outline"
-                  disabled={instantHiringId() !== null}
-                  onClick={() => {
-                    const tpl = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
-                    if (tpl) void handleQuickHireTemplate(tpl, false)
-                  }}
-                >
-                  👑 + Adicionar Líder (1 clique)
-                </button>
-                <button type="button" class="btn-primary" onClick={() => openNewAgent()}>
-                  ✨ Criar do Meu Jeito
-                </button>
-              </div>
-            </header>
-
-            <div class="board-scroll-body">
-              {/* HERO COMMAND CENTER — Caixa Principal Simples para Leigos */}
-              <form class="foreman-dispatch-bar" onSubmit={handleBoardForemanDispatch}>
-                <div class="foreman-dispatch-top">
-                  <div class="foreman-badge-group">
-                    <span class="foreman-badge">👑 Fazer um Pedido para a Equipe</span>
-                    <span class="foreman-hint">
-                      {agents().length === 0
-                        ? 'Você ainda não tem assistentes — digite seu pedido abaixo e criaremos seu Líder automaticamente!'
-                        : 'Digite o que você precisa e seu coordenador cuidará de tudo passo a passo.'}
-                    </span>
-                  </div>
-                  <Show when={agents().length > 0}>
-                    <div class="foreman-target-picker">
-                      <span>Quem vai receber:</span>
-                      <select
-                        class="foreman-target-select"
-                        value={
-                          boardForemanTargetId() ||
-                          orchestratorsList()[0]?.id ||
-                          agents()[0]?.id ||
-                          ''
-                        }
-                        onChange={(e) => setBoardForemanTargetId(e.currentTarget.value)}
-                      >
-                        <For each={agents()}>
-                          {(a) => (
-                            <option value={a.id}>
-                              {a.role === 'orchestrator' ? '👑 ' : '🛠️ '}
-                              {a.name}{' '}
-                              {a.role === 'orchestrator' ? '(Líder Coordenador)' : '(Especialista)'}
-                            </option>
-                          )}
-                        </For>
-                      </select>
-                    </div>
-                  </Show>
-                </div>
-
-                <div class="foreman-dispatch-input-row">
-                  <input
-                    type="text"
-                    class="foreman-dispatch-input"
-                    placeholder="Escreva aqui o que você quer fazer (ex: Crie uma página de vendas moderna, pesquise concorrentes ou revise meus arquivos)..."
-                    value={boardForemanPrompt()}
-                    onInput={(e) => setBoardForemanPrompt(e.currentTarget.value)}
-                  />
-                  <button
-                    type="submit"
-                    class="btn-primary btn-hero-dispatch"
-                    disabled={!boardForemanPrompt().trim()}
-                  >
-                    🚀 Começar Agora
-                  </button>
-                </div>
-
-                <div class="hero-suggestion-row">
-                  <span class="hero-suggestion-label">💡 Ideias rápidas (clique para usar):</span>
-                  <button
-                    type="button"
-                    class="hero-suggestion-pill"
-                    onClick={() =>
-                      setBoardForemanPrompt(
-                        'Crie um plano simples passo a passo para o meu projeto e comece a primeira etapa.',
-                      )
-                    }
-                  >
-                    📋 Planejar e iniciar um projeto
-                  </button>
-                  <button
-                    type="button"
-                    class="hero-suggestion-pill"
-                    onClick={() =>
-                      setBoardForemanPrompt(
-                        'Analise os arquivos desta pasta, explique de forma simples como tudo funciona e sugira melhorias.',
-                      )
-                    }
-                  >
-                    🔍 Explicar e melhorar meu projeto
-                  </button>
-                  <button
-                    type="button"
-                    class="hero-suggestion-pill"
-                    onClick={() =>
-                      setBoardForemanPrompt(
-                        'Pesquise informações atualizadas sobre este tema e monte um resumo claro em tópicos.',
-                      )
-                    }
-                  >
-                    🌐 Pesquisar e resumir um assunto
-                  </button>
-                </div>
-
-                <Show when={boardDispatchMsg()}>
-                  {(msg) => <div class="foreman-dispatch-feedback">✓ {msg()}</div>}
-                </Show>
-              </form>
-
-              {/* KITS DE EQUIPE PRONTA EM 1 CLIQUE (Especial para pessoas leigas) */}
-              <section class="starter-teams-section">
-                <div class="section-heading-row">
-                  <div>
-                    <h2 class="board-templates-title">
-                      🚀 Montar Equipe Completa com 1 Clique (Recomendado para Iniciantes)
-                    </h2>
-                    <p class="board-templates-desc">
-                      Não sabe por onde começar? Escolha um pacote abaixo e nós criamos o Líder + os
-                      Especialistas já configurados para trabalharem juntos.
-                    </p>
-                  </div>
-                </div>
-                <div class="starter-teams-grid">
-                  <For each={STARTER_TEAM_PRESETS}>
-                    {(preset) => (
-                      <div class="starter-team-card">
-                        <div class="starter-team-top">
-                          <span class="starter-team-icon">{preset.icon}</span>
-                          <div class="starter-team-title-box">
-                            <span class="starter-team-badge">{preset.badge}</span>
-                            <h3 class="starter-team-title">{preset.title}</h3>
-                          </div>
-                        </div>
-                        <p class="starter-team-subtitle">{preset.subtitle}</p>
-                        <div class="starter-team-members-preview">
-                          <For each={preset.templateIds}>
-                            {(tplId) => {
-                              const tpl = COWORKER_TEMPLATES.find((t) => t.id === tplId)
-                              return (
-                                <Show when={tpl}>
-                                  {(item) => (
-                                    <span class="starter-member-pill">
-                                      {item().avatar} {item().name}
-                                    </span>
-                                  )}
-                                </Show>
-                              )
-                            }}
-                          </For>
-                        </div>
-                        <button
-                          type="button"
-                          class="btn-primary starter-team-btn"
-                          disabled={instantHiringId() !== null}
-                          onClick={() => void handleQuickHireStarterTeam(preset)}
-                        >
-                          {instantHiringId() === preset.id
-                            ? '⏳ Montando sua equipe...'
-                            : '✨ Montar Esta Equipe Agora (1 Clique)'}
-                        </button>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </section>
-
-              {/* RESUMO AMIGÁVEL DA SUA EQUIPE ATUAL */}
-              <section class="board-team-section">
-                <div class="section-heading-row">
-                  <div>
-                    <h2 class="board-templates-title">
-                      👥 Sua Equipe de Assistentes ({boardSummary().total})
-                    </h2>
-                    <p class="board-templates-desc">
-                      Veja quem está livre, quem está trabalhando agora e clique em qualquer um para
-                      conversar.
-                    </p>
-                  </div>
-
-                  {/* Barra de Status em Tempo Real */}
-                  <div class="board-stats-strip">
-                    <div class="board-stat-pill working">
-                      <span class="board-stat-dot working" />
-                      <span class="board-stat-value">{boardSummary().working}</span>
-                      <span class="board-stat-label">Trabalhando agora</span>
-                    </div>
-                    <div class="board-stat-pill needs-you">
-                      <span class="board-stat-dot needs-you" />
-                      <span class="board-stat-value">{boardSummary().needsYou}</span>
-                      <span class="board-stat-label">Esperando você</span>
-                    </div>
-                    <div class="board-stat-pill orchestrators">
-                      <span class="board-stat-value">👑 {boardSummary().orchestrators}</span>
-                      <span class="board-stat-label">Líderes</span>
-                    </div>
-                    <div class="board-stat-pill workers">
-                      <span class="board-stat-value">🛠️ {boardSummary().workers}</span>
-                      <span class="board-stat-label">Especialistas</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Filtro por Pasta / Projeto */}
-                <Show when={projects().length > 0}>
-                  <div class="board-filter-bar">
-                    <span class="board-filter-label">Filtrar por pasta:</span>
-                    <button
-                      type="button"
-                      class="board-filter-chip"
-                      classList={{ active: boardFilterProject() === 'all' }}
-                      onClick={() => setBoardFilterProject('all')}
-                    >
-                      Todos ({agents().length})
-                    </button>
-                    <For each={projects()}>
-                      {(proj) => (
-                        <button
-                          type="button"
-                          class="board-filter-chip"
-                          classList={{ active: boardFilterProject() === proj.id }}
-                          onClick={() => setBoardFilterProject(proj.id)}
-                        >
-                          📁 {proj.name} ({agentsOfProject(proj.id).length})
-                        </button>
-                      )}
-                    </For>
-                    <button
-                      type="button"
-                      class="board-filter-chip"
-                      classList={{ active: boardFilterProject() === 'none' }}
-                      onClick={() => setBoardFilterProject('none')}
-                    >
-                      Geral ({agentsOfProject(null).length})
-                    </button>
-                  </div>
-                </Show>
-
-                {/* Grid de Assistentes (Coworker Cards) */}
-                <Show
-                  when={filteredBoardAgents().length > 0}
-                  fallback={
-                    <div class="board-empty-state">
-                      <div class="board-empty-icon">👋</div>
-                      <h2>Você ainda não adicionou nenhum assistente</h2>
-                      <p>
-                        Clique em <strong>&ldquo;Montar Esta Equipe Agora&rdquo;</strong> acima ou
-                        escolha um dos assistentes individuais abaixo para adicioná-lo
-                        instantaneamente com 1 clique!
-                      </p>
-                    </div>
+          <div class="board-view board-minimal">
+            <form class="board-min-card" onSubmit={handleBoardForemanDispatch}>
+              <h1 class="board-min-title">O que vamos fazer hoje?</h1>
+              <textarea
+                class="board-min-input"
+                rows={3}
+                autofocus
+                placeholder="Descreva o que você precisa…"
+                value={boardForemanPrompt()}
+                onInput={(e) => setBoardForemanPrompt(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    e.currentTarget.form?.requestSubmit()
                   }
-                >
-                  <div class="coworker-grid">
-                    <For each={filteredBoardAgents()}>
-                      {(cw) => {
-                        const state = () => agentStates()[cw.id] ?? 'idle'
-                        const activeTask = () =>
-                          getActiveTaskForAgent(allAgentQueues()[cw.id] ?? [])
-                        const isPaused = () => allAgentPaused()[cw.id] ?? false
-                        const proj = () => projectOf(cw)
-                        return (
-                          <div
-                            class={`coworker-card state-${state()} ${cw.role === 'orchestrator' ? 'is-orchestrator' : ''}`}
-                          >
-                            <div class="coworker-card-top">
-                              <div class="coworker-identity">
-                                <span
-                                  class="agent-avatar coworker-avatar"
-                                  style={{ background: agentColor(cw.name) }}
-                                >
-                                  {cw.avatar || initialsOf(cw.name)}
-                                </span>
-                                <div class="coworker-title-box">
-                                  <div class="coworker-name-row">
-                                    <span class="coworker-name">{cw.name}</span>
-                                    <span
-                                      class={`coworker-role-pill ${cw.role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
-                                    >
-                                      {cw.role === 'orchestrator'
-                                        ? '👑 Líder da Equipe'
-                                        : '🛠️ Especialista'}
-                                    </span>
-                                  </div>
-                                  <div class="coworker-desc">
-                                    {cw.description || 'Pronto para ajudar nas suas tarefas'}
-                                  </div>
-                                </div>
-                              </div>
-                              <span class={`agent-state ${state()}`}>
-                                {state() === 'idle'
-                                  ? '● Livre agora'
-                                  : state() === 'working'
-                                    ? '⚡ Trabalhando...'
-                                    : AGENT_STATE_LABEL[state()]}
-                              </span>
-                            </div>
-
-                            <div class="coworker-meta-pills">
-                              <span class="coworker-meta-chip">
-                                {cw.autonomyLevel === 'cautious'
-                                  ? '🛡️ Pede confirmação antes de agir'
-                                  : '⚡ Faz o trabalho sozinho'}
-                              </span>
-                              <Show when={proj()}>
-                                {(p) => <span class="coworker-meta-chip">📁 {p().name}</span>}
-                              </Show>
-                              <Show when={cw.role === 'orchestrator'}>
-                                <span
-                                  class="coworker-meta-chip team"
-                                  title="Colegas que este Líder pode acionar automaticamente"
-                                >
-                                  🤝 Coordena {teamOf(cw).length} colega
-                                  {teamOf(cw).length === 1 ? '' : 's'}
-                                </span>
-                              </Show>
-                            </div>
-
-                            <div class="coworker-task-box">
-                              <Show
-                                when={activeTask()}
-                                fallback={
-                                  <span class="coworker-task-idle">
-                                    ✨ Livre no momento — clique em &ldquo;Conversar&rdquo; para
-                                    pedir algo.
-                                  </span>
-                                }
-                              >
-                                {(t) => (
-                                  <div class="coworker-task-active">
-                                    <span class={`task-tag ${t().status}`}>
-                                      {t().status === 'running' ? 'Fazendo agora' : 'Na fila'}
-                                    </span>
-                                    <span class="coworker-task-prompt">{t().prompt}</span>
-                                  </div>
-                                )}
-                              </Show>
-                            </div>
-
-                            <div class="coworker-card-actions">
-                              <button
-                                type="button"
-                                class="btn-primary coworker-btn-main"
-                                onClick={() => openAgent(cw.id)}
-                              >
-                                💬 Conversar
-                              </button>
-                              <Show when={agents().length > 1}>
-                                <button
-                                  type="button"
-                                  class="btn-outline"
-                                  title={`Passar uma tarefa para ${cw.name}`}
-                                  onClick={() => {
-                                    const from =
-                                      orchestratorsList().find((o) => o.id !== cw.id) ||
-                                      agents().find((a) => a.id !== cw.id)
-                                    if (from) setSelectedAgentId(from.id)
-                                    handleOpenDelegationModal(cw.id)
-                                  }}
-                                >
-                                  🤝 Pedir Tarefa
-                                </button>
-                              </Show>
-                              <button
-                                type="button"
-                                class="btn-outline"
-                                onClick={() => void handleToggleAgentQueueFromBoard(cw)}
-                                title={
-                                  isPaused()
-                                    ? 'Continuar o trabalho deste assistente'
-                                    : 'Pausar temporariamente'
-                                }
-                              >
-                                {isPaused() ? '▶ Continuar' : '⏸ Pausar'}
-                              </button>
-                            </div>
-                          </div>
-                        )
-                      }}
-                    </For>
-                  </div>
-                </Show>
-              </section>
-
-              {/* CATÁLOGO DE ASSISTENTES PRONTOS EM 1 CLIQUE REAL */}
-              <section class="board-templates-section">
-                <div class="board-templates-header">
-                  <div>
-                    <h2 class="board-templates-title">
-                      ⚡ Adicionar Assistente Individual (1 Clique)
-                    </h2>
-                    <p class="board-templates-desc">
-                      Clique em qualquer função abaixo e o assistente entra na sua equipe na mesma
-                      hora, sem formulários complicados.
-                    </p>
-                  </div>
-                </div>
-                <div class="template-chips-grid">
-                  <For each={COWORKER_TEMPLATES}>
-                    {(tpl) => (
-                      <div
-                        class={`template-card ${tpl.role === 'orchestrator' ? 'orchestrator' : ''}`}
-                      >
-                        <div class="template-card-top">
-                          <span class="template-avatar">{tpl.avatar}</span>
-                          <div class="template-title-box">
-                            <span class="template-name">{tpl.name}</span>
-                            <span class="template-badge">{tpl.badge}</span>
-                          </div>
-                        </div>
-                        <p class="template-desc">{tpl.description}</p>
-                        <div class="template-card-footer">
-                          <button
-                            type="button"
-                            class="btn-primary template-hire-btn"
-                            disabled={instantHiringId() !== null}
-                            onClick={() => void handleQuickHireTemplate(tpl, false)}
-                          >
-                            {instantHiringId() === tpl.id
-                              ? '⏳ Adicionando...'
-                              : '+ Adicionar com 1 Clique'}
-                          </button>
-                          <button
-                            type="button"
-                            class="btn-outline template-customize-btn"
-                            onClick={() => openNewAgent(tpl)}
-                            title="Personalizar nome ou instruções antes de criar"
-                          >
-                            ⚙️ Personalizar
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </section>
+                }}
+              />
+              <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
+                Começar
+              </button>
+              <Show when={boardDispatchMsg()}>
+                {(msg) => <div class="foreman-dispatch-feedback">{msg()}</div>}
+              </Show>
+            </form>
+            <div class="board-min-suggestions">
+              <For each={BOARD_SUGGESTIONS}>
+                {(s) => (
+                  <button type="button" class="board-min-chip" onClick={() => setBoardForemanPrompt(s.prompt)}>
+                    <strong>{s.title}</strong>
+                    <span>{s.desc}</span>
+                  </button>
+                )}
+              </For>
             </div>
+            <button type="button" class="board-min-link" onClick={() => openNewAgent()}>
+              Criar assistente personalizado
+            </button>
           </div>
         </Show>
 
