@@ -6,9 +6,11 @@ import type {
   DelegationInput,
   OrchbotApi,
   StreamChunkEvent,
+  SupportedProvider,
   TaskStatusChangedEvent,
   TurnErrorEvent,
   TurnFinishedEvent,
+  UpdateConnectionInput,
 } from '../shared/types'
 
 const api: OrchbotApi = {
@@ -94,6 +96,12 @@ const api: OrchbotApi = {
       ipcRenderer.removeListener('orchbot:browser-tab-updated', handler)
     }
   },
+
+  getConnections: () => ipcRenderer.invoke('orchbot:get-connections'),
+  updateConnection: (input: UpdateConnectionInput) =>
+    ipcRenderer.invoke('orchbot:update-connection', input),
+  testConnection: (providerId: SupportedProvider) =>
+    ipcRenderer.invoke('orchbot:test-connection', providerId),
 }
 
 contextBridge.exposeInMainWorld('orchbot', api)

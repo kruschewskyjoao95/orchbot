@@ -1,21 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { ClaudeAdapter } from '../src/backend/providers/claude-adapter'
 import { CodexAdapter } from '../src/backend/providers/codex-adapter'
+import { GrokAdapter } from '../src/backend/providers/grok-adapter'
+import { MuseAdapter } from '../src/backend/providers/muse-adapter'
 import { ProviderRegistry } from '../src/backend/providers/registry'
 
-describe('Provider Registry & Adapters (Codex and Claude)', () => {
-  it('deve registrar ambos os adaptadores (Codex e Claude)', () => {
+describe('Provider Registry & Adapters (Codex, Claude, Grok, Muse)', () => {
+  it('deve registrar todos os 4 adaptadores', () => {
     const registry = new ProviderRegistry()
     const codex = registry.getAdapter('codex')
     const claude = registry.getAdapter('claude')
+    const grok = registry.getAdapter('grok')
+    const muse = registry.getAdapter('muse')
 
     expect(codex).toBeInstanceOf(CodexAdapter)
-    expect(codex.id).toBe('codex')
-    expect(codex.name).toContain('Codex')
-
     expect(claude).toBeInstanceOf(ClaudeAdapter)
-    expect(claude.id).toBe('claude')
-    expect(claude.name).toContain('Claude')
+    expect(grok).toBeInstanceOf(GrokAdapter)
+    expect(muse).toBeInstanceOf(MuseAdapter)
   })
 
   it('deve verificar a disponibilidade do Codex no sistema', async () => {

@@ -4,6 +4,7 @@ import type {
   BrowserPageContent,
   BrowserTab,
   Message,
+  ProviderConnection,
   ProviderInfo,
   SelectedFile,
   SupportedProvider,
@@ -13,6 +14,29 @@ import type {
 } from '../../shared/types'
 
 export const App: Component = () => {
+  // Seção ativa principal da aplicação: 'agents' | 'connections'
+  const [activeSection, setActiveSection] = createSignal<'agents' | 'connections'>('agents')
+
+  // Conexões e Provedores signals
+  const [connections, setConnections] = createSignal<ProviderConnection[]>([])
+  const [connectionDrafts, setConnectionDrafts] = createSignal<
+    Record<
+      string,
+      {
+        apiKey?: string
+        endpoint?: string
+        defaultModel?: string
+      }
+    >
+  >({})
+  const [showApiKeys, setShowApiKeys] = createSignal<Record<string, boolean>>({})
+  const [testingConnection, setTestingConnection] = createSignal<string | null>(null)
+  const [testResults, setTestResults] = createSignal<
+    Record<string, { success: boolean; message: string }>
+  >({})
+  const [savingConnection, setSavingConnection] = createSignal<string | null>(null)
+  const [saveMessage, setSaveMessage] = createSignal<Record<string, string>>({})
+
   const [agents, setAgents] = createSignal<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null)
   const [activeThread, setActiveThread] = createSignal<Thread | null>(null)
@@ -105,6 +129,29 @@ export const App: Component = () => {
       }
     } catch (err) {
       console.error('Erro ao verificar provedores:', err)
+    }
+  }
+
+  const loadConnections = async () => {
+    try {
+      if (window.orchbot) {
+        const list = await window.orchbot.getConnections()
+        setConnections(list)
+        const drafts: Record<
+          string,
+          { apiKey?: string; endpoint?: string; defaultModel?: string }
+        > = {}
+        for (const c of list) {
+          drafts[c.providerId] = {
+            apiKey: c.apiKey || '',
+            endpoint: c.endpoint || '',
+            defaultModel: c.defaultModel,
+          }
+        }
+        setConnectionDrafts(drafts)
+      }
+    } catch (err) {
+      console.error('Erro ao carregar conexões:', err)
     }
   }
 
@@ -273,6 +320,7 @@ export const App: Component = () => {
 
   onMount(() => {
     loadAgents()
+    loadConnections()
     loadProviderStatuses()
     loadSystemStatus()
 
@@ -383,11 +431,105 @@ export const App: Component = () => {
 
   const handleProviderChange = (p: SupportedProvider) => {
     setProvider(p)
-    if (p === 'codex') {
-      setModel('gpt-4o')
+    const conn = connections().find((c) => c.providerId === p)
+    if (conn) {
+      setModel(conn.defaultModel)
     } else {
-      setModel('claude-3-7-sonnet')
+      if (p === 'codex') setModel('gpt-4o')
+      else if (p === 'claude') setModel('claude-3-7-sonnet')
+      else if (p === 'grok') setModel('grok-2')
+      else if (p === 'muse') setModel('gemini-2.0-flash')
     }
+  }
+
+  const handleToggleConnection = async (conn: ProviderConnection, enabled: boolean) => {
+    try {
+      if (window.orchbot) {
+        await window.orchbot.updateConnection({
+          providerId: conn.providerId,
+          enabled,
+        })
+        await loadConnections()
+        await loadProviderStatuses()
+      }
+    } catch (err) {
+      console.error('Erro ao alternar conexão:', err)
+    }
+  }
+
+  const handleSaveConnection = async (conn: ProviderConnection) => {
+    const draft = connectionDrafts()[conn.providerId] || {}
+    setSavingConnection(conn.providerId)
+    try {
+      if (window.orchbot) {
+        await window.orchbot.updateConnection({
+          providerId: conn.providerId,
+          enabled: conn.enabled,
+          apiKey: draft.apiKey !== undefined ? draft.apiKey : conn.apiKey,
+          endpoint: draft.endpoint !== undefined ? draft.endpoint : conn.endpoint,
+          defaultModel: draft.defaultModel !== undefined ? draft.defaultModel : conn.defaultModel,
+        })
+        await loadConnections()
+        await loadProviderStatuses()
+        setSaveMessage((prev) => ({
+          ...prev,
+          [conn.providerId]: 'Configurações salvas com sucesso!',
+        }))
+        setTimeout(() => {
+          setSaveMessage((prev) => {
+            const next = { ...prev }
+            delete next[conn.providerId]
+            return next
+          })
+        }, 3000)
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao salvar configurações: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSavingConnection(null)
+    }
+  }
+
+  const handleTestConnection = async (providerId: SupportedProvider) => {
+    setTestingConnection(providerId)
+    try {
+      if (window.orchbot) {
+        const res = await window.orchbot.testConnection(providerId)
+        setTestResults((prev) => ({ ...prev, [providerId]: res }))
+        await loadProviderStatuses()
+      }
+    } catch (err: unknown) {
+      setTestResults((prev) => ({
+        ...prev,
+        [providerId]: {
+          success: false,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      }))
+    } finally {
+      setTestingConnection(null)
+    }
+  }
+
+  const toggleShowApiKey = (providerId: string) => {
+    setShowApiKeys((prev) => ({
+      ...prev,
+      [providerId]: !prev[providerId],
+    }))
+  }
+
+  const updateDraftField = (
+    providerId: string,
+    field: 'apiKey' | 'endpoint' | 'defaultModel',
+    value: string,
+  ) => {
+    setConnectionDrafts((prev) => ({
+      ...prev,
+      [providerId]: {
+        ...prev[providerId],
+        [field]: value,
+      },
+    }))
   }
 
   const handleCreateAgent = async (e: Event) => {
@@ -602,12 +744,43 @@ export const App: Component = () => {
             type="button"
             class="btn-primary"
             onClick={() => {
-              setProvider('codex')
-              setModel('gpt-4o')
+              const enabled = connections().filter((c) => c.enabled)
+              if (enabled.length > 0) {
+                setProvider(enabled[0].providerId)
+                setModel(enabled[0].defaultModel)
+              } else {
+                setProvider('codex')
+                setModel('gpt-4o')
+              }
               setShowModal(true)
             }}
           >
             + Novo
+          </button>
+        </div>
+
+        {/* Abas de Navegação na Sidebar */}
+        <div class="sidebar-nav">
+          <button
+            type="button"
+            class={`sidebar-nav-btn ${activeSection() === 'agents' ? 'active' : ''}`}
+            onClick={() => setActiveSection('agents')}
+          >
+            <span>🤖 Agentes</span>
+            <span class="nav-badge">{agents().length}</span>
+          </button>
+          <button
+            type="button"
+            class={`sidebar-nav-btn ${activeSection() === 'connections' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveSection('connections')
+              loadConnections()
+            }}
+          >
+            <span>🔌 Conexões</span>
+            <span class="nav-badge">
+              {connections().filter((c) => c.enabled).length}/{connections().length}
+            </span>
           </button>
         </div>
 
@@ -630,8 +803,11 @@ export const App: Component = () => {
             {(agent) => (
               <button
                 type="button"
-                class={`agent-item ${selectedAgentId() === agent.id ? 'active' : ''}`}
-                onClick={() => setSelectedAgentId(agent.id)}
+                class={`agent-item ${selectedAgentId() === agent.id && activeSection() === 'agents' ? 'active' : ''}`}
+                onClick={() => {
+                  setSelectedAgentId(agent.id)
+                  setActiveSection('agents')
+                }}
               >
                 <div class="agent-item-top">
                   <span class="agent-item-name">{agent.name}</span>
@@ -644,7 +820,28 @@ export const App: Component = () => {
         </div>
 
         <div class="sidebar-footer">
-          <div style={{ 'font-weight': '600', 'margin-bottom': '2px' }}>Provedores Locais:</div>
+          <div
+            style={{
+              display: 'flex',
+              'justify-content': 'space-between',
+              'align-items': 'center',
+              'margin-bottom': '2px',
+            }}
+          >
+            <span style={{ 'font-weight': '600' }}>Provedores de IA:</span>
+            <button
+              type="button"
+              class="btn-outline"
+              style={{ padding: '2px 6px', 'font-size': '10px' }}
+              onClick={() => {
+                setActiveSection('connections')
+                loadConnections()
+              }}
+              title="Abrir tela de conexões"
+            >
+              ⚙️ Conexões
+            </button>
+          </div>
           <div class="provider-status-list">
             <div class="provider-status-item">
               <span class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`} />
@@ -653,6 +850,14 @@ export const App: Component = () => {
             <div class="provider-status-item">
               <span class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`} />
               <span>Claude: {providerStatuses()?.claude.available ? 'Pronto' : 'Ausente'}</span>
+            </div>
+            <div class="provider-status-item">
+              <span class={`status-dot ${providerStatuses()?.grok.available ? 'online' : ''}`} />
+              <span>Grok: {providerStatuses()?.grok.available ? 'Pronto' : 'Ausente'}</span>
+            </div>
+            <div class="provider-status-item">
+              <span class={`status-dot ${providerStatuses()?.muse.available ? 'online' : ''}`} />
+              <span>Muse: {providerStatuses()?.muse.available ? 'Pronto' : 'Ausente'}</span>
             </div>
           </div>
           <Show when={systemStatus()}>
@@ -675,855 +880,1108 @@ export const App: Component = () => {
       {/* Main Workspace */}
       <main class="main-content">
         <Show
-          when={currentAgent()}
+          when={activeSection() === 'connections'}
           fallback={
-            <div class="welcome-view">
-              <div class="welcome-icon">🤖</div>
-              <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
-              <p class="welcome-desc">
-                Crie múltiplos agentes com seus próprios workspaces locais. Envie arquivos anexados,
-                organize tarefas em fila durável e faça seus agentes colaborarem e delegarem tarefas
-                entre si.
-              </p>
-              <button
-                type="button"
-                class="btn-primary"
-                onClick={() => {
-                  setProvider('codex')
-                  setModel('gpt-4o')
-                  setShowModal(true)
-                }}
-              >
-                Criar Primeiro Agente
-              </button>
-            </div>
-          }
-        >
-          {(agent) => (
-            <div class="chat-workspace">
-              {/* Header do Agente */}
-              <header class="agent-detail-header">
-                <div class="agent-info">
-                  <h2>
-                    {agent().name}
-                    <span class={`provider-tag ${agent().provider}`}>{agent().provider}</span>
-                  </h2>
-                  <div class="agent-meta">
-                    <span>
-                      Modelo: <strong>{agent().model}</strong>
-                    </span>
-                    <span>
-                      Workspace: <strong>{agent().workspacePath}</strong>
-                    </span>
-                  </div>
-                </div>
-
-                {/* Alternador de Modo: Conversa vs Navegador */}
-                <div class="mode-switcher">
+            <Show
+              when={currentAgent()}
+              fallback={
+                <div class="welcome-view">
+                  <div class="welcome-icon">🤖</div>
+                  <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
+                  <p class="welcome-desc">
+                    Crie múltiplos agentes com seus próprios workspaces locais. Envie arquivos
+                    anexados, organize tarefas em fila durável e faça seus agentes colaborarem e
+                    delegarem tarefas entre si.
+                  </p>
                   <button
                     type="button"
-                    class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
-                    onClick={() => setMainViewMode('chat')}
-                  >
-                    💬 Conversa
-                  </button>
-                  <button
-                    type="button"
-                    class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
+                    class="btn-primary"
                     onClick={() => {
-                      setMainViewMode('browser')
-                      const a = currentAgent()
-                      if (a) loadBrowserTabs(a.id)
+                      const enabled = connections().filter((c) => c.enabled)
+                      if (enabled.length > 0) {
+                        setProvider(enabled[0].providerId)
+                        setModel(enabled[0].defaultModel)
+                      } else {
+                        setProvider('codex')
+                        setModel('gpt-4o')
+                      }
+                      setShowModal(true)
                     }}
                   >
-                    🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
+                    Criar Primeiro Agente
                   </button>
                 </div>
-
-                <div class="header-actions">
-                  {/* Botão Delegar para outro agente */}
-                  <button
-                    type="button"
-                    class="btn-outline"
-                    onClick={handleOpenDelegationModal}
-                    title="Delegar uma subtarefa para outro agente disponível"
-                  >
-                    🤝 Delegar
-                  </button>
-
-                  {/* Botão Pausar / Retomar Fila */}
-                  <button
-                    type="button"
-                    class={`btn-outline ${isQueuePaused() ? 'active' : ''}`}
-                    onClick={togglePauseQueue}
-                    title="Pausa ou retoma a fila de execução de tarefas deste agente"
-                  >
-                    {isQueuePaused() ? '▶ Retomar Fila' : '⏸ Pausar Fila'}
-                  </button>
-
-                  {/* Botão Painel da Fila */}
-                  <button
-                    type="button"
-                    class={`btn-outline ${showQueuePanel() ? 'active' : ''}`}
-                    onClick={() => setShowQueuePanel(!showQueuePanel())}
-                  >
-                    📋 Fila ({pendingTasksCount()})
-                  </button>
-
-                  <button
-                    type="button"
-                    class="btn-danger"
-                    onClick={() => handleDeleteAgent(agent().id)}
-                  >
-                    Remover Agente
-                  </button>
-                </div>
-              </header>
-
-              {/* Drawer da Fila de Tarefas (Fase 3) */}
-              <Show when={showQueuePanel()}>
-                <div class="queue-panel">
-                  <div class="queue-panel-header">
-                    <span>Fila Durável do Agente (FIFO)</span>
-                    <span>{isQueuePaused() ? 'Status: PAUSADA' : 'Status: ATIVA'}</span>
-                  </div>
-
-                  <For
-                    each={tasks()}
-                    fallback={
-                      <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
-                        Nenhuma tarefa recente na fila deste agente.
+              }
+            >
+              {(agent) => (
+                <div class="chat-workspace">
+                  {/* Header do Agente */}
+                  <header class="agent-detail-header">
+                    <div class="agent-info">
+                      <h2>
+                        {agent().name}
+                        <span class={`provider-tag ${agent().provider}`}>{agent().provider}</span>
+                      </h2>
+                      <div class="agent-meta">
+                        <span>
+                          Modelo: <strong>{agent().model}</strong>
+                        </span>
+                        <span>
+                          Workspace: <strong>{agent().workspacePath}</strong>
+                        </span>
                       </div>
-                    }
-                  >
-                    {(task) => (
-                      <div class="queue-item">
-                        <div class="queue-item-left">
-                          <span class={`task-tag ${task.status}`}>{task.status}</span>
-                          <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
-                          <Show when={task.error}>
-                            <span style={{ color: '#f87171', 'font-size': '11px' }}>
-                              ({task.error})
-                            </span>
-                          </Show>
-                        </div>
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          <Show when={task.status === 'pending' || task.status === 'running'}>
-                            <button
-                              type="button"
-                              class="queue-btn-action"
-                              onClick={() => handleCancelTask(task.id)}
-                            >
-                              Cancelar
-                            </button>
-                          </Show>
-                          <Show
-                            when={
-                              task.status === 'failed' ||
-                              task.status === 'interrupted' ||
-                              task.status === 'cancelled'
-                            }
-                          >
-                            <button
-                              type="button"
-                              class="queue-btn-action"
-                              onClick={() => handleRetryTask(task.id)}
-                            >
-                              Repetir
-                            </button>
-                          </Show>
-                        </div>
-                      </div>
-                    )}
-                  </For>
-                </div>
-              </Show>
+                    </div>
 
-              {/* Modo Chat (Conversa) */}
-              <Show when={mainViewMode() === 'chat'}>
-                {/* Lista de Mensagens / Conversa */}
-                <div class="chat-messages">
-                  <Show when={agent().instructions}>
-                    <div
-                      class="card"
-                      style={{
-                        'margin-bottom': '12px',
-                        padding: '10px 14px',
-                        'font-size': '12px',
-                      }}
-                    >
-                      <div
-                        class="card-title"
-                        style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                    {/* Alternador de Modo: Conversa vs Navegador */}
+                    <div class="mode-switcher">
+                      <button
+                        type="button"
+                        class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
+                        onClick={() => setMainViewMode('chat')}
                       >
-                        Instruções do Agente
+                        💬 Conversa
+                      </button>
+                      <button
+                        type="button"
+                        class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
+                        onClick={() => {
+                          setMainViewMode('browser')
+                          const a = currentAgent()
+                          if (a) loadBrowserTabs(a.id)
+                        }}
+                      >
+                        🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
+                      </button>
+                    </div>
+
+                    <div class="header-actions">
+                      {/* Botão Delegar para outro agente */}
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={handleOpenDelegationModal}
+                        title="Delegar uma subtarefa para outro agente disponível"
+                      >
+                        🤝 Delegar
+                      </button>
+
+                      {/* Botão Pausar / Retomar Fila */}
+                      <button
+                        type="button"
+                        class={`btn-outline ${isQueuePaused() ? 'active' : ''}`}
+                        onClick={togglePauseQueue}
+                        title="Pausa ou retoma a fila de execução de tarefas deste agente"
+                      >
+                        {isQueuePaused() ? '▶ Retomar Fila' : '⏸ Pausar Fila'}
+                      </button>
+
+                      {/* Botão Painel da Fila */}
+                      <button
+                        type="button"
+                        class={`btn-outline ${showQueuePanel() ? 'active' : ''}`}
+                        onClick={() => setShowQueuePanel(!showQueuePanel())}
+                      >
+                        📋 Fila ({pendingTasksCount()})
+                      </button>
+
+                      <button
+                        type="button"
+                        class="btn-danger"
+                        onClick={() => handleDeleteAgent(agent().id)}
+                      >
+                        Remover Agente
+                      </button>
+                    </div>
+                  </header>
+
+                  {/* Drawer da Fila de Tarefas (Fase 3) */}
+                  <Show when={showQueuePanel()}>
+                    <div class="queue-panel">
+                      <div class="queue-panel-header">
+                        <span>Fila Durável do Agente (FIFO)</span>
+                        <span>{isQueuePaused() ? 'Status: PAUSADA' : 'Status: ATIVA'}</span>
                       </div>
-                      <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
+
+                      <For
+                        each={tasks()}
+                        fallback={
+                          <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
+                            Nenhuma tarefa recente na fila deste agente.
+                          </div>
+                        }
+                      >
+                        {(task) => (
+                          <div class="queue-item">
+                            <div class="queue-item-left">
+                              <span class={`task-tag ${task.status}`}>{task.status}</span>
+                              <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
+                              <Show when={task.error}>
+                                <span style={{ color: '#f87171', 'font-size': '11px' }}>
+                                  ({task.error})
+                                </span>
+                              </Show>
+                            </div>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                              <Show when={task.status === 'pending' || task.status === 'running'}>
+                                <button
+                                  type="button"
+                                  class="queue-btn-action"
+                                  onClick={() => handleCancelTask(task.id)}
+                                >
+                                  Cancelar
+                                </button>
+                              </Show>
+                              <Show
+                                when={
+                                  task.status === 'failed' ||
+                                  task.status === 'interrupted' ||
+                                  task.status === 'cancelled'
+                                }
+                              >
+                                <button
+                                  type="button"
+                                  class="queue-btn-action"
+                                  onClick={() => handleRetryTask(task.id)}
+                                >
+                                  Repetir
+                                </button>
+                              </Show>
+                            </div>
+                          </div>
+                        )}
+                      </For>
                     </div>
                   </Show>
 
-                  <Show
-                    when={messages().length > 0 || isStreaming()}
-                    fallback={
-                      <div class="chat-empty">
-                        <div>
-                          👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
-                          <strong>{agent().provider.toUpperCase()}</strong>.
+                  {/* Modo Chat (Conversa) */}
+                  <Show when={mainViewMode() === 'chat'}>
+                    {/* Lista de Mensagens / Conversa */}
+                    <div class="chat-messages">
+                      <Show when={agent().instructions}>
+                        <div
+                          class="card"
+                          style={{
+                            'margin-bottom': '12px',
+                            padding: '10px 14px',
+                            'font-size': '12px',
+                          }}
+                        >
+                          <div
+                            class="card-title"
+                            style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                          >
+                            Instruções do Agente
+                          </div>
+                          <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
                         </div>
-                        <div style={{ 'margin-top': '8px' }}>
-                          Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas de
-                          forma organizada no workspace <code>{agent().workspacePath}</code>.
-                        </div>
+                      </Show>
+
+                      <Show
+                        when={messages().length > 0 || isStreaming()}
+                        fallback={
+                          <div class="chat-empty">
+                            <div>
+                              👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
+                              <strong>{agent().provider.toUpperCase()}</strong>.
+                            </div>
+                            <div style={{ 'margin-top': '8px' }}>
+                              Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas
+                              de forma organizada no workspace <code>{agent().workspacePath}</code>.
+                            </div>
+                          </div>
+                        }
+                      >
+                        <For each={messages()}>
+                          {(msg) => (
+                            <div class={`message-row ${msg.role}`}>
+                              <div class="message-author">
+                                <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
+                                <span style={{ 'font-size': '10px', opacity: 0.6 }}>
+                                  {new Date(msg.createdAt).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
+
+                              {/* Badge de Delegação se a mensagem veio de outro agente */}
+                              <Show when={msg.senderAgentId}>
+                                <span class="delegation-badge">🤝 Mensagem Delegada</span>
+                              </Show>
+
+                              <div class={`message-bubble ${msg.role}`}>
+                                {msg.text}
+
+                                {/* Lista de Anexos anexados na mensagem */}
+                                <Show when={msg.attachments && msg.attachments.length > 0}>
+                                  <div class="message-attachments-list">
+                                    <For each={msg.attachments}>
+                                      {(att) => (
+                                        <button
+                                          type="button"
+                                          class="attachment-card"
+                                          onClick={() => handleOpenFile(att.filePath)}
+                                          title="Clique para abrir o arquivo no aplicativo padrão"
+                                        >
+                                          <span class="attachment-icon">📎</span>
+                                          <div class="attachment-info">
+                                            <span class="attachment-name">{att.fileName}</span>
+                                            <span class="attachment-size">
+                                              {formatFileSize(att.fileSize)} • {att.mimeType}
+                                            </span>
+                                          </div>
+                                        </button>
+                                      )}
+                                    </For>
+                                  </div>
+                                </Show>
+                              </div>
+                            </div>
+                          )}
+                        </For>
+
+                        {/* Resposta em streaming em tempo real */}
+                        <Show when={isStreaming()}>
+                          <div class="message-row assistant">
+                            <div class="message-author">
+                              <span>{agent().name}</span>
+                              <span class={`provider-tag ${agent().provider}`}>
+                                {agent().provider} streaming
+                              </span>
+                            </div>
+                            <div class="message-bubble assistant streaming">
+                              {streamingText() || 'Processando resposta...'}
+                              <div class="streaming-indicator">
+                                <span class="pulse-dot" />
+                                <span>{agent().provider.toUpperCase()} executando...</span>
+                              </div>
+                            </div>
+                          </div>
+                        </Show>
+                      </Show>
+
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Alerta de erro se houver */}
+                    <Show when={chatError()}>
+                      <div class="error-banner">
+                        <span>⚠️ Erro na execução: {chatError()}</span>
+                        <button
+                          type="button"
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'inherit',
+                            cursor: 'pointer',
+                          }}
+                          onClick={() => setChatError(null)}
+                        >
+                          ✕
+                        </button>
                       </div>
-                    }
-                  >
-                    <For each={messages()}>
-                      {(msg) => (
-                        <div class={`message-row ${msg.role}`}>
-                          <div class="message-author">
-                            <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
-                            <span style={{ 'font-size': '10px', opacity: 0.6 }}>
-                              {new Date(msg.createdAt).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
+                    </Show>
+
+                    {/* Barra de input do chat */}
+                    <div class="chat-input-container">
+                      <form class="chat-input-form" onSubmit={handleSendMessage}>
+                        {/* Arquivos staged antes do envio */}
+                        <Show when={stagedFiles().length > 0}>
+                          <div class="attachments-preview-bar">
+                            <For each={stagedFiles()}>
+                              {(file, index) => (
+                                <div class="attachment-chip">
+                                  <span>
+                                    📎 {file.fileName} ({formatFileSize(file.fileSize)})
+                                  </span>
+                                  <button
+                                    type="button"
+                                    class="attachment-chip-remove"
+                                    onClick={() => removeStagedFile(index())}
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+
+                        <textarea
+                          class="chat-textarea"
+                          placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                          value={inputText()}
+                          onInput={(e) => setInputText(e.currentTarget.value)}
+                          onKeyDown={handleKeyDown}
+                        />
+                        <div class="chat-actions-bar">
+                          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                            <button
+                              type="button"
+                              class="btn-outline"
+                              style={{ padding: '4px 8px', 'font-size': '11px' }}
+                              onClick={handleSelectFiles}
+                              title="Anexar arquivos gerenciados"
+                            >
+                              📎 Anexar
+                            </button>
+                            <span>
+                              Workspace: <code>{agent().workspacePath}</code> |{' '}
+                              {isQueuePaused()
+                                ? '⏸ Fila Pausada'
+                                : `${pendingTasksCount()} na fila`}
                             </span>
                           </div>
 
-                          {/* Badge de Delegação se a mensagem veio de outro agente */}
-                          <Show when={msg.senderAgentId}>
-                            <span class="delegation-badge">🤝 Mensagem Delegada</span>
-                          </Show>
-
-                          <div class={`message-bubble ${msg.role}`}>
-                            {msg.text}
-
-                            {/* Lista de Anexos anexados na mensagem */}
-                            <Show when={msg.attachments && msg.attachments.length > 0}>
-                              <div class="message-attachments-list">
-                                <For each={msg.attachments}>
-                                  {(att) => (
-                                    <button
-                                      type="button"
-                                      class="attachment-card"
-                                      onClick={() => handleOpenFile(att.filePath)}
-                                      title="Clique para abrir o arquivo no aplicativo padrão"
-                                    >
-                                      <span class="attachment-icon">📎</span>
-                                      <div class="attachment-info">
-                                        <span class="attachment-name">{att.fileName}</span>
-                                        <span class="attachment-size">
-                                          {formatFileSize(att.fileSize)} • {att.mimeType}
-                                        </span>
-                                      </div>
-                                    </button>
-                                  )}
-                                </For>
-                              </div>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <Show when={isStreaming()}>
+                              <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
+                                ⏹ Interromper
+                              </button>
                             </Show>
+                            <button
+                              type="submit"
+                              class="btn-primary"
+                              disabled={!inputText().trim() && stagedFiles().length === 0}
+                            >
+                              Enviar
+                            </button>
                           </div>
                         </div>
-                      )}
-                    </For>
-
-                    {/* Resposta em streaming em tempo real */}
-                    <Show when={isStreaming()}>
-                      <div class="message-row assistant">
-                        <div class="message-author">
-                          <span>{agent().name}</span>
-                          <span class={`provider-tag ${agent().provider}`}>
-                            {agent().provider} streaming
-                          </span>
-                        </div>
-                        <div class="message-bubble assistant streaming">
-                          {streamingText() || 'Processando resposta...'}
-                          <div class="streaming-indicator">
-                            <span class="pulse-dot" />
-                            <span>{agent().provider.toUpperCase()} executando...</span>
-                          </div>
-                        </div>
-                      </div>
-                    </Show>
+                      </form>
+                    </div>
                   </Show>
 
-                  <div ref={messagesEndRef} />
-                </div>
-
-                {/* Alerta de erro se houver */}
-                <Show when={chatError()}>
-                  <div class="error-banner">
-                    <span>⚠️ Erro na execução: {chatError()}</span>
-                    <button
-                      type="button"
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'inherit',
-                        cursor: 'pointer',
-                      }}
-                      onClick={() => setChatError(null)}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </Show>
-
-                {/* Barra de input do chat */}
-                <div class="chat-input-container">
-                  <form class="chat-input-form" onSubmit={handleSendMessage}>
-                    {/* Arquivos staged antes do envio */}
-                    <Show when={stagedFiles().length > 0}>
-                      <div class="attachments-preview-bar">
-                        <For each={stagedFiles()}>
-                          {(file, index) => (
-                            <div class="attachment-chip">
-                              <span>
-                                📎 {file.fileName} ({formatFileSize(file.fileSize)})
+                  {/* Modo Navegador Embarcado (Fase 5) */}
+                  <Show when={mainViewMode() === 'browser'}>
+                    <div class="browser-workspace">
+                      {/* Strip de Abas */}
+                      <div class="browser-tabs-strip">
+                        <For
+                          each={browserTabs()}
+                          fallback={
+                            <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                              Nenhuma aba aberta
+                            </span>
+                          }
+                        >
+                          {(tab) => (
+                            <div
+                              role="tab"
+                              tabIndex={0}
+                              class={`browser-tab-chip ${activeTabId() === tab.id ? 'active' : ''}`}
+                              onClick={() => {
+                                setActiveTabId(tab.id)
+                                setBrowserUrlInput(tab.url)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  setActiveTabId(tab.id)
+                                  setBrowserUrlInput(tab.url)
+                                }
+                              }}
+                            >
+                              <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                                {tab.isLoading ? '⏳ ' : '🌐 '}
+                                {tab.title || tab.url}
                               </span>
                               <button
                                 type="button"
-                                class="attachment-chip-remove"
-                                onClick={() => removeStagedFile(index())}
+                                class="browser-tab-close"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  handleCloseBrowserTab(tab.id)
+                                }}
+                                title="Fechar aba"
                               >
                                 ✕
                               </button>
                             </div>
                           )}
                         </For>
+                        <button
+                          type="button"
+                          class="btn-new-tab"
+                          onClick={() => handleOpenBrowserTab('https://github.com')}
+                          title="Abrir nova aba"
+                        >
+                          + Nova Aba
+                        </button>
                       </div>
-                    </Show>
 
-                    <textarea
-                      class="chat-textarea"
-                      placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
-                      value={inputText()}
-                      onInput={(e) => setInputText(e.currentTarget.value)}
-                      onKeyDown={handleKeyDown}
-                    />
-                    <div class="chat-actions-bar">
-                      <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                      {/* Barra de Navegação */}
+                      <div class="browser-navbar">
+                        <button
+                          type="button"
+                          class="browser-nav-btn"
+                          onClick={() => handleBrowserNavigate('back')}
+                          title="Voltar"
+                          disabled={!activeTabId()}
+                        >
+                          ⬅️
+                        </button>
+                        <button
+                          type="button"
+                          class="browser-nav-btn"
+                          onClick={() => handleBrowserNavigate('forward')}
+                          title="Avançar"
+                          disabled={!activeTabId()}
+                        >
+                          ➡️
+                        </button>
+                        <button
+                          type="button"
+                          class="browser-nav-btn"
+                          onClick={() => handleBrowserNavigate('reload')}
+                          title="Recarregar"
+                          disabled={!activeTabId()}
+                        >
+                          🔄
+                        </button>
+
+                        <input
+                          type="text"
+                          class="browser-url-input"
+                          placeholder="Digite uma URL (ex: https://github.com)..."
+                          value={browserUrlInput()}
+                          onInput={(e) => setBrowserUrlInput(e.currentTarget.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              handleOpenBrowserTab(browserUrlInput())
+                            }
+                          }}
+                        />
+
+                        <button
+                          type="button"
+                          class="btn-primary"
+                          disabled={browserLoading() || !browserUrlInput().trim()}
+                          onClick={() => handleOpenBrowserTab(browserUrlInput())}
+                        >
+                          {browserLoading() ? 'Carregando...' : 'Ir'}
+                        </button>
+                      </div>
+
+                      {/* Barra de Supervisão e Ações */}
+                      <div class="browser-actions-bar">
+                        <div class="browser-actions-group">
+                          <button
+                            type="button"
+                            class="btn-outline"
+                            style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                            onClick={handleBrowserScreenshot}
+                            disabled={!activeTabId()}
+                            title="Capturar imagem atual da página"
+                          >
+                            📸 Capturar Tela
+                          </button>
+                          <button
+                            type="button"
+                            class="btn-outline"
+                            style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                            onClick={handleBrowserInspect}
+                            disabled={!activeTabId()}
+                            title="Inspecionar estrutura DOM e links sanitizados"
+                          >
+                            🔍 Inspecionar DOM
+                          </button>
+                        </div>
+
+                        <div class="browser-actions-group">
+                          <span
+                            class="supervision-badge"
+                            title="Sessão particionada exclusiva do agente com bloqueio de popups e downloads arbitrários"
+                          >
+                            🛡️ persist:agent-{agent().id.slice(0, 8)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Banner de status / mensagem de ação do navegador */}
+                      <Show when={browserStatusMsg()}>
+                        <div
+                          class="error-banner"
+                          style={{
+                            background: 'rgba(16, 185, 129, 0.15)',
+                            'border-color': 'rgba(16, 185, 129, 0.4)',
+                            color: '#34d399',
+                            margin: '10px 16px 0 16px',
+                          }}
+                        >
+                          <span>✅ {browserStatusMsg()}</span>
+                        </div>
+                      </Show>
+
+                      {/* Layout Viewport + Inspector */}
+                      <div class="browser-viewport-layout">
+                        <div class="browser-main-view">
+                          <Show
+                            when={currentActiveTab()}
+                            fallback={
+                              <div class="browser-empty-state">
+                                <div class="browser-empty-icon">🌐</div>
+                                <h3
+                                  style={{
+                                    'font-size': '15px',
+                                    'margin-bottom': '8px',
+                                    color: 'var(--text-main)',
+                                  }}
+                                >
+                                  Navegador Isolado do Agente
+                                </h3>
+                                <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
+                                  Abra páginas web com segurança em uma partição isolada com cookies
+                                  e cache próprios deste agente. O agente pode extrair dados,
+                                  inspecionar links e interagir com supervisão.
+                                </p>
+                                <div class="browser-shortcut-chips">
+                                  <button
+                                    type="button"
+                                    class="shortcut-chip"
+                                    onClick={() => handleOpenBrowserTab('https://github.com')}
+                                  >
+                                    GitHub
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="shortcut-chip"
+                                    onClick={() =>
+                                      handleOpenBrowserTab('https://news.ycombinator.com')
+                                    }
+                                  >
+                                    Hacker News
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="shortcut-chip"
+                                    onClick={() => handleOpenBrowserTab('https://wikipedia.org')}
+                                  >
+                                    Wikipédia
+                                  </button>
+                                </div>
+                              </div>
+                            }
+                          >
+                            {(tab) => (
+                              <>
+                                <div class="browser-card">
+                                  <div class="browser-card-title">
+                                    <span>{tab().title}</span>
+                                    <span
+                                      style={{
+                                        'font-size': '11px',
+                                        color: 'var(--text-muted)',
+                                        'font-weight': 'normal',
+                                      }}
+                                    >
+                                      ID: {tab().id}
+                                    </span>
+                                  </div>
+                                  <div
+                                    style={{
+                                      'font-size': '12px',
+                                      color: '#60a5fa',
+                                      'word-break': 'break-all',
+                                    }}
+                                  >
+                                    {tab().url}
+                                  </div>
+                                </div>
+
+                                {/* Visualizador de Screenshot */}
+                                <div class="browser-card">
+                                  <div class="browser-card-title">
+                                    <span>Visualização em Tempo Real</span>
+                                    <button
+                                      type="button"
+                                      class="btn-outline"
+                                      style={{ padding: '2px 6px', 'font-size': '10.5px' }}
+                                      onClick={handleBrowserScreenshot}
+                                    >
+                                      Atualizar Visão
+                                    </button>
+                                  </div>
+                                  <Show
+                                    when={browserScreenshotUrl()}
+                                    fallback={
+                                      <div
+                                        style={{
+                                          padding: '30px',
+                                          'text-align': 'center',
+                                          color: 'var(--text-muted)',
+                                          'font-size': '12px',
+                                        }}
+                                      >
+                                        📸 Clique em "Capturar Tela" para renderizar o snapshot da
+                                        página.
+                                      </div>
+                                    }
+                                  >
+                                    <img
+                                      src={browserScreenshotUrl() || ''}
+                                      alt="Screenshot da página"
+                                      class="browser-screenshot-img"
+                                    />
+                                  </Show>
+                                </div>
+
+                                {/* Ações Rápidas de Interação Supervisionada */}
+                                <div class="browser-card">
+                                  <div class="browser-card-title">
+                                    <span>Interação Supervisionada (Clique & Preenchimento)</span>
+                                  </div>
+                                  <div class="quick-interact-bar">
+                                    <div class="quick-interact-form">
+                                      <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                        Clicar Elemento
+                                      </span>
+                                      <input
+                                        type="text"
+                                        class="quick-interact-input"
+                                        placeholder="Seletor CSS (ex: #btn, .submit)"
+                                        value={browserClickSelector()}
+                                        onInput={(e) =>
+                                          setBrowserClickSelector(e.currentTarget.value)
+                                        }
+                                      />
+                                      <button
+                                        type="button"
+                                        class="btn-outline"
+                                        style={{ 'font-size': '11px', padding: '4px' }}
+                                        onClick={() => handleBrowserClick(browserClickSelector())}
+                                        disabled={!browserClickSelector().trim()}
+                                      >
+                                        👆 Executar Clique
+                                      </button>
+                                    </div>
+
+                                    <div class="quick-interact-form">
+                                      <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                        Preencher Formulário
+                                      </span>
+                                      <input
+                                        type="text"
+                                        class="quick-interact-input"
+                                        placeholder="Seletor CSS (ex: #search-box)"
+                                        value={browserFillSelector()}
+                                        onInput={(e) =>
+                                          setBrowserFillSelector(e.currentTarget.value)
+                                        }
+                                      />
+                                      <input
+                                        type="text"
+                                        class="quick-interact-input"
+                                        placeholder="Valor a digitar..."
+                                        value={browserFillValue()}
+                                        onInput={(e) => setBrowserFillValue(e.currentTarget.value)}
+                                      />
+                                      <button
+                                        type="button"
+                                        class="btn-outline"
+                                        style={{ 'font-size': '11px', padding: '4px' }}
+                                        onClick={() =>
+                                          handleBrowserFill(
+                                            browserFillSelector(),
+                                            browserFillValue(),
+                                          )
+                                        }
+                                        disabled={!browserFillSelector().trim()}
+                                      >
+                                        ✏️ Preencher Campo
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </Show>
+                        </div>
+
+                        {/* Painel Lateral: Inspetor DOM Sanitizado */}
+                        <div class="browser-inspect-pane">
+                          <div
+                            style={{
+                              'font-weight': '700',
+                              'font-size': '13px',
+                              display: 'flex',
+                              'align-items': 'center',
+                              'justify-content': 'space-between',
+                            }}
+                          >
+                            <span>Inspeção DOM Sanitizada</span>
+                            <Show when={browserInspectData()}>
+                              <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
+                                {browserInspectData()?.links.length || 0} links •{' '}
+                                {browserInspectData()?.inputs.length || 0} campos
+                              </span>
+                            </Show>
+                          </div>
+
+                          <Show
+                            when={browserInspectData()}
+                            fallback={
+                              <div
+                                style={{
+                                  color: 'var(--text-muted)',
+                                  'font-size': '12px',
+                                  'line-height': '1.5',
+                                  margin: 'auto',
+                                  'text-align': 'center',
+                                  padding: '20px',
+                                }}
+                              >
+                                🔍 Clique em <strong>"Inspecionar DOM"</strong> para extrair a
+                                estrutura de links, campos e resumo textual sanitizado da página sem
+                                risco de scripts adversários.
+                              </div>
+                            }
+                          >
+                            {(data) => (
+                              <>
+                                <div>
+                                  <div
+                                    style={{
+                                      'font-weight': '600',
+                                      'font-size': '11.5px',
+                                      'margin-bottom': '4px',
+                                    }}
+                                  >
+                                    Resumo Textual
+                                  </div>
+                                  <div class="inspect-summary-box">
+                                    {data().textSummary ||
+                                      'Nenhum texto detectado no corpo da página.'}
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div
+                                    style={{
+                                      'font-weight': '600',
+                                      'font-size': '11.5px',
+                                      'margin-bottom': '4px',
+                                    }}
+                                  >
+                                    Links Detectados ({data().links.length})
+                                  </div>
+                                  <div class="inspect-links-list">
+                                    <For
+                                      each={data().links}
+                                      fallback={
+                                        <span
+                                          style={{
+                                            'font-size': '11px',
+                                            color: 'var(--text-muted)',
+                                          }}
+                                        >
+                                          Nenhum link
+                                        </span>
+                                      }
+                                    >
+                                      {(link) => (
+                                        <button
+                                          type="button"
+                                          class="inspect-link-btn"
+                                          onClick={() => handleOpenBrowserTab(link.href)}
+                                          title={`Abrir ${link.href}`}
+                                        >
+                                          🔗 {link.text || link.href}
+                                        </button>
+                                      )}
+                                    </For>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div
+                                    style={{
+                                      'font-weight': '600',
+                                      'font-size': '11.5px',
+                                      'margin-bottom': '4px',
+                                    }}
+                                  >
+                                    Campos de Formulário ({data().inputs.length})
+                                  </div>
+                                  <div class="inspect-inputs-list">
+                                    <For
+                                      each={data().inputs}
+                                      fallback={
+                                        <span
+                                          style={{
+                                            'font-size': '11px',
+                                            color: 'var(--text-muted)',
+                                          }}
+                                        >
+                                          Nenhum campo
+                                        </span>
+                                      }
+                                    >
+                                      {(input) => (
+                                        <div class="inspect-input-row">
+                                          <div>
+                                            <span style={{ 'font-weight': '600' }}>
+                                              {input.name || input.id || input.selector}
+                                            </span>
+                                            <span
+                                              style={{
+                                                color: 'var(--text-muted)',
+                                                'margin-left': '4px',
+                                              }}
+                                            >
+                                              ({input.type})
+                                            </span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            class="queue-btn-action"
+                                            onClick={() => {
+                                              setBrowserFillSelector(input.selector)
+                                            }}
+                                            title="Selecionar para preenchimento"
+                                          >
+                                            Selecionar
+                                          </button>
+                                        </div>
+                                      )}
+                                    </For>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </Show>
+                        </div>
+                      </div>
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </Show>
+          }
+        >
+          {/* Tela de Seleção e Gerenciamento de Conexões */}
+          <div class="connections-view">
+            <div class="connections-header">
+              <div class="connections-header-left">
+                <h1 class="connections-title">
+                  <span>🔌 Conexões & Provedores de IA</span>
+                </h1>
+                <p class="connections-desc">
+                  Selecione e habilite quais conexões você deseja disponibilizar no Orchbot (Codex,
+                  Claude, Grok, Muse). Configure credenciais, endpoints e modelos padrão com testes
+                  de conectividade em tempo real.
+                </p>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  class="btn-primary"
+                  onClick={() => {
+                    loadConnections()
+                    loadProviderStatuses()
+                  }}
+                  title="Atualizar status de todas as conexões"
+                >
+                  🔄 Atualizar Status
+                </button>
+              </div>
+            </div>
+
+            <div class="connections-grid">
+              <For each={connections()}>
+                {(conn) => {
+                  const draft = () => connectionDrafts()[conn.providerId] || {}
+                  const isTesting = () => testingConnection() === conn.providerId
+                  const isSaving = () => savingConnection() === conn.providerId
+                  const testResult = () => testResults()[conn.providerId]
+                  const savedMsg = () => saveMessage()[conn.providerId]
+                  const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
+
+                  const getIcon = () => {
+                    switch (conn.providerId) {
+                      case 'codex':
+                        return '🟢'
+                      case 'claude':
+                        return '🟣'
+                      case 'grok':
+                        return '⚡'
+                      case 'muse':
+                        return '✨'
+                      default:
+                        return '🤖'
+                    }
+                  }
+
+                  return (
+                    <div
+                      class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
+                    >
+                      <div class="connection-box-top">
+                        <div class="connection-brand">
+                          <span class="connection-icon-badge">{getIcon()}</span>
+                          <div>
+                            <div class="connection-name">{conn.name}</div>
+                            <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                              ID: <code>{conn.providerId}</code>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
+                          <Show
+                            when={conn.enabled}
+                            fallback={
+                              <span class="connection-status-pill disabled">○ Desativado</span>
+                            }
+                          >
+                            <Show
+                              when={conn.available}
+                              fallback={
+                                <span
+                                  class="connection-status-pill warning"
+                                  title={conn.error || 'CLI ou API não detectada'}
+                                >
+                                  ⚠ Requer Configuração
+                                </span>
+                              }
+                            >
+                              <span class="connection-status-pill online">● Conectado</span>
+                            </Show>
+                          </Show>
+
+                          <label
+                            class="toggle-switch-wrapper"
+                            title={conn.enabled ? 'Desativar conexão' : 'Ativar conexão'}
+                          >
+                            <div class="toggle-switch">
+                              <input
+                                type="checkbox"
+                                checked={conn.enabled}
+                                onChange={(e) =>
+                                  handleToggleConnection(conn, e.currentTarget.checked)
+                                }
+                              />
+                              <span class="toggle-slider" />
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div class="connection-fields">
+                        <div class="connection-field">
+                          <label
+                            class="connection-field-label"
+                            for={`conn-model-${conn.providerId}`}
+                          >
+                            Modelo Padrão
+                          </label>
+                          <select
+                            id={`conn-model-${conn.providerId}`}
+                            class="connection-input"
+                            value={draft().defaultModel ?? conn.defaultModel}
+                            onChange={(e) =>
+                              updateDraftField(
+                                conn.providerId,
+                                'defaultModel',
+                                e.currentTarget.value,
+                              )
+                            }
+                            disabled={!conn.enabled}
+                          >
+                            <For each={conn.models}>{(m) => <option value={m}>{m}</option>}</For>
+                          </select>
+                        </div>
+
+                        <div class="connection-field">
+                          <label class="connection-field-label" for={`conn-key-${conn.providerId}`}>
+                            Chave de Acesso / API Key
+                          </label>
+                          <div class="api-key-group">
+                            <input
+                              id={`conn-key-${conn.providerId}`}
+                              type={isKeyVisible() ? 'text' : 'password'}
+                              class="connection-input"
+                              placeholder="CLI local / variável de ambiente / chave personalizada..."
+                              value={draft().apiKey ?? (conn.apiKey || '')}
+                              onInput={(e) =>
+                                updateDraftField(conn.providerId, 'apiKey', e.currentTarget.value)
+                              }
+                              disabled={!conn.enabled}
+                            />
+                            <button
+                              type="button"
+                              class="btn-icon-eye"
+                              onClick={() => toggleShowApiKey(conn.providerId)}
+                              title={isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'}
+                              disabled={!conn.enabled}
+                            >
+                              {isKeyVisible() ? '🙈' : '👁️'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div class="connection-field">
+                          <label
+                            class="connection-field-label"
+                            for={`conn-endpoint-${conn.providerId}`}
+                          >
+                            Endpoint Customizado (Opcional)
+                          </label>
+                          <input
+                            id={`conn-endpoint-${conn.providerId}`}
+                            type="text"
+                            class="connection-input"
+                            placeholder="Ex: https://api.x.ai/v1 ou proxy local..."
+                            value={draft().endpoint ?? (conn.endpoint || '')}
+                            onInput={(e) =>
+                              updateDraftField(conn.providerId, 'endpoint', e.currentTarget.value)
+                            }
+                            disabled={!conn.enabled}
+                          />
+                        </div>
+                      </div>
+
+                      <Show when={testResult()}>
+                        {(res) => (
+                          <div
+                            class={`connection-result-msg ${res().success ? 'success' : 'error'}`}
+                          >
+                            <strong>{res().success ? '✓ Sucesso: ' : '✗ Erro: '}</strong>
+                            {res().message}
+                          </div>
+                        )}
+                      </Show>
+
+                      <Show when={savedMsg()}>
+                        {(msg) => <div class="connection-save-feedback">✓ {msg()}</div>}
+                      </Show>
+
+                      <div class="connection-card-actions">
                         <button
                           type="button"
                           class="btn-outline"
-                          style={{ padding: '4px 8px', 'font-size': '11px' }}
-                          onClick={handleSelectFiles}
-                          title="Anexar arquivos gerenciados"
+                          onClick={() => handleTestConnection(conn.providerId)}
+                          disabled={!conn.enabled || isTesting()}
+                          title="Testar comunicação com a CLI ou API do provedor"
                         >
-                          📎 Anexar
+                          {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
                         </button>
-                        <span>
-                          Workspace: <code>{agent().workspacePath}</code> |{' '}
-                          {isQueuePaused() ? '⏸ Fila Pausada' : `${pendingTasksCount()} na fila`}
-                        </span>
-                      </div>
 
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <Show when={isStreaming()}>
-                          <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
-                            ⏹ Interromper
-                          </button>
-                        </Show>
                         <button
-                          type="submit"
+                          type="button"
                           class="btn-primary"
-                          disabled={!inputText().trim() && stagedFiles().length === 0}
+                          onClick={() => handleSaveConnection(conn)}
+                          disabled={!conn.enabled || isSaving()}
                         >
-                          Enviar
+                          {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
                         </button>
                       </div>
                     </div>
-                  </form>
-                </div>
-              </Show>
-
-              {/* Modo Navegador Embarcado (Fase 5) */}
-              <Show when={mainViewMode() === 'browser'}>
-                <div class="browser-workspace">
-                  {/* Strip de Abas */}
-                  <div class="browser-tabs-strip">
-                    <For
-                      each={browserTabs()}
-                      fallback={
-                        <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
-                          Nenhuma aba aberta
-                        </span>
-                      }
-                    >
-                      {(tab) => (
-                        <div
-                          role="tab"
-                          tabIndex={0}
-                          class={`browser-tab-chip ${activeTabId() === tab.id ? 'active' : ''}`}
-                          onClick={() => {
-                            setActiveTabId(tab.id)
-                            setBrowserUrlInput(tab.url)
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              setActiveTabId(tab.id)
-                              setBrowserUrlInput(tab.url)
-                            }
-                          }}
-                        >
-                          <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-                            {tab.isLoading ? '⏳ ' : '🌐 '}
-                            {tab.title || tab.url}
-                          </span>
-                          <button
-                            type="button"
-                            class="browser-tab-close"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleCloseBrowserTab(tab.id)
-                            }}
-                            title="Fechar aba"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      )}
-                    </For>
-                    <button
-                      type="button"
-                      class="btn-new-tab"
-                      onClick={() => handleOpenBrowserTab('https://github.com')}
-                      title="Abrir nova aba"
-                    >
-                      + Nova Aba
-                    </button>
-                  </div>
-
-                  {/* Barra de Navegação */}
-                  <div class="browser-navbar">
-                    <button
-                      type="button"
-                      class="browser-nav-btn"
-                      onClick={() => handleBrowserNavigate('back')}
-                      title="Voltar"
-                      disabled={!activeTabId()}
-                    >
-                      ⬅️
-                    </button>
-                    <button
-                      type="button"
-                      class="browser-nav-btn"
-                      onClick={() => handleBrowserNavigate('forward')}
-                      title="Avançar"
-                      disabled={!activeTabId()}
-                    >
-                      ➡️
-                    </button>
-                    <button
-                      type="button"
-                      class="browser-nav-btn"
-                      onClick={() => handleBrowserNavigate('reload')}
-                      title="Recarregar"
-                      disabled={!activeTabId()}
-                    >
-                      🔄
-                    </button>
-
-                    <input
-                      type="text"
-                      class="browser-url-input"
-                      placeholder="Digite uma URL (ex: https://github.com)..."
-                      value={browserUrlInput()}
-                      onInput={(e) => setBrowserUrlInput(e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleOpenBrowserTab(browserUrlInput())
-                        }
-                      }}
-                    />
-
-                    <button
-                      type="button"
-                      class="btn-primary"
-                      disabled={browserLoading() || !browserUrlInput().trim()}
-                      onClick={() => handleOpenBrowserTab(browserUrlInput())}
-                    >
-                      {browserLoading() ? 'Carregando...' : 'Ir'}
-                    </button>
-                  </div>
-
-                  {/* Barra de Supervisão e Ações */}
-                  <div class="browser-actions-bar">
-                    <div class="browser-actions-group">
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        style={{ padding: '4px 8px', 'font-size': '11.5px' }}
-                        onClick={handleBrowserScreenshot}
-                        disabled={!activeTabId()}
-                        title="Capturar imagem atual da página"
-                      >
-                        📸 Capturar Tela
-                      </button>
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        style={{ padding: '4px 8px', 'font-size': '11.5px' }}
-                        onClick={handleBrowserInspect}
-                        disabled={!activeTabId()}
-                        title="Inspecionar estrutura DOM e links sanitizados"
-                      >
-                        🔍 Inspecionar DOM
-                      </button>
-                    </div>
-
-                    <div class="browser-actions-group">
-                      <span
-                        class="supervision-badge"
-                        title="Sessão particionada exclusiva do agente com bloqueio de popups e downloads arbitrários"
-                      >
-                        🛡️ persist:agent-{agent().id.slice(0, 8)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Banner de status / mensagem de ação do navegador */}
-                  <Show when={browserStatusMsg()}>
-                    <div
-                      class="error-banner"
-                      style={{
-                        background: 'rgba(16, 185, 129, 0.15)',
-                        'border-color': 'rgba(16, 185, 129, 0.4)',
-                        color: '#34d399',
-                        margin: '10px 16px 0 16px',
-                      }}
-                    >
-                      <span>✅ {browserStatusMsg()}</span>
-                    </div>
-                  </Show>
-
-                  {/* Layout Viewport + Inspector */}
-                  <div class="browser-viewport-layout">
-                    <div class="browser-main-view">
-                      <Show
-                        when={currentActiveTab()}
-                        fallback={
-                          <div class="browser-empty-state">
-                            <div class="browser-empty-icon">🌐</div>
-                            <h3
-                              style={{
-                                'font-size': '15px',
-                                'margin-bottom': '8px',
-                                color: 'var(--text-main)',
-                              }}
-                            >
-                              Navegador Isolado do Agente
-                            </h3>
-                            <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
-                              Abra páginas web com segurança em uma partição isolada com cookies e
-                              cache próprios deste agente. O agente pode extrair dados, inspecionar
-                              links e interagir com supervisão.
-                            </p>
-                            <div class="browser-shortcut-chips">
-                              <button
-                                type="button"
-                                class="shortcut-chip"
-                                onClick={() => handleOpenBrowserTab('https://github.com')}
-                              >
-                                GitHub
-                              </button>
-                              <button
-                                type="button"
-                                class="shortcut-chip"
-                                onClick={() => handleOpenBrowserTab('https://news.ycombinator.com')}
-                              >
-                                Hacker News
-                              </button>
-                              <button
-                                type="button"
-                                class="shortcut-chip"
-                                onClick={() => handleOpenBrowserTab('https://wikipedia.org')}
-                              >
-                                Wikipédia
-                              </button>
-                            </div>
-                          </div>
-                        }
-                      >
-                        {(tab) => (
-                          <>
-                            <div class="browser-card">
-                              <div class="browser-card-title">
-                                <span>{tab().title}</span>
-                                <span
-                                  style={{
-                                    'font-size': '11px',
-                                    color: 'var(--text-muted)',
-                                    'font-weight': 'normal',
-                                  }}
-                                >
-                                  ID: {tab().id}
-                                </span>
-                              </div>
-                              <div
-                                style={{
-                                  'font-size': '12px',
-                                  color: '#60a5fa',
-                                  'word-break': 'break-all',
-                                }}
-                              >
-                                {tab().url}
-                              </div>
-                            </div>
-
-                            {/* Visualizador de Screenshot */}
-                            <div class="browser-card">
-                              <div class="browser-card-title">
-                                <span>Visualização em Tempo Real</span>
-                                <button
-                                  type="button"
-                                  class="btn-outline"
-                                  style={{ padding: '2px 6px', 'font-size': '10.5px' }}
-                                  onClick={handleBrowserScreenshot}
-                                >
-                                  Atualizar Visão
-                                </button>
-                              </div>
-                              <Show
-                                when={browserScreenshotUrl()}
-                                fallback={
-                                  <div
-                                    style={{
-                                      padding: '30px',
-                                      'text-align': 'center',
-                                      color: 'var(--text-muted)',
-                                      'font-size': '12px',
-                                    }}
-                                  >
-                                    📸 Clique em "Capturar Tela" para renderizar o snapshot da
-                                    página.
-                                  </div>
-                                }
-                              >
-                                <img
-                                  src={browserScreenshotUrl() || ''}
-                                  alt="Screenshot da página"
-                                  class="browser-screenshot-img"
-                                />
-                              </Show>
-                            </div>
-
-                            {/* Ações Rápidas de Interação Supervisionada */}
-                            <div class="browser-card">
-                              <div class="browser-card-title">
-                                <span>Interação Supervisionada (Clique & Preenchimento)</span>
-                              </div>
-                              <div class="quick-interact-bar">
-                                <div class="quick-interact-form">
-                                  <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
-                                    Clicar Elemento
-                                  </span>
-                                  <input
-                                    type="text"
-                                    class="quick-interact-input"
-                                    placeholder="Seletor CSS (ex: #btn, .submit)"
-                                    value={browserClickSelector()}
-                                    onInput={(e) => setBrowserClickSelector(e.currentTarget.value)}
-                                  />
-                                  <button
-                                    type="button"
-                                    class="btn-outline"
-                                    style={{ 'font-size': '11px', padding: '4px' }}
-                                    onClick={() => handleBrowserClick(browserClickSelector())}
-                                    disabled={!browserClickSelector().trim()}
-                                  >
-                                    👆 Executar Clique
-                                  </button>
-                                </div>
-
-                                <div class="quick-interact-form">
-                                  <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
-                                    Preencher Formulário
-                                  </span>
-                                  <input
-                                    type="text"
-                                    class="quick-interact-input"
-                                    placeholder="Seletor CSS (ex: #search-box)"
-                                    value={browserFillSelector()}
-                                    onInput={(e) => setBrowserFillSelector(e.currentTarget.value)}
-                                  />
-                                  <input
-                                    type="text"
-                                    class="quick-interact-input"
-                                    placeholder="Valor a digitar..."
-                                    value={browserFillValue()}
-                                    onInput={(e) => setBrowserFillValue(e.currentTarget.value)}
-                                  />
-                                  <button
-                                    type="button"
-                                    class="btn-outline"
-                                    style={{ 'font-size': '11px', padding: '4px' }}
-                                    onClick={() =>
-                                      handleBrowserFill(browserFillSelector(), browserFillValue())
-                                    }
-                                    disabled={!browserFillSelector().trim()}
-                                  >
-                                    ✏️ Preencher Campo
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </Show>
-                    </div>
-
-                    {/* Painel Lateral: Inspetor DOM Sanitizado */}
-                    <div class="browser-inspect-pane">
-                      <div
-                        style={{
-                          'font-weight': '700',
-                          'font-size': '13px',
-                          display: 'flex',
-                          'align-items': 'center',
-                          'justify-content': 'space-between',
-                        }}
-                      >
-                        <span>Inspeção DOM Sanitizada</span>
-                        <Show when={browserInspectData()}>
-                          <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
-                            {browserInspectData()?.links.length || 0} links •{' '}
-                            {browserInspectData()?.inputs.length || 0} campos
-                          </span>
-                        </Show>
-                      </div>
-
-                      <Show
-                        when={browserInspectData()}
-                        fallback={
-                          <div
-                            style={{
-                              color: 'var(--text-muted)',
-                              'font-size': '12px',
-                              'line-height': '1.5',
-                              margin: 'auto',
-                              'text-align': 'center',
-                              padding: '20px',
-                            }}
-                          >
-                            🔍 Clique em <strong>"Inspecionar DOM"</strong> para extrair a estrutura
-                            de links, campos e resumo textual sanitizado da página sem risco de
-                            scripts adversários.
-                          </div>
-                        }
-                      >
-                        {(data) => (
-                          <>
-                            <div>
-                              <div
-                                style={{
-                                  'font-weight': '600',
-                                  'font-size': '11.5px',
-                                  'margin-bottom': '4px',
-                                }}
-                              >
-                                Resumo Textual
-                              </div>
-                              <div class="inspect-summary-box">
-                                {data().textSummary || 'Nenhum texto detectado no corpo da página.'}
-                              </div>
-                            </div>
-
-                            <div>
-                              <div
-                                style={{
-                                  'font-weight': '600',
-                                  'font-size': '11.5px',
-                                  'margin-bottom': '4px',
-                                }}
-                              >
-                                Links Detectados ({data().links.length})
-                              </div>
-                              <div class="inspect-links-list">
-                                <For
-                                  each={data().links}
-                                  fallback={
-                                    <span
-                                      style={{ 'font-size': '11px', color: 'var(--text-muted)' }}
-                                    >
-                                      Nenhum link
-                                    </span>
-                                  }
-                                >
-                                  {(link) => (
-                                    <button
-                                      type="button"
-                                      class="inspect-link-btn"
-                                      onClick={() => handleOpenBrowserTab(link.href)}
-                                      title={`Abrir ${link.href}`}
-                                    >
-                                      🔗 {link.text || link.href}
-                                    </button>
-                                  )}
-                                </For>
-                              </div>
-                            </div>
-
-                            <div>
-                              <div
-                                style={{
-                                  'font-weight': '600',
-                                  'font-size': '11.5px',
-                                  'margin-bottom': '4px',
-                                }}
-                              >
-                                Campos de Formulário ({data().inputs.length})
-                              </div>
-                              <div class="inspect-inputs-list">
-                                <For
-                                  each={data().inputs}
-                                  fallback={
-                                    <span
-                                      style={{ 'font-size': '11px', color: 'var(--text-muted)' }}
-                                    >
-                                      Nenhum campo
-                                    </span>
-                                  }
-                                >
-                                  {(input) => (
-                                    <div class="inspect-input-row">
-                                      <div>
-                                        <span style={{ 'font-weight': '600' }}>
-                                          {input.name || input.id || input.selector}
-                                        </span>
-                                        <span
-                                          style={{
-                                            color: 'var(--text-muted)',
-                                            'margin-left': '4px',
-                                          }}
-                                        >
-                                          ({input.type})
-                                        </span>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        class="queue-btn-action"
-                                        onClick={() => {
-                                          setBrowserFillSelector(input.selector)
-                                        }}
-                                        title="Selecionar para preenchimento"
-                                      >
-                                        Selecionar
-                                      </button>
-                                    </div>
-                                  )}
-                                </For>
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </Show>
-                    </div>
-                  </div>
-                </div>
-              </Show>
+                  )
+                }}
+              </For>
             </div>
-          )}
+          </div>
         </Show>
       </main>
 
@@ -1657,60 +2115,110 @@ export const App: Component = () => {
                 />
               </div>
 
-              {/* Seleção Interativa do Provedor (Codex ou Claude) */}
+              {/* Seleção Interativa do Provedor (Codex, Claude, Grok, Muse) */}
               <div class="form-group">
                 <span class="form-label-title">Escolha o Provedor de IA</span>
-                <div class="provider-cards-grid">
-                  <button
-                    type="button"
-                    class={`provider-card ${provider() === 'codex' ? 'selected codex' : ''}`}
-                    onClick={() => handleProviderChange('codex')}
-                  >
-                    <div class="provider-card-title">
-                      <span>Codex</span>
-                      <span
-                        class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`}
-                      />
+                <Show
+                  when={connections().filter((c) => c.enabled).length > 0}
+                  fallback={
+                    <div
+                      style={{
+                        padding: '12px',
+                        background: 'rgba(239, 68, 68, 0.15)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        'border-radius': 'var(--radius-sm)',
+                        'font-size': '12px',
+                        display: 'flex',
+                        'align-items': 'center',
+                        'justify-content': 'space-between',
+                      }}
+                    >
+                      <span>⚠️ Nenhuma conexão de IA está ativada.</span>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        style={{ padding: '2px 8px', 'font-size': '11px' }}
+                        onClick={() => {
+                          setShowModal(false)
+                          setActiveSection('connections')
+                        }}
+                      >
+                        Ativar Conexões
+                      </button>
                     </div>
-                    <div class="provider-card-sub">
-                      {providerStatuses()?.codex.available
-                        ? 'CLI Oficial OpenAI (Pronto)'
-                        : 'CLI não encontrada'}
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    class={`provider-card ${provider() === 'claude' ? 'selected claude' : ''}`}
-                    onClick={() => handleProviderChange('claude')}
-                  >
-                    <div class="provider-card-title">
-                      <span>Claude Code</span>
-                      <span
-                        class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`}
-                      />
-                    </div>
-                    <div class="provider-card-sub">
-                      {providerStatuses()?.claude.available
-                        ? 'Claude CLI Anthropic (Pronto)'
-                        : 'CLI não encontrada'}
-                    </div>
-                  </button>
-                </div>
+                  }
+                >
+                  <div class="provider-cards-grid">
+                    <For each={connections()}>
+                      {(conn) => {
+                        const isSelected = () => provider() === conn.providerId
+                        const isEnabled = () => conn.enabled
+                        return (
+                          <button
+                            type="button"
+                            class={`provider-card ${isSelected() ? `selected ${conn.providerId}` : ''}`}
+                            onClick={() => {
+                              if (isEnabled()) {
+                                handleProviderChange(conn.providerId)
+                              }
+                            }}
+                            disabled={!isEnabled()}
+                            style={!isEnabled() ? { opacity: '0.4', cursor: 'not-allowed' } : {}}
+                          >
+                            <div class="provider-card-title">
+                              <span>{conn.name}</span>
+                              <span class={`status-dot ${conn.available ? 'online' : ''}`} />
+                            </div>
+                            <div class="provider-card-sub">
+                              {isEnabled()
+                                ? conn.available
+                                  ? 'Conexão Pronta'
+                                  : 'Requer Configuração'
+                                : 'Desativado'}
+                            </div>
+                          </button>
+                        )
+                      }}
+                    </For>
+                  </div>
+                </Show>
               </div>
 
               <div class="form-group">
                 <label for="agent-model">Modelo</label>
-                <input
-                  id="agent-model"
-                  type="text"
-                  value={model()}
-                  onInput={(e) => setModel(e.currentTarget.value)}
-                  placeholder={
-                    provider() === 'codex' ? 'Ex: gpt-4o, o3-mini' : 'Ex: claude-3-7-sonnet'
-                  }
-                  required
-                />
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <select
+                    id="agent-model-select"
+                    style={{
+                      'background-color': 'var(--bg-card)',
+                      border: '1px solid var(--border)',
+                      'border-radius': 'var(--radius-sm)',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      'font-size': '13px',
+                      outline: 'none',
+                    }}
+                    value={model()}
+                    onChange={(e) => setModel(e.currentTarget.value)}
+                  >
+                    <For
+                      each={
+                        connections().find((c) => c.providerId === provider())?.models || [model()]
+                      }
+                    >
+                      {(m) => <option value={m}>{m}</option>}
+                    </For>
+                  </select>
+                  <input
+                    id="agent-model"
+                    type="text"
+                    value={model()}
+                    onInput={(e) => setModel(e.currentTarget.value)}
+                    placeholder="Ou digite o nome do modelo..."
+                    style={{ flex: 1 }}
+                    required
+                  />
+                </div>
               </div>
 
               <div class="form-group">

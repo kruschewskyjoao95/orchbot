@@ -1,4 +1,26 @@
-export type SupportedProvider = 'codex' | 'claude'
+export type SupportedProvider = 'codex' | 'claude' | 'grok' | 'muse'
+
+export interface ProviderConnection {
+  providerId: SupportedProvider
+  name: string
+  enabled: boolean
+  apiKey?: string
+  endpoint?: string
+  defaultModel: string
+  available: boolean
+  version?: string
+  error?: string
+  models: string[]
+  updatedAt: string
+}
+
+export interface UpdateConnectionInput {
+  providerId: SupportedProvider
+  enabled?: boolean
+  apiKey?: string
+  endpoint?: string
+  defaultModel?: string
+}
 
 export interface Agent {
   id: string
@@ -202,6 +224,9 @@ export interface OrchbotApi {
   onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void
   onTaskStatusChanged: (listener: (data: TaskStatusChangedEvent) => void) => () => void
   onBrowserTabUpdated: (listener: (tab: BrowserTab) => void) => () => void
+  getConnections: () => Promise<ProviderConnection[]>
+  updateConnection: (input: UpdateConnectionInput) => Promise<ProviderConnection>
+  testConnection: (providerId: SupportedProvider) => Promise<{ success: boolean; message: string }>
 }
 
 export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
@@ -215,8 +240,8 @@ export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
     throw new Error('O nome do agente é obrigatório')
   }
 
-  if (provider !== 'codex' && provider !== 'claude') {
-    throw new Error('Provedor inválido (suportados: codex, claude)')
+  if (provider !== 'codex' && provider !== 'claude' && provider !== 'grok' && provider !== 'muse') {
+    throw new Error('Provedor inválido (suportados: codex, claude, grok, muse)')
   }
 
   if (typeof model !== 'string' || model.trim().length === 0) {

@@ -7,10 +7,26 @@ import type {
   Attachment,
   CreateAgentInput,
   Message,
+  ProviderConnection,
+  SupportedProvider,
   TaskQueueItem,
   TaskStatus,
   Thread,
+  UpdateConnectionInput,
 } from '../../shared/types'
+
+export const PROVIDER_MODELS: Record<SupportedProvider, string[]> = {
+  codex: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini', 'codex-preview'],
+  claude: ['claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus'],
+  grok: ['grok-2', 'grok-2-1212', 'grok-beta', 'grok-2-vision-1212'],
+  muse: [
+    'gemini-2.0-flash',
+    'gemini-2.0-pro-exp',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+    'muse-thinking',
+  ],
+}
 
 export class OrchbotDatabase {
   private db: DatabaseSync
@@ -31,6 +47,7 @@ export class OrchbotDatabase {
     }
 
     this.initMigrations()
+    this.seedDefaultConnections()
   }
 
   private initMigrations(): void {
@@ -92,6 +109,17 @@ export class OrchbotDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_task_queue_agent ON task_queue(agent_id, status);
 
+      CREATE TABLE IF NOT EXISTS provider_connections (
+        provider_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        api_key TEXT,
+        endpoint TEXT,
+        default_model TEXT NOT NULL,
+        custom_config_json TEXT,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS migrations (
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
@@ -107,6 +135,134 @@ export class OrchbotDatabase {
     } catch {
       // Ignora se as colunas já existirem no banco
     }
+  }
+
+  private seedDefaultConnections(): void {
+    const defaults: Array<{
+      id: SupportedProvider
+      name: string
+      model: string
+      endpoint?: string
+    }> = [
+      { id: 'codex', name: 'Codex (OpenAI)', model: 'gpt-4o' },
+      { id: 'claude', name: 'Claude (Anthropic)', model: 'claude-3-7-sonnet' },
+      { id: 'grok', name: 'Grok (xAI)', model: 'grok-2', endpoint: 'https://api.x.ai/v1' },
+      { id: 'muse', name: 'Muse (Google Gemini)', model: 'gemini-2.0-flash' },
+    ]
+
+    const now = new Date().toISOString()
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO provider_connections (provider_id, name, enabled, api_key, endpoint, default_model, updated_at)
+      VALUES (?, ?, 1, NULL, ?, ?, ?)
+    `)
+
+    for (const d of defaults) {
+      stmt.run(d.id, d.name, d.endpoint ?? null, d.model, now)
+    }
+  }
+
+  public listConnections(): ProviderConnection[] {
+    const stmt = this.db.prepare(`
+      SELECT 
+        provider_id AS providerId,
+        name,
+        enabled,
+        api_key AS apiKey,
+        endpoint,
+        default_model AS defaultModel,
+        updated_at AS updatedAt
+      FROM provider_connections
+      ORDER BY rowid ASC
+    `)
+    const rows = stmt.all() as unknown as Array<{
+      providerId: SupportedProvider
+      name: string
+      enabled: number
+      apiKey: string | null
+      endpoint: string | null
+      defaultModel: string
+      updatedAt: string
+    }>
+
+    return rows.map((r) => ({
+      providerId: r.providerId,
+      name: r.name,
+      enabled: Boolean(r.enabled),
+      apiKey: r.apiKey ?? undefined,
+      endpoint: r.endpoint ?? undefined,
+      defaultModel: r.defaultModel,
+      available: false,
+      models: PROVIDER_MODELS[r.providerId] || [r.defaultModel],
+      updatedAt: r.updatedAt,
+    }))
+  }
+
+  public getConnection(providerId: SupportedProvider): ProviderConnection | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        provider_id AS providerId,
+        name,
+        enabled,
+        api_key AS apiKey,
+        endpoint,
+        default_model AS defaultModel,
+        updated_at AS updatedAt
+      FROM provider_connections
+      WHERE provider_id = ?
+    `)
+    const r = stmt.get(providerId) as unknown as
+      | {
+          providerId: SupportedProvider
+          name: string
+          enabled: number
+          apiKey: string | null
+          endpoint: string | null
+          defaultModel: string
+          updatedAt: string
+        }
+      | undefined
+
+    if (!r) return null
+
+    return {
+      providerId: r.providerId,
+      name: r.name,
+      enabled: Boolean(r.enabled),
+      apiKey: r.apiKey ?? undefined,
+      endpoint: r.endpoint ?? undefined,
+      defaultModel: r.defaultModel,
+      available: false,
+      models: PROVIDER_MODELS[r.providerId] || [r.defaultModel],
+      updatedAt: r.updatedAt,
+    }
+  }
+
+  public updateConnection(input: UpdateConnectionInput): ProviderConnection {
+    const current = this.getConnection(input.providerId)
+    if (!current) {
+      throw new Error(`Conexão do provedor "${input.providerId}" não encontrada`)
+    }
+
+    const now = new Date().toISOString()
+    const newEnabled =
+      input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled ? 1 : 0
+    const newApiKey = input.apiKey !== undefined ? input.apiKey : (current.apiKey ?? null)
+    const newEndpoint = input.endpoint !== undefined ? input.endpoint : (current.endpoint ?? null)
+    const newModel = input.defaultModel !== undefined ? input.defaultModel : current.defaultModel
+
+    const stmt = this.db.prepare(`
+      UPDATE provider_connections
+      SET enabled = ?, api_key = ?, endpoint = ?, default_model = ?, updated_at = ?
+      WHERE provider_id = ?
+    `)
+
+    stmt.run(newEnabled, newApiKey, newEndpoint, newModel, now, input.providerId)
+
+    const updated = this.getConnection(input.providerId)
+    if (!updated) {
+      throw new Error(`Falha ao recuperar conexão atualizada: ${input.providerId}`)
+    }
+    return updated
   }
 
   public listAgents(): Agent[] {

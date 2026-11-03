@@ -8,7 +8,12 @@ import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
 import { AttachmentManager } from '../backend/storage/attachment-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
-import type { BrowserBounds, DelegationInput } from '../shared/types'
+import type {
+  BrowserBounds,
+  DelegationInput,
+  SupportedProvider,
+  UpdateConnectionInput,
+} from '../shared/types'
 import { validateCreateAgentInput } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
@@ -168,6 +173,52 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('orchbot:get-provider-status', async () => {
     return await providerRegistry.checkAllAvailability()
+  })
+
+  ipcMain.handle('orchbot:get-connections', async () => {
+    const list = database.listConnections()
+    const statuses = await providerRegistry.checkAllAvailability()
+    return list.map((conn) => {
+      const status = statuses[conn.providerId]
+      return {
+        ...conn,
+        available: status?.available ?? false,
+        error: status?.error,
+      }
+    })
+  })
+
+  ipcMain.handle('orchbot:update-connection', (_event, input: UpdateConnectionInput) => {
+    return database.updateConnection(input)
+  })
+
+  ipcMain.handle('orchbot:test-connection', async (_event, providerId: SupportedProvider) => {
+    const conn = database.getConnection(providerId)
+    if (!conn) {
+      return {
+        success: false,
+        message: `Conexão "${providerId}" não encontrada.`,
+      }
+    }
+    try {
+      const adapter = providerRegistry.getAdapter(providerId)
+      const info = await adapter.checkAvailability()
+      if (info.available) {
+        return {
+          success: true,
+          message: `Conexão bem sucedida: ${info.version || 'Pronto para uso'}`,
+        }
+      }
+      return {
+        success: false,
+        message: info.error || 'Provedor indisponível no sistema',
+      }
+    } catch (err: unknown) {
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
   })
 
   ipcMain.handle(
