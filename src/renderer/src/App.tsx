@@ -773,12 +773,24 @@ export const App: Component = () => {
     }
   }
 
-  const handleCreateThread = async () => {
+  const handleCreateThread = async (presetTitle?: string) => {
     const agentId = selectedAgentId()
     if (!agentId || !window.orchbot) return
+    const defaultTitle =
+      presetTitle ||
+      (agentThreads().length === 1 && agentThreads()[0].title === 'Conversa Inicial'
+        ? 'Refatorar Banco de Dados'
+        : `Tópico ${agentThreads().length + 1}`)
+
+    const titlePrompt = window.prompt(
+      'Título do novo tópico/sessão de conversa (ex: Refatorar Banco de Dados, Debug de Performance):',
+      defaultTitle,
+    )
+    if (titlePrompt === null) return
+    const finalTitle = titlePrompt.trim() || defaultTitle
+
     try {
-      const title = `Conversa ${agentThreads().length + 1}`
-      const newThread = await window.orchbot.createThread(agentId, title)
+      const newThread = await window.orchbot.createThread(agentId, finalTitle)
       await loadThreadAndMessages(agentId, newThread.id)
     } catch (err) {
       console.error('Erro ao criar conversa:', err)
@@ -1337,7 +1349,7 @@ export const App: Component = () => {
                                   type="button"
                                   class="thread-chip-select"
                                   onClick={() => handleSelectThread(thread)}
-                                  title={thread.title}
+                                  title={`Tópico: ${thread.title}`}
                                 >
                                   <span class="thread-chip-icon">💬</span>
                                   <span class="thread-chip-title">{thread.title}</span>
@@ -1345,7 +1357,7 @@ export const App: Component = () => {
                                 <button
                                   type="button"
                                   class="thread-chip-action"
-                                  title="Renomear conversa"
+                                  title="Renomear tópico da conversa"
                                   onClick={(e) => handleRenameThread(thread, e)}
                                 >
                                   ✏️
@@ -1354,7 +1366,7 @@ export const App: Component = () => {
                                   <button
                                     type="button"
                                     class="thread-chip-action delete"
-                                    title="Excluir conversa"
+                                    title="Excluir tópico da conversa"
                                     onClick={(e) => handleDeleteThread(thread, e)}
                                   >
                                     ✕
@@ -1368,10 +1380,10 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="btn-new-thread"
-                        onClick={handleCreateThread}
-                        title="Criar nova conversa para este agente"
+                        onClick={() => handleCreateThread()}
+                        title="Criar novo tópico/sessão de conversa (ex: Refatorar Banco, Debug, Pesquisa)"
                       >
-                        <span>+</span> Nova Conversa
+                        <span>+</span> Novo Tópico
                       </button>
                     </div>
 
@@ -1401,13 +1413,46 @@ export const App: Component = () => {
                         fallback={
                           <div class="chat-empty">
                             <div>
-                              👋 Olá! Eu sou <strong>{agent().name}</strong> operando via{' '}
+                              👋 Olá! Você está no tópico{' '}
+                              <strong>"{activeThread()?.title || 'Conversa'}"</strong> do agente{' '}
+                              <strong>{agent().name}</strong> operando via{' '}
                               <strong>{agent().provider.toUpperCase()}</strong>.
                             </div>
                             <div style={{ 'margin-top': '8px' }}>
-                              Envie tarefas ou anexe arquivos abaixo. Elas serão salvas e executadas
-                              de forma organizada no workspace <code>{agent().workspacePath}</code>.
+                              Esta sessão é 100% isolada no workspace{' '}
+                              <code>{agent().workspacePath}</code>. Envie tarefas ou anexe arquivos
+                              abaixo sem misturar com outros tópicos.
                             </div>
+                            <Show when={agentThreads().length <= 1}>
+                              <div class="quick-topics-row">
+                                <span class="quick-topics-label">
+                                  Sugestões de tópicos para criar:
+                                </span>
+                                <div class="quick-topics-buttons">
+                                  <button
+                                    type="button"
+                                    class="quick-topic-btn"
+                                    onClick={() => handleCreateThread('Refatorar Banco de Dados')}
+                                  >
+                                    + Refatorar Banco de Dados
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="quick-topic-btn"
+                                    onClick={() => handleCreateThread('Debug de Performance')}
+                                  >
+                                    + Debug de Performance
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="quick-topic-btn"
+                                    onClick={() => handleCreateThread('Pesquisa no Navegador')}
+                                  >
+                                    + Pesquisa no Navegador
+                                  </button>
+                                </div>
+                              </div>
+                            </Show>
                           </div>
                         }
                       >
