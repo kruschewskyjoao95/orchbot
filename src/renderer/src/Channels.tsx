@@ -1,14 +1,23 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import type { Agent, Channel, ChannelMessage } from '../../shared/types'
 
-export function Channels(props: { agents: Agent[] }) {
+/** Mostra o canal escolhido na barra lateral; a lista de canais fica no App. */
+export function Channels(props: {
+  agents: Agent[]
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+  creating: boolean
+  onCreatingChange: (open: boolean) => void
+  onChanged: () => void
+}) {
   const [channels, setChannels] = createSignal<Channel[]>([])
-  const [showArchived, setShowArchived] = createSignal(false)
-  const [selectedId, setSelectedId] = createSignal<string | null>(null)
+  const selectedId = () => props.selectedId
+  const setSelectedId = (id: string | null) => props.onSelect(id)
+  const creating = () => props.creating
+  const setCreating = (open: boolean) => props.onCreatingChange(open)
   const [messages, setMessages] = createSignal<ChannelMessage[]>([])
   const [text, setText] = createSignal('')
   const [error, setError] = createSignal('')
-  const [creating, setCreating] = createSignal(false)
   const [title, setTitle] = createSignal('')
   const [goal, setGoal] = createSignal('')
   const [owner, setOwner] = createSignal('')
@@ -20,7 +29,8 @@ export function Channels(props: { agents: Agent[] }) {
   const label = (a?: Agent) => (a ? `${a.avatar ?? '🤖'} ${a.name}` : 'Agente removido')
 
   const refresh = async () => {
-    const list = await window.orchbot.listChannels(showArchived())
+    // Inclui arquivados: o canal aberto pode ser um arquivado escolhido na barra lateral.
+    const list = await window.orchbot.listChannels(true)
     setChannels(list)
     const id = selectedId()
     if (id && list.some((c) => c.id === id))
@@ -32,6 +42,7 @@ export function Channels(props: { agents: Agent[] }) {
     try {
       await action()
       await refresh()
+      props.onChanged()
     } catch (problem) {
       setError(
         problem instanceof Error
@@ -53,9 +64,12 @@ export function Channels(props: { agents: Agent[] }) {
     })
   })
   createEffect(() => {
-    showArchived()
     selectedId()
     void refresh()
+  })
+  // Abrir "Novo canal" já sugere o primeiro agente como dono.
+  createEffect(() => {
+    if (props.creating && !owner()) setOwner(props.agents[0]?.id ?? '')
   })
   createEffect(() => {
     messages()
@@ -91,63 +105,15 @@ export function Channels(props: { agents: Agent[] }) {
 
   return (
     <div class="channels-view">
-      <aside class="channels-list">
-        <div class="channels-list-head">
-          <h2>Canais</h2>
-          <button
-            type="button"
-            class="btn-primary"
-            disabled={props.agents.length === 0}
-            onClick={() => {
-              setOwner(props.agents[0]?.id ?? '')
-              setCreating(true)
-            }}
-          >
-            + Novo
-          </button>
-        </div>
-        <label class="channels-toggle">
-          <input
-            type="checkbox"
-            checked={showArchived()}
-            onChange={(e) => setShowArchived(e.currentTarget.checked)}
-          />{' '}
-          Mostrar arquivados
-        </label>
-        <Show
-          when={channels().length > 0}
-          fallback={
-            <p class="channels-empty">
-              Nenhum canal ainda. Crie um para vários agentes trabalharem numa tarefa com um dono.
-            </p>
-          }
-        >
-          <For each={channels()}>
-            {(c) => (
-              <button
-                type="button"
-                class="channel-item"
-                classList={{ active: c.id === selectedId(), muted: c.archived }}
-                onClick={() => setSelectedId(c.id)}
-              >
-                <span class="channel-item-title"># {c.title}</span>
-                <span class="channel-item-meta">
-                  {c.archived ? '🗄️ arquivado' : c.status === 'stopped' ? '⏹️ parado' : '🟢 ativo'} ·{' '}
-                  {agentOf(c.ownerAgentId)?.name ?? 'sem dono'}
-                </span>
-              </button>
-            )}
-          </For>
-        </Show>
-      </aside>
-
       <section class="channel-main">
         <Show when={error()}>
           <div class="channel-error">{error()}</div>
         </Show>
         <Show
           when={selected()}
-          fallback={<div class="channels-empty">Selecione ou crie um canal.</div>}
+          fallback={
+            <div class="channels-empty">Escolha um canal na barra lateral ou crie um novo.</div>
+          }
         >
           {(channel) => (
             <>

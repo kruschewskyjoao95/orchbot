@@ -140,13 +140,10 @@ button {
 
 .app-container {
   display: grid;
-  grid-template-columns: 56px 300px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   height: 100%;
   width: 100%;
   background: var(--bg-main);
-}
-.app-container.settings-open {
-  grid-template-columns: 56px minmax(0, 1fr);
 }
 .icon-rail {
   display: flex;
@@ -211,9 +208,6 @@ button {
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-}
-.app-container.settings-open .sidebar {
-  display: none;
 }
 .sidebar-header {
   padding: 14px 14px 12px;
@@ -3152,4 +3146,263 @@ dialog.modal-overlay,
 .managed-row input {
   flex: 1;
   min-width: 160px;
+}
+
+/* ---------- Primeiro uso (dois passos) ---------- */
+.welcome-view:has(.first-run-steps) {
+  max-width: 760px;
+  justify-content: flex-start;
+  overflow-y: auto;
+}
+.first-run-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+.first-run-step {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.first-run-step .welcome-subtitle {
+  margin: 0;
+  text-align: left;
+}
+.first-run-step .provider-picker {
+  padding: 0;
+  max-width: none;
+  width: 100%;
+}
+.first-run-step.done .welcome-subtitle::after {
+  content: " ✓";
+  color: var(--success);
+}
+.first-run-hint {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ---------- Novo agente: essencial à vista, resto em "Avançado" ---------- */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.form-row-avatar {
+  grid-template-columns: 90px 1fr;
+}
+.form-row .form-group select,
+.form-row .form-group input {
+  width: 100%;
+}
+.advanced-box {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.advanced-box > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.advanced-box[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.advanced-box[open] > summary {
+  margin-bottom: 2px;
+}
+
+/* ---------- Cabeçalho do chat: chip do modelo, menu "⋯" e ajustes ---------- */
+.agent-model-chip {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+.agent-model-chip:hover {
+  color: var(--text-main);
+  border-color: var(--border-strong);
+}
+.menu-anchor {
+  position: relative;
+}
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  border: none;
+  cursor: default;
+  z-index: 40;
+}
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 41;
+  min-width: 250px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.dropdown-item {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-main);
+  font-size: 13px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dropdown-item:hover:not(:disabled),
+.dropdown-item:focus-visible {
+  background: var(--bg-card-hover);
+}
+.dropdown-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.dropdown-item.danger {
+  color: var(--danger);
+}
+.dropdown-separator {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 4px 0;
+}
+.midchat-switcher-group.agent-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.agent-settings-grid .midchat-field {
+  flex-direction: column;
+  align-items: stretch;
+}
+.agent-settings-grid .midchat-field select,
+.agent-settings-grid .midchat-field input {
+  width: 100% !important;
+}
+.agent-settings-extra {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.agent-settings-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+/* ---------- Barra lateral única ---------- */
+.sidebar-header .logo-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-header .rail-logo {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  margin: 0;
+}
+.project-group.needs-you .project-group-name {
+  color: var(--warning);
+}
+.agent-state {
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.agent-state.working {
+  color: var(--accent);
+}
+.agent-state.responded {
+  color: var(--success);
+}
+.agent-state.failed,
+.agent-state.paused {
+  color: var(--warning);
+}
+.agent-item.muted {
+  opacity: 0.6;
+}
+.channel-avatar {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.sidebar-small-link {
+  margin: 4px 0 0 12px;
+  font-size: 11.5px;
+}
+.footer-link.active {
+  color: var(--text-main);
+}
+
+/* ---------- Configurações em janela por cima da tela atual ---------- */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 30;
+}
+.settings-overlay .settings-shell {
+  flex: none;
+  width: min(1120px, 94vw);
+  height: min(800px, 90vh);
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
 }
