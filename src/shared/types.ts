@@ -193,6 +193,9 @@ export interface OrchbotApi {
   updateAgent: (input: UpdateAgentInput) => Promise<Agent>
   deleteAgent: (id: string) => Promise<boolean>
   getThreads: (agentId: string) => Promise<Thread[]>
+  createThread: (agentId: string, title?: string) => Promise<Thread>
+  deleteThread: (threadId: string) => Promise<boolean>
+  updateThreadTitle: (threadId: string, title: string) => Promise<Thread>
   getMessages: (threadId: string) => Promise<Message[]>
   getSystemStatus: () => Promise<SystemStatus>
   getProviderStatus: () => Promise<Record<SupportedProvider, ProviderInfo>>

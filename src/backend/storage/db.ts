@@ -388,6 +388,38 @@ export class OrchbotDatabase {
     return stmt.all(agentId) as unknown as Thread[]
   }
 
+  public createThread(agentId: string, title = 'Nova Conversa'): Thread {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const stmt = this.db.prepare(`
+      INSERT INTO threads (id, agent_id, title, created_at)
+      VALUES (?, ?, ?, ?)
+    `)
+    stmt.run(id, agentId, title, now)
+    return { id, agentId, title, createdAt: now }
+  }
+
+  public deleteThread(threadId: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM threads WHERE id = ?')
+    stmt.run(threadId)
+    return true
+  }
+
+  public updateThreadTitle(threadId: string, title: string): Thread {
+    const stmt = this.db.prepare('UPDATE threads SET title = ? WHERE id = ?')
+    stmt.run(title, threadId)
+    const getStmt = this.db.prepare(`
+      SELECT id, agent_id AS agentId, title, created_at AS createdAt
+      FROM threads
+      WHERE id = ?
+    `)
+    const updated = getStmt.get(threadId) as unknown as Thread | undefined
+    if (!updated) {
+      throw new Error(`Thread não encontrada: ${threadId}`)
+    }
+    return updated
+  }
+
   public listMessages(threadId: string): Message[] {
     const stmt = this.db.prepare(`
       SELECT 

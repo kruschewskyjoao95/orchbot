@@ -166,6 +166,31 @@ function registerIpcHandlers(): void {
     return database.listThreads(agentId)
   })
 
+  ipcMain.handle(
+    'orchbot:create-thread',
+    (_event, payload: { agentId: string; title?: string }) => {
+      const { agentId, title } = payload
+      if (!agentId || typeof agentId !== 'string') {
+        throw new Error('ID do agente obrigatório')
+      }
+      return database.createThread(agentId, title)
+    },
+  )
+
+  ipcMain.handle('orchbot:delete-thread', (_event, threadId: string) => {
+    if (typeof threadId !== 'string') throw new Error('ID da thread inválido')
+    return database.deleteThread(threadId)
+  })
+
+  ipcMain.handle(
+    'orchbot:update-thread-title',
+    (_event, payload: { threadId: string; title: string }) => {
+      const { threadId, title } = payload
+      if (!threadId || !title) throw new Error('Parâmetros inválidos')
+      return database.updateThreadTitle(threadId, title)
+    },
+  )
+
   ipcMain.handle('orchbot:get-messages', (_event, threadId: string) => {
     if (typeof threadId !== 'string') throw new Error('ID da thread inválido')
     return database.listMessages(threadId)

@@ -21,6 +21,11 @@ const api: OrchbotApi = {
   updateAgent: (input: UpdateAgentInput) => ipcRenderer.invoke('orchbot:update-agent', input),
   deleteAgent: (id: string) => ipcRenderer.invoke('orchbot:delete-agent', id),
   getThreads: (agentId: string) => ipcRenderer.invoke('orchbot:get-threads', agentId),
+  createThread: (agentId: string, title?: string) =>
+    ipcRenderer.invoke('orchbot:create-thread', { agentId, title }),
+  deleteThread: (threadId: string) => ipcRenderer.invoke('orchbot:delete-thread', threadId),
+  updateThreadTitle: (threadId: string, title: string) =>
+    ipcRenderer.invoke('orchbot:update-thread-title', { threadId, title }),
   getMessages: (threadId: string) => ipcRenderer.invoke('orchbot:get-messages', threadId),
   getSystemStatus: () => ipcRenderer.invoke('orchbot:get-system-status'),
   getProviderStatus: () => ipcRenderer.invoke('orchbot:get-provider-status'),

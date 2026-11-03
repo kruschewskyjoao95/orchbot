@@ -39,6 +39,7 @@ export const App: Component = () => {
 
   const [agents, setAgents] = createSignal<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null)
+  const [agentThreads, setAgentThreads] = createSignal<Thread[]>([])
   const [activeThread, setActiveThread] = createSignal<Thread | null>(null)
   const [messages, setMessages] = createSignal<Message[]>([])
   const [systemStatus, setSystemStatus] = createSignal<SystemStatus | null>(null)
@@ -179,14 +180,19 @@ export const App: Component = () => {
     }
   }
 
-  const loadThreadAndMessages = async (agentId: string) => {
+  const loadThreadAndMessages = async (agentId: string, preferredThreadId?: string) => {
     try {
       if (window.orchbot) {
         const threads = await window.orchbot.getThreads(agentId)
+        setAgentThreads(threads)
         if (threads.length > 0) {
-          const currentThread = threads[0]
-          setActiveThread(currentThread)
-          const msgs = await window.orchbot.getMessages(currentThread.id)
+          const activeId = activeThread()?.id
+          const selected =
+            (preferredThreadId && threads.find((t) => t.id === preferredThreadId)) ||
+            (activeId && threads.find((t) => t.id === activeId)) ||
+            threads[0]
+          setActiveThread(selected)
+          const msgs = await window.orchbot.getMessages(selected.id)
           setMessages(msgs)
           setTimeout(scrollToBottom, 50)
         } else {
@@ -613,6 +619,7 @@ export const App: Component = () => {
         if (selectedAgentId() === id) {
           setSelectedAgentId(null)
           setActiveThread(null)
+          setAgentThreads([])
           setMessages([])
           setTasks([])
         }
@@ -734,6 +741,68 @@ export const App: Component = () => {
       }
     } catch (err) {
       console.error('Erro ao interromper turno:', err)
+    }
+  }
+
+  const handleSelectThread = async (thread: Thread) => {
+    setActiveThread(thread)
+    setChatError(null)
+    setStreamingText('')
+    setIsStreaming(false)
+    if (window.orchbot) {
+      const msgs = await window.orchbot.getMessages(thread.id)
+      setMessages(msgs)
+      setTimeout(scrollToBottom, 50)
+    }
+  }
+
+  const handleCreateThread = async () => {
+    const agentId = selectedAgentId()
+    if (!agentId || !window.orchbot) return
+    try {
+      const title = `Conversa ${agentThreads().length + 1}`
+      const newThread = await window.orchbot.createThread(agentId, title)
+      await loadThreadAndMessages(agentId, newThread.id)
+    } catch (err) {
+      console.error('Erro ao criar conversa:', err)
+    }
+  }
+
+  const handleDeleteThread = async (thread: Thread, e: MouseEvent) => {
+    e.stopPropagation()
+    const agentId = selectedAgentId()
+    if (!agentId || !window.orchbot) return
+    if (agentThreads().length <= 1) {
+      alert('Não é possível excluir a única conversa do agente.')
+      return
+    }
+    const confirmed = window.confirm(
+      `Deseja realmente excluir a conversa "${thread.title}"? Todas as mensagens dela serão apagadas.`,
+    )
+    if (!confirmed) return
+
+    try {
+      await window.orchbot.deleteThread(thread.id)
+      const remaining = agentThreads().filter((t) => t.id !== thread.id)
+      const nextThreadId = activeThread()?.id === thread.id ? remaining[0]?.id : activeThread()?.id
+      await loadThreadAndMessages(agentId, nextThreadId)
+    } catch (err) {
+      console.error('Erro ao excluir conversa:', err)
+    }
+  }
+
+  const handleRenameThread = async (thread: Thread, e: MouseEvent) => {
+    e.stopPropagation()
+    const agentId = selectedAgentId()
+    if (!agentId || !window.orchbot) return
+    const newTitle = window.prompt('Novo título para a conversa:', thread.title)
+    if (!newTitle || newTitle.trim() === '' || newTitle.trim() === thread.title) return
+
+    try {
+      await window.orchbot.updateThreadTitle(thread.id, newTitle.trim())
+      await loadThreadAndMessages(agentId, activeThread()?.id)
+    } catch (err) {
+      console.error('Erro ao renomear conversa:', err)
     }
   }
 
@@ -1165,6 +1234,58 @@ export const App: Component = () => {
 
                   {/* Modo Chat (Conversa) */}
                   <Show when={mainViewMode() === 'chat'}>
+                    {/* Barra de Múltiplas Conversas (Threads) */}
+                    <div class="threads-bar">
+                      <div class="threads-bar-header">
+                        <span class="threads-bar-label">Conversas:</span>
+                        <div class="threads-list">
+                          <For each={agentThreads()}>
+                            {(thread) => (
+                              <div
+                                class={`thread-chip ${activeThread()?.id === thread.id ? 'active' : ''}`}
+                              >
+                                <button
+                                  type="button"
+                                  class="thread-chip-select"
+                                  onClick={() => handleSelectThread(thread)}
+                                  title={thread.title}
+                                >
+                                  <span class="thread-chip-icon">💬</span>
+                                  <span class="thread-chip-title">{thread.title}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  class="thread-chip-action"
+                                  title="Renomear conversa"
+                                  onClick={(e) => handleRenameThread(thread, e)}
+                                >
+                                  ✏️
+                                </button>
+                                <Show when={agentThreads().length > 1}>
+                                  <button
+                                    type="button"
+                                    class="thread-chip-action delete"
+                                    title="Excluir conversa"
+                                    onClick={(e) => handleDeleteThread(thread, e)}
+                                  >
+                                    ✕
+                                  </button>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn-new-thread"
+                        onClick={handleCreateThread}
+                        title="Criar nova conversa para este agente"
+                      >
+                        <span>+</span> Nova Conversa
+                      </button>
+                    </div>
+
                     {/* Lista de Mensagens / Conversa */}
                     <div class="chat-messages">
                       <Show when={agent().instructions}>
