@@ -147,6 +147,7 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:delete-provider-account', providerId, id),
   testProviderAccount: (providerId: SupportedProvider, id: string) =>
     ipcRenderer.invoke('orchbot:test-provider-account', providerId, id),
+  listConnections: () => ipcRenderer.invoke('orchbot:list-connections'),
   getConnections: () => ipcRenderer.invoke('orchbot:get-connections'),
   getProviderCatalog: () => ipcRenderer.invoke('orchbot:get-provider-catalog'),
   updateConnection: (input: UpdateConnectionInput) =>
