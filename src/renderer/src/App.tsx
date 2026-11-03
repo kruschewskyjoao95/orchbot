@@ -50,6 +50,17 @@ import {
   stateFromQueue,
   stateFromTask,
 } from './agent-state'
+import {
+  COWORKER_TEMPLATES,
+  type CoworkerTemplate,
+  type PaletteItem,
+  buildCommandPaletteItems,
+  computeBoardSummary,
+  filterPaletteItems,
+  getActiveTaskForAgent,
+  parseComposerInput,
+  parseStructuredMessage,
+} from './orchestration-ui'
 
 export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
   codex: 'gpt-6.1-sol',
@@ -137,7 +148,18 @@ const SETTINGS_PANES: { id: SettingsPaneId; label: string; hint: string }[] = [
 ]
 
 const RailIcon: Component<{
-  name: 'chat' | 'link' | 'channels' | 'skills' | 'sun' | 'moon' | 'gear' | 'close' | 'search'
+  name:
+    | 'chat'
+    | 'board'
+    | 'command'
+    | 'link'
+    | 'channels'
+    | 'skills'
+    | 'sun'
+    | 'moon'
+    | 'gear'
+    | 'close'
+    | 'search'
 }> = (props) => (
   <svg
     class="rail-icon"
@@ -151,6 +173,16 @@ const RailIcon: Component<{
   >
     <Show when={props.name === 'chat'}>
       <path d="M5 6h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z" />
+    </Show>
+    <Show when={props.name === 'board'}>
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </Show>
+    <Show when={props.name === 'command'}>
+      <path d="M7 8l4 4-4 4M13 16h4" />
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
     </Show>
     <Show when={props.name === 'skills'}>
       <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
@@ -235,8 +267,19 @@ const Switch: Component<{ pressed: boolean; label: string; onChange: () => void 
 )
 
 export const App: Component = () => {
-  // Abre na conversa; sem agentes, a própria tela de conversa guia o primeiro uso.
-  const [activeSection, setActiveSection] = createSignal<'agents' | 'channels' | 'skills'>('agents')
+  // Abre na conversa ou no quadro geral; sem agentes, guia o primeiro uso.
+  const [activeSection, setActiveSection] = createSignal<
+    'board' | 'agents' | 'channels' | 'skills'
+  >('agents')
+  const [showCommandPalette, setShowCommandPalette] = createSignal(false)
+  const [paletteQuery, setPaletteQuery] = createSignal('')
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
+  const [boardFilterProject, setBoardFilterProject] = createSignal<string>('all')
+  const [boardForemanPrompt, setBoardForemanPrompt] = createSignal('')
+  const [boardForemanTargetId, setBoardForemanTargetId] = createSignal('')
+  const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
+  const [allAgentQueues, setAllAgentQueues] = createSignal<Record<string, TaskQueueItem[]>>({})
+  const [allAgentPaused, setAllAgentPaused] = createSignal<Record<string, boolean>>({})
   const [profileStats, setProfileStats] = createSignal<ProfileStats | null>(null)
   const [providerUpdates, setProviderUpdates] = createSignal<ProviderUpdateInfo[]>([])
   const [updatingProvider, setUpdatingProvider] = createSignal<string | null>(null)
@@ -359,6 +402,8 @@ export const App: Component = () => {
         window.orchbot.getQueue(agentId),
         window.orchbot.isQueuePaused(agentId),
       ])
+      setAllAgentQueues((prev) => ({ ...prev, [agentId]: queue }))
+      setAllAgentPaused((prev) => ({ ...prev, [agentId]: paused }))
       setAgentState(agentId, stateFromQueue(queue, paused))
     } catch {
       // sem estado: a linha só não mostra o selo
@@ -1097,7 +1142,49 @@ export const App: Component = () => {
     const onMq = (e: MediaQueryListEvent) => setSystemDark(e.matches)
     mq?.addEventListener?.('change', onMq)
     onCleanup(() => mq?.removeEventListener?.('change', onMq))
+    const onGlobalShortcut = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey
+      if (mod && (event.key.toLowerCase() === 'k' || event.key.toLowerCase() === 'p')) {
+        event.preventDefault()
+        setPaletteQuery('')
+        setPaletteIndex(0)
+        setShowCommandPalette((prev) => !prev)
+        return
+      }
+      if (mod && event.key.toLowerCase() === 'n') {
+        event.preventDefault()
+        openNewAgent()
+        return
+      }
+      if (mod && event.key === '1') {
+        event.preventDefault()
+        setActiveSection('board')
+        return
+      }
+      if (mod && event.key === '2') {
+        event.preventDefault()
+        setActiveSection('agents')
+        return
+      }
+      if (mod && event.key === '3') {
+        event.preventDefault()
+        setActiveSection('channels')
+        return
+      }
+      if (mod && event.key === ',') {
+        event.preventDefault()
+        openSettings()
+        return
+      }
+    }
+    window.addEventListener('keydown', onGlobalShortcut)
+    onCleanup(() => window.removeEventListener('keydown', onGlobalShortcut))
+
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && showCommandPalette()) {
+        setShowCommandPalette(false)
+        return
+      }
       if (event.key !== 'Escape' || !settingsOpen()) return
       const target = event.target
       if (
@@ -1190,6 +1277,16 @@ export const App: Component = () => {
       const owner = data.task.agentId
       const isOpen = owner === selectedAgentId() && activeSection() === 'agents'
       setAgentState(owner, stateFromTask(agentStates()[owner] ?? 'idle', data.task, isOpen))
+      setAllAgentQueues((prev) => {
+        const list = prev[owner] ?? []
+        const index = list.findIndex((t) => t.id === data.task.id)
+        if (index >= 0) {
+          const next = [...list]
+          next[index] = data.task
+          return { ...prev, [owner]: next }
+        }
+        return { ...prev, [owner]: [data.task, ...list] }
+      })
       const agentId = selectedAgentId()
       if (agentId && data.task.agentId === agentId) {
         setTasks((prev) => {
@@ -1496,11 +1593,27 @@ export const App: Component = () => {
     }
   }
 
-  const openNewAgent = () => {
+  const applyCoworkerTemplate = (tpl: CoworkerTemplate) => {
+    setName(tpl.name)
+    setNewAvatar(tpl.avatar)
+    setAgentRole(tpl.role)
+    setDescription(tpl.description)
+    setInstructions(tpl.instructions)
+    setAutonomyLevel(tpl.autonomyLevel)
+    if (tpl.effort) setAgentEffort(tpl.effort)
+    setDraftNote(`Modelo "${tpl.name}" aplicado. Ajuste se quiser e clique em Criar Agente.`)
+  }
+
+  const openNewAgent = (tpl?: CoworkerTemplate) => {
     const enabled = connections().filter((c) => c.enabled)
     const first = enabled.find((c) => c.readiness === 'ready') ?? enabled[0]
     setProvider(first?.providerId ?? 'codex')
     setModel(first?.defaultModel ?? DEFAULT_PROVIDER_MODELS.codex)
+    if (tpl && 'instructions' in tpl) {
+      applyCoworkerTemplate(tpl)
+    } else {
+      setDraftNote('')
+    }
     setShowModal(true)
   }
 
@@ -1542,6 +1655,7 @@ export const App: Component = () => {
 
       await loadAgents()
       setSelectedAgentId(newAgent.id)
+      setActiveSection('agents')
       setShowModal(false)
 
       // Limpar formulário
@@ -1619,7 +1733,91 @@ export const App: Component = () => {
     e.preventDefault()
     const text = inputText().trim()
     const thread = activeThread()
-    if (!text || !thread) return
+    const agent = currentAgent()
+    if (!text || !thread || !agent) return
+
+    const parsed = parseComposerInput(text, otherAgents())
+
+    // Comandos rápidos (/quadro, /equipe, /novo-topico, /limpar, /delegar)
+    if (parsed.kind === 'slash') {
+      if (parsed.command === 'quadro') {
+        setInputText('')
+        setActiveSection('board')
+        return
+      }
+      if (parsed.command === 'equipe') {
+        setInputText('')
+        handleOpenDelegationModal()
+        return
+      }
+      if (parsed.command === 'novo-topico') {
+        setInputText('')
+        await handleCreateThread(parsed.argumentText || undefined)
+        return
+      }
+      if (parsed.command === 'limpar') {
+        setInputText('')
+        await handleResetCliSession()
+        return
+      }
+      if (parsed.command === 'delegar') {
+        setInputText('')
+        if (parsed.targetAgent && parsed.argumentText) {
+          try {
+            await window.orchbot.delegateTask({
+              fromAgentId: agent.id,
+              toAgentId: parsed.targetAgent.id,
+              prompt: parsed.argumentText,
+            })
+            void refreshAgentState(parsed.targetAgent.id)
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `delegated-${Date.now()}`,
+                threadId: thread.id,
+                role: 'user',
+                text: `🤝 [DELEGAÇÃO ENVIADA PARA ${parsed.targetAgent?.name}]\n${parsed.argumentText}`,
+                createdAt: new Date().toISOString(),
+              },
+            ])
+            scrollToBottom()
+          } catch (err: unknown) {
+            setChatError(err instanceof Error ? err.message : String(err))
+          }
+          return
+        }
+        handleOpenDelegationModal(parsed.targetAgent?.id, parsed.argumentText)
+        return
+      }
+    }
+
+    // Menção direta @NomeDoAgente <tarefa> -> Delegação instantânea em 1 passo
+    if (parsed.kind === 'mention' && parsed.targetAgent && parsed.argumentText) {
+      setInputText('')
+      setChatError(null)
+      try {
+        await window.orchbot.delegateTask({
+          fromAgentId: agent.id,
+          toAgentId: parsed.targetAgent.id,
+          prompt: parsed.argumentText,
+        })
+        void refreshAgentState(parsed.targetAgent.id)
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `delegated-${Date.now()}`,
+            threadId: thread.id,
+            role: 'user',
+            text: `🤝 [DELEGAÇÃO DIRETA PARA @${parsed.targetAgent?.name}]\n${parsed.argumentText}`,
+            createdAt: new Date().toISOString(),
+          },
+        ])
+        scrollToBottom()
+      } catch (err: unknown) {
+        setChatError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
 
     const filePaths = stagedFiles().map((f) => f.filePath)
 
@@ -1639,14 +1837,14 @@ export const App: Component = () => {
     }
   }
 
-  const handleOpenDelegationModal = () => {
+  const handleOpenDelegationModal = (preferredTargetId?: string, initialPrompt?: string) => {
     const others = otherAgents()
     if (others.length === 0) {
       alert('Você precisa ter pelo menos mais um agente cadastrado para delegar tarefas.')
       return
     }
-    setDelegationTargetId(others[0].id)
-    setDelegationPrompt('')
+    setDelegationTargetId(preferredTargetId || others[0].id)
+    setDelegationPrompt(initialPrompt ?? '')
     setDelegationError(null)
     setShowDelegationModal(true)
   }
@@ -1667,13 +1865,122 @@ export const App: Component = () => {
         toAgentId: toId,
         prompt,
       })
-
+      void refreshAgentState(toId)
       setShowDelegationModal(false)
-      alert('Tarefa delegada com sucesso para o agente selecionado!')
+      const targetName = agents().find((a) => a.id === toId)?.name ?? 'especialista'
+      const activeT = activeThread()
+      if (activeT) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `delegated-${Date.now()}`,
+            threadId: activeT.id,
+            role: 'user',
+            text: `🤝 [DELEGAÇÃO ENVIADA PARA ${targetName}]\n${prompt}`,
+            createdAt: new Date().toISOString(),
+          },
+        ])
+        scrollToBottom()
+      }
     } catch (err: unknown) {
       setDelegationError(err instanceof Error ? err.message : String(err))
     } finally {
       setDelegationLoading(false)
+    }
+  }
+
+  // --- Quadro da Equipe & Despacho Rápido (Foreman) ---
+  const orchestratorsList = () => agents().filter((a) => a.role === 'orchestrator')
+  const boardSummary = () => computeBoardSummary(agents(), agentStates(), sidebarChannels())
+
+  const filteredBoardAgents = () => {
+    const projFilter = boardFilterProject()
+    return agents().filter((a) => {
+      if (projFilter !== 'all') {
+        if (projFilter === 'none' && a.projectId) return false
+        if (projFilter !== 'none' && a.projectId !== projFilter) return false
+      }
+      return agentMatchesQuery(a)
+    })
+  }
+
+  const handleBoardForemanDispatch = async (e: Event) => {
+    e.preventDefault()
+    const prompt = boardForemanPrompt().trim()
+    if (!prompt || !window.orchbot) return
+
+    const targetId = boardForemanTargetId() || orchestratorsList()[0]?.id || agents()[0]?.id || null
+    if (!targetId) {
+      const foremanTpl = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
+      setAiPrompt(prompt)
+      openNewAgent(foremanTpl)
+      return
+    }
+
+    try {
+      const threads = await window.orchbot.getThreads(targetId)
+      let targetThread = threads[0]
+      if (!targetThread) {
+        targetThread = await window.orchbot.createThread(targetId, 'Missão do Quadro')
+      }
+      await window.orchbot.sendMessage(targetThread.id, prompt, [])
+      setBoardForemanPrompt('')
+      const targetAgent = agents().find((a) => a.id === targetId)
+      setBoardDispatchMsg(
+        `Missão despachada para ${targetAgent?.name ?? 'o agente'}! Acompanhe no quadro ou abra a conversa.`,
+      )
+      void refreshAgentState(targetId)
+      setTimeout(() => setBoardDispatchMsg(null), 4000)
+    } catch (err: unknown) {
+      alert(`Erro ao despachar missão: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleToggleAgentQueueFromBoard = async (agent: Agent) => {
+    if (!window.orchbot) return
+    const paused = allAgentPaused()[agent.id] ?? false
+    if (paused) {
+      await window.orchbot.resumeQueue(agent.id)
+    } else {
+      await window.orchbot.pauseQueue(agent.id)
+    }
+    await refreshAgentState(agent.id)
+    if (selectedAgentId() === agent.id) {
+      await loadQueue(agent.id)
+    }
+  }
+
+  // --- Paleta de Comandos Handlers ---
+  const paletteItems = () => {
+    const all = buildCommandPaletteItems(agents(), projects(), agentStates())
+    return filterPaletteItems(all, paletteQuery())
+  }
+
+  const executePaletteItem = (item: PaletteItem) => {
+    setShowCommandPalette(false)
+    if (item.kind === 'agent' && item.agentId) {
+      openAgent(item.agentId)
+      return
+    }
+    if (item.kind === 'template' && item.templateId) {
+      const tpl = COWORKER_TEMPLATES.find((t) => t.id === item.templateId)
+      openNewAgent(tpl)
+      return
+    }
+    if (item.kind === 'section' && item.sectionId) {
+      setActiveSection(item.sectionId)
+      return
+    }
+    if (item.kind === 'action') {
+      if (item.actionId === 'new-agent') openNewAgent()
+      else if (item.actionId === 'new-channel') {
+        setActiveSection('channels')
+        setCreatingChannel(true)
+      } else if (item.actionId === 'new-project') setShowProjectModal(true)
+      else if (item.actionId === 'delegate') handleOpenDelegationModal()
+      else if (item.actionId === 'search-memory') setShowSearchModal(true)
+      else if (item.actionId === 'settings') openSettings()
+      else if (item.actionId === 'providers') openSettings('provedores')
     }
   }
 
@@ -2005,7 +2312,14 @@ export const App: Component = () => {
         </span>
         <span class="agent-item-copy">
           <div class="agent-item-top">
-            <span class="agent-item-name">{agent.name}</span>
+            <span class="agent-item-name">
+              <Show when={agent.role === 'orchestrator'}>
+                <span class="role-crown-inline" title="Orquestrador (Foreman)">
+                  👑{' '}
+                </span>
+              </Show>
+              {agent.name}
+            </span>
             <Show
               when={state() !== 'idle'}
               fallback={<span class="agent-item-date">{formatShortDate(agent.updatedAt)}</span>}
@@ -2013,7 +2327,10 @@ export const App: Component = () => {
               <span class={`agent-state ${state()}`}>{AGENT_STATE_LABEL[state()]}</span>
             </Show>
           </div>
-          <div class="agent-item-workspace">{agent.description || agent.workspacePath}</div>
+          <div class="agent-item-workspace">
+            <span class="agent-item-provider-dot">{PROVIDER_ICONS[agent.provider] ?? '🤖'}</span>{' '}
+            {agent.description || agent.workspacePath}
+          </div>
         </span>
       </button>
     )
@@ -2032,73 +2349,151 @@ export const App: Component = () => {
             <span class="rail-logo" style={{ background: settings().logoColor }} aria-hidden="true">
               O
             </span>
-            <span class="logo-title">Orchbot</span>
+            <div class="logo-text-stack">
+              <span class="logo-title">Orchbot</span>
+              <span class="logo-subtitle">Agent Orchestrator</span>
+            </div>
           </div>
-          <div class="menu-anchor" onKeyDown={(e) => e.key === 'Escape' && setShowNewMenu(false)}>
+          <div class="sidebar-top-actions">
             <button
               type="button"
-              class="btn-primary"
-              aria-haspopup="menu"
-              aria-expanded={showNewMenu()}
-              onClick={() => setShowNewMenu(!showNewMenu())}
+              class="btn-cmd-trigger"
+              onClick={() => {
+                setPaletteQuery('')
+                setPaletteIndex(0)
+                setShowCommandPalette(true)
+              }}
+              title="Paleta de Comandos (Ctrl+K)"
+              aria-label="Paleta de Comandos"
             >
-              + Novo
+              <RailIcon name="command" />
+              <kbd>⌘K</kbd>
             </button>
-            <Show when={showNewMenu()}>
+            <div class="menu-anchor" onKeyDown={(e) => e.key === 'Escape' && setShowNewMenu(false)}>
               <button
                 type="button"
-                class="menu-backdrop"
-                tabIndex={-1}
-                aria-label="Fechar menu"
-                onClick={() => setShowNewMenu(false)}
-              />
-              <div class="dropdown-menu" role="menu">
+                class="btn-primary"
+                aria-haspopup="menu"
+                aria-expanded={showNewMenu()}
+                onClick={() => setShowNewMenu(!showNewMenu())}
+              >
+                + Novo
+              </button>
+              <Show when={showNewMenu()}>
                 <button
                   type="button"
-                  class="dropdown-item"
-                  role="menuitem"
-                  onClick={() => {
-                    setShowNewMenu(false)
-                    openNewAgent()
-                  }}
-                >
-                  🤖 Novo agente
-                </button>
-                <button
-                  type="button"
-                  class="dropdown-item"
-                  role="menuitem"
-                  disabled={agents().length === 0}
-                  title="Vários agentes trabalhando numa tarefa, com um dono"
-                  onClick={() => {
-                    setShowNewMenu(false)
-                    setActiveSection('channels')
-                    setCreatingChannel(true)
-                  }}
-                >
-                  # Novo canal
-                </button>
-                <button
-                  type="button"
-                  class="dropdown-item"
-                  role="menuitem"
-                  title="Uma pasta para agrupar agentes na barra lateral"
-                  onClick={() => {
-                    setShowNewMenu(false)
-                    setShowProjectModal(true)
-                  }}
-                >
-                  📁 Novo projeto
-                </button>
-              </div>
-            </Show>
+                  class="menu-backdrop"
+                  tabIndex={-1}
+                  aria-label="Fechar menu"
+                  onClick={() => setShowNewMenu(false)}
+                />
+                <div class="dropdown-menu" role="menu">
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowNewMenu(false)
+                      openNewAgent()
+                    }}
+                  >
+                    🤖 Novo agente
+                  </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    title="Cria um líder de equipe que recebe tarefas de alto nível e delega aos especialistas"
+                    onClick={() => {
+                      setShowNewMenu(false)
+                      openNewAgent(COWORKER_TEMPLATES.find((t) => t.id === 'foreman'))
+                    }}
+                  >
+                    👑 Novo Foreman (Orquestrador)
+                  </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    disabled={agents().length === 0}
+                    title="Vários agentes trabalhando numa tarefa, com um dono"
+                    onClick={() => {
+                      setShowNewMenu(false)
+                      setActiveSection('channels')
+                      setCreatingChannel(true)
+                    }}
+                  >
+                    # Novo canal
+                  </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    title="Uma pasta para agrupar agentes na barra lateral"
+                    onClick={() => {
+                      setShowNewMenu(false)
+                      setShowProjectModal(true)
+                    }}
+                  >
+                    📁 Novo projeto
+                  </button>
+                </div>
+              </Show>
+            </div>
           </div>
         </div>
+
+        {/* Navegação rápida entre Quadro, Chat e Canais */}
+        <div class="sidebar-mode-tabs" role="tablist" aria-label="Modo de visualização">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection() === 'board'}
+            class="sidebar-mode-tab"
+            classList={{ active: activeSection() === 'board' }}
+            onClick={() => setActiveSection('board')}
+            title="Quadro Geral da Equipe (Ctrl+1)"
+          >
+            <RailIcon name="board" />
+            <span>Quadro</span>
+            <Show when={boardSummary().working > 0}>
+              <span class="mode-tab-badge working">{boardSummary().working}</span>
+            </Show>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection() === 'agents'}
+            class="sidebar-mode-tab"
+            classList={{ active: activeSection() === 'agents' }}
+            onClick={() => setActiveSection('agents')}
+            title="Conversa Direta & Terminal (Ctrl+2)"
+          >
+            <RailIcon name="chat" />
+            <span>Chat</span>
+            <Show when={agents().length > 0}>
+              <span class="mode-tab-badge">{agents().length}</span>
+            </Show>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeSection() === 'channels'}
+            class="sidebar-mode-tab"
+            classList={{ active: activeSection() === 'channels' }}
+            onClick={() => setActiveSection('channels')}
+            title="Canais Multi-Agentes (Ctrl+3)"
+          >
+            <RailIcon name="channels" />
+            <span>Canais</span>
+          </button>
+        </div>
+
         <label class="list-search">
           <RailIcon name="search" />
           <input
             type="search"
-            placeholder="Buscar agentes"
+            placeholder="Filtrar agentes ou projetos..."
             value={listQuery()}
             onInput={(event) => setListQuery(event.currentTarget.value)}
             aria-label="Buscar agentes"
@@ -2121,7 +2516,7 @@ export const App: Component = () => {
             fallback={
               <div class="list-empty">
                 Nenhum agente ainda.{' '}
-                <button type="button" class="btn-link" onClick={openNewAgent}>
+                <button type="button" class="btn-link" onClick={() => openNewAgent()}>
                   Criar o primeiro
                 </button>
               </div>
@@ -3363,6 +3758,315 @@ export const App: Component = () => {
             </div>
           </dialog>
         </Show>
+        <Show when={activeSection() === 'board'}>
+          <div class="board-view">
+            <header class="board-header">
+              <div class="board-header-title-group">
+                <div class="board-eyebrow">PAINEL DE COMANDO • ORQUESTRAÇÃO VISUAL</div>
+                <h1 class="board-title">Quadro Geral da Equipe</h1>
+                <p class="board-subtitle">
+                  Acompanhe todos os seus agentes em tempo real, despache missões pelo Foreman e
+                  delegue subtarefas com um clique.
+                </p>
+              </div>
+              <div class="board-header-actions">
+                <button
+                  type="button"
+                  class="btn-outline"
+                  onClick={() => openNewAgent(COWORKER_TEMPLATES.find((t) => t.id === 'foreman'))}
+                >
+                  👑 Contratar Foreman
+                </button>
+                <button type="button" class="btn-primary" onClick={() => openNewAgent()}>
+                  + Novo Agente
+                </button>
+              </div>
+            </header>
+
+            {/* Barra de Status em Tempo Real */}
+            <div class="board-stats-strip">
+              <div class="board-stat-pill">
+                <span class="board-stat-value">{boardSummary().total}</span>
+                <span class="board-stat-label">Agentes na equipe</span>
+              </div>
+              <div class="board-stat-pill working">
+                <span class="board-stat-dot working" />
+                <span class="board-stat-value">{boardSummary().working}</span>
+                <span class="board-stat-label">Trabalhando agora</span>
+              </div>
+              <div class="board-stat-pill needs-you">
+                <span class="board-stat-dot needs-you" />
+                <span class="board-stat-value">{boardSummary().needsYou}</span>
+                <span class="board-stat-label">Precisa de você</span>
+              </div>
+              <div class="board-stat-pill orchestrators">
+                <span class="board-stat-value">👑 {boardSummary().orchestrators}</span>
+                <span class="board-stat-label">Orquestradores</span>
+              </div>
+              <div class="board-stat-pill workers">
+                <span class="board-stat-value">🛠️ {boardSummary().workers}</span>
+                <span class="board-stat-label">Especialistas</span>
+              </div>
+              <div class="board-stat-pill channels">
+                <span class="board-stat-value"># {boardSummary().activeChannels}</span>
+                <span class="board-stat-label">Canais ativos</span>
+              </div>
+            </div>
+
+            {/* Foreman Dispatch Bar */}
+            <form class="foreman-dispatch-bar" onSubmit={handleBoardForemanDispatch}>
+              <div class="foreman-dispatch-top">
+                <span class="foreman-badge">👑 Despacho Rápido (Foreman)</span>
+                <Show
+                  when={agents().length > 0}
+                  fallback={
+                    <span class="foreman-hint">
+                      Crie seu primeiro Foreman digitando uma missão abaixo
+                    </span>
+                  }
+                >
+                  <div class="foreman-target-picker">
+                    <span>Enviar para:</span>
+                    <select
+                      class="foreman-target-select"
+                      value={
+                        boardForemanTargetId() ||
+                        orchestratorsList()[0]?.id ||
+                        agents()[0]?.id ||
+                        ''
+                      }
+                      onChange={(e) => setBoardForemanTargetId(e.currentTarget.value)}
+                    >
+                      <For each={agents()}>
+                        {(a) => (
+                          <option value={a.id}>
+                            {a.role === 'orchestrator' ? '👑 ' : '🛠️ '}
+                            {a.name} ({a.provider} • {a.model})
+                          </option>
+                        )}
+                      </For>
+                    </select>
+                  </div>
+                </Show>
+              </div>
+              <div class="foreman-dispatch-input-row">
+                <input
+                  type="text"
+                  class="foreman-dispatch-input"
+                  placeholder="Descreva uma missão para o Foreman coordenar ou executar (ex: Revise a arquitetura, crie os testes e resuma os riscos)..."
+                  value={boardForemanPrompt()}
+                  onInput={(e) => setBoardForemanPrompt(e.currentTarget.value)}
+                />
+                <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
+                  🚀 Despachar Missão
+                </button>
+              </div>
+              <Show when={boardDispatchMsg()}>
+                {(msg) => <div class="foreman-dispatch-feedback">✓ {msg()}</div>}
+              </Show>
+            </form>
+
+            {/* Filtro por Projeto */}
+            <Show when={projects().length > 0}>
+              <div class="board-filter-bar">
+                <span class="board-filter-label">Projeto:</span>
+                <button
+                  type="button"
+                  class="board-filter-chip"
+                  classList={{ active: boardFilterProject() === 'all' }}
+                  onClick={() => setBoardFilterProject('all')}
+                >
+                  Todos ({agents().length})
+                </button>
+                <For each={projects()}>
+                  {(proj) => (
+                    <button
+                      type="button"
+                      class="board-filter-chip"
+                      classList={{ active: boardFilterProject() === proj.id }}
+                      onClick={() => setBoardFilterProject(proj.id)}
+                    >
+                      📁 {proj.name} ({agentsOfProject(proj.id).length})
+                    </button>
+                  )}
+                </For>
+                <button
+                  type="button"
+                  class="board-filter-chip"
+                  classList={{ active: boardFilterProject() === 'none' }}
+                  onClick={() => setBoardFilterProject('none')}
+                >
+                  Sem projeto ({agentsOfProject(null).length})
+                </button>
+              </div>
+            </Show>
+
+            {/* Grid de Agentes (Coworker Cards) */}
+            <Show
+              when={filteredBoardAgents().length > 0}
+              fallback={
+                <div class="board-empty-state">
+                  <div class="board-empty-icon">🧭</div>
+                  <h2>Sua equipe ainda está vazia</h2>
+                  <p>
+                    Comece contratando um colega pronto abaixo (como o <strong>Foreman</strong> ou{' '}
+                    <strong>Engenheiro de Software</strong>) com 1 clique.
+                  </p>
+                </div>
+              }
+            >
+              <div class="coworker-grid">
+                <For each={filteredBoardAgents()}>
+                  {(cw) => {
+                    const state = () => agentStates()[cw.id] ?? 'idle'
+                    const activeTask = () => getActiveTaskForAgent(allAgentQueues()[cw.id] ?? [])
+                    const isPaused = () => allAgentPaused()[cw.id] ?? false
+                    const proj = () => projectOf(cw)
+                    return (
+                      <div
+                        class={`coworker-card state-${state()} ${cw.role === 'orchestrator' ? 'is-orchestrator' : ''}`}
+                      >
+                        <div class="coworker-card-top">
+                          <div class="coworker-identity">
+                            <span
+                              class="agent-avatar coworker-avatar"
+                              style={{ background: agentColor(cw.name) }}
+                            >
+                              {cw.avatar || initialsOf(cw.name)}
+                            </span>
+                            <div class="coworker-title-box">
+                              <div class="coworker-name-row">
+                                <span class="coworker-name">{cw.name}</span>
+                                <span
+                                  class={`coworker-role-pill ${cw.role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
+                                >
+                                  {cw.role === 'orchestrator' ? '👑 Foreman' : '🛠️ Especialista'}
+                                </span>
+                              </div>
+                              <div class="coworker-desc">{cw.description || cw.workspacePath}</div>
+                            </div>
+                          </div>
+                          <span class={`agent-state ${state()}`}>
+                            {state() === 'idle' ? '● Pronto' : AGENT_STATE_LABEL[state()]}
+                          </span>
+                        </div>
+
+                        <div class="coworker-meta-pills">
+                          <span class={`provider-tag ${cw.provider}`}>
+                            {PROVIDER_ICONS[cw.provider] ?? '🤖'} {cw.provider} • {cw.model}
+                          </span>
+                          <span class="coworker-meta-chip">
+                            {cw.autonomyLevel === 'cautious' ? '🛡️ Cauteloso' : '⚡ Autônomo'}
+                          </span>
+                          <Show when={proj()}>
+                            {(p) => <span class="coworker-meta-chip">📁 {p().name}</span>}
+                          </Show>
+                          <Show when={cw.role === 'orchestrator'}>
+                            <span
+                              class="coworker-meta-chip team"
+                              title="Especialistas disponíveis para este orquestrador"
+                            >
+                              🤝 Equipe: {teamOf(cw).length}
+                            </span>
+                          </Show>
+                        </div>
+
+                        <div class="coworker-task-box">
+                          <Show
+                            when={activeTask()}
+                            fallback={
+                              <span class="coworker-task-idle">
+                                Nenhuma tarefa em andamento — pronto para receber instruções.
+                              </span>
+                            }
+                          >
+                            {(t) => (
+                              <div class="coworker-task-active">
+                                <span class={`task-tag ${t().status}`}>{t().status}</span>
+                                <span class="coworker-task-prompt">{t().prompt}</span>
+                              </div>
+                            )}
+                          </Show>
+                        </div>
+
+                        <div class="coworker-card-actions">
+                          <button
+                            type="button"
+                            class="btn-primary coworker-btn-main"
+                            onClick={() => openAgent(cw.id)}
+                          >
+                            💬 Abrir Chat
+                          </button>
+                          <Show when={agents().length > 1}>
+                            <button
+                              type="button"
+                              class="btn-outline"
+                              title={`Delegar uma tarefa para ${cw.name}`}
+                              onClick={() => {
+                                const from =
+                                  orchestratorsList().find((o) => o.id !== cw.id) ||
+                                  agents().find((a) => a.id !== cw.id)
+                                if (from) setSelectedAgentId(from.id)
+                                handleOpenDelegationModal(cw.id)
+                              }}
+                            >
+                              🤝 Delegar
+                            </button>
+                          </Show>
+                          <button
+                            type="button"
+                            class="btn-outline"
+                            onClick={() => void handleToggleAgentQueueFromBoard(cw)}
+                            title={isPaused() ? 'Retomar fila deste agente' : 'Pausar fila'}
+                          >
+                            {isPaused() ? '▶ Retomar' : '⏸ Fila'}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  }}
+                </For>
+              </div>
+            </Show>
+
+            {/* Seção de Templates: Contratar Colega Pronto em 1 Clique */}
+            <section class="board-templates-section">
+              <div class="board-templates-header">
+                <div>
+                  <h2 class="board-templates-title">
+                    ⚡ Contratar Colega Pronto (Modelos de Equipe)
+                  </h2>
+                  <p class="board-templates-desc">
+                    Adicione especialistas pré-configurados ou um líder Foreman à sua equipe em um
+                    clique.
+                  </p>
+                </div>
+              </div>
+              <div class="template-chips-grid">
+                <For each={COWORKER_TEMPLATES}>
+                  {(tpl) => (
+                    <button
+                      type="button"
+                      class={`template-card ${tpl.role === 'orchestrator' ? 'orchestrator' : ''}`}
+                      onClick={() => openNewAgent(tpl)}
+                    >
+                      <div class="template-card-top">
+                        <span class="template-avatar">{tpl.avatar}</span>
+                        <div class="template-title-box">
+                          <span class="template-name">{tpl.name}</span>
+                          <span class="template-badge">{tpl.badge}</span>
+                        </div>
+                      </div>
+                      <p class="template-desc">{tpl.description}</p>
+                      <span class="template-cta">+ Contratar com 1 clique →</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </section>
+          </div>
+        </Show>
+
         <Show when={activeSection() === 'channels'}>
           <Channels
             agents={agents()}
@@ -3386,13 +4090,23 @@ export const App: Component = () => {
                   when={agents().length === 0}
                   fallback={
                     <>
-                      <h1 class="welcome-title">Escolha um agente</h1>
+                      <h1 class="welcome-title">Escolha um agente ou abra o Quadro</h1>
                       <p class="welcome-desc">
-                        Clique num agente na lista ao lado para conversar, ou crie um novo.
+                        Selecione um colega na barra lateral, veja toda a equipe no Quadro Geral ou
+                        crie um novo agente.
                       </p>
-                      <button type="button" class="btn-primary" onClick={openNewAgent}>
-                        + Novo agente
-                      </button>
+                      <div style={{ display: 'flex', gap: '10px', 'justify-content': 'center' }}>
+                        <button
+                          type="button"
+                          class="btn-outline"
+                          onClick={() => setActiveSection('board')}
+                        >
+                          🗺️ Abrir Quadro da Equipe
+                        </button>
+                        <button type="button" class="btn-primary" onClick={() => openNewAgent()}>
+                          + Novo agente
+                        </button>
+                      </div>
                     </>
                   }
                 >
@@ -3447,17 +4161,29 @@ export const App: Component = () => {
                     <li class="first-run-step">
                       <h2 class="welcome-subtitle">2. Crie seu primeiro agente</h2>
                       <p class="first-run-hint">
-                        Diga o que ele deve fazer. O Orchbot sugere nome e instruções, e cria uma
-                        pasta só dele.
+                        Diga o que ele deve fazer ou escolha um modelo pronto (Foreman, Engenheiro,
+                        Auditor).
                       </p>
-                      <button
-                        type="button"
-                        class="btn-primary"
-                        disabled={!connections().some((c) => c.enabled)}
-                        onClick={openNewAgent}
-                      >
-                        Criar meu primeiro agente
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px', 'flex-wrap': 'wrap' }}>
+                        <button
+                          type="button"
+                          class="btn-primary"
+                          disabled={!connections().some((c) => c.enabled)}
+                          onClick={() => openNewAgent()}
+                        >
+                          Criar meu primeiro agente
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-outline"
+                          disabled={!connections().some((c) => c.enabled)}
+                          onClick={() =>
+                            openNewAgent(COWORKER_TEMPLATES.find((t) => t.id === 'foreman'))
+                          }
+                        >
+                          👑 Criar Foreman (Orquestrador)
+                        </button>
+                      </div>
                     </li>
                   </ol>
                 </Show>
@@ -3474,6 +4200,19 @@ export const App: Component = () => {
                         {agent().avatar || initialsOf(agent().name)}
                       </span>
                       <h2>{agent().name}</h2>
+                      <button
+                        type="button"
+                        class={`role-badge-toggle ${agent().role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
+                        onClick={() =>
+                          handleSwitchRole(
+                            agent().id,
+                            agent().role === 'orchestrator' ? 'worker' : 'orchestrator',
+                          )
+                        }
+                        title="Clique para alternar entre Orquestrador (Foreman) e Especialista"
+                      >
+                        {agent().role === 'orchestrator' ? '👑 Orquestrador' : '🛠️ Especialista'}
+                      </button>
                       <button
                         type="button"
                         class="agent-model-chip"
@@ -3533,9 +4272,27 @@ export const App: Component = () => {
                     >
                       🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
                     </button>
+                    <button
+                      type="button"
+                      class="btn-mode"
+                      onClick={() => setActiveSection('board')}
+                      title="Ver todos os agentes no Quadro Geral (Ctrl+1)"
+                    >
+                      🗺️ Quadro
+                    </button>
                   </div>
 
                   <div class="header-actions">
+                    <Show when={otherAgents().length > 0}>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={() => handleOpenDelegationModal()}
+                        title="Delegar subtarefa para outro agente da equipe"
+                      >
+                        🤝 Delegar
+                      </button>
+                    </Show>
                     <button
                       type="button"
                       class="btn-outline"
@@ -3700,6 +4457,49 @@ export const App: Component = () => {
                     </div>
                   </div>
                 </header>
+
+                {/* Barra de Orquestração ao Vivo */}
+                <Show when={agent().role === 'orchestrator'}>
+                  <div class="orchestrator-live-bar">
+                    <div class="orchestrator-live-left">
+                      <span class="orchestrator-live-badge">👑 Modo Orquestrador</span>
+                      <span class="orchestrator-live-hint">
+                        Use <code>[[DELEGAR: Nome :: tarefa]]</code> na resposta da IA ou mencione{' '}
+                        <code>@Nome</code> abaixo para delegar:
+                      </span>
+                    </div>
+                    <div class="orchestrator-team-chips">
+                      <For
+                        each={teamOf(agent())}
+                        fallback={
+                          <button
+                            type="button"
+                            class="team-specialist-chip add"
+                            onClick={() => openNewAgent()}
+                          >
+                            + Adicionar especialista à equipe
+                          </button>
+                        }
+                      >
+                        {(member) => {
+                          const mState = () => agentStates()[member.id] ?? 'idle'
+                          return (
+                            <button
+                              type="button"
+                              class={`team-specialist-chip ${mState()}`}
+                              onClick={() => setInputText(`@${member.name} `)}
+                              title={`Clique para mencionar @${member.name} e delegar uma subtarefa`}
+                            >
+                              <span class={`team-dot ${mState()}`} />
+                              <span>{member.name}</span>
+                              <span class="team-chip-action">@{member.name.split(' ')[0]}</span>
+                            </button>
+                          )
+                        }}
+                      </For>
+                    </div>
+                  </div>
+                </Show>
 
                 {/* Ajustes do agente: IA, modelo, tipo, esforço, autonomia, contexto e navegador */}
                 <Show when={showAgentSettings()}>
@@ -4062,8 +4862,9 @@ export const App: Component = () => {
                           </div>
                           <div style={{ 'margin-top': '8px' }}>
                             Esta sessão é 100% isolada no workspace{' '}
-                            <code>{agent().workspacePath}</code>. Envie tarefas ou anexe arquivos
-                            abaixo sem misturar com outros tópicos.
+                            <code>{agent().workspacePath}</code>. Envie tarefas, use{' '}
+                            <code>@Agente</code> para delegar ou digite <code>/quadro</code> para
+                            abrir o painel da equipe.
                           </div>
                           <Show when={agentThreads().length <= 1}>
                             <div class="quick-topics-row">
@@ -4099,52 +4900,80 @@ export const App: Component = () => {
                       }
                     >
                       <For each={visibleMessages()}>
-                        {(msg) => (
-                          <div class={`message-row ${msg.role}`}>
-                            <div class="message-author">
-                              <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
-                              <span style={{ 'font-size': '10px', opacity: 0.6 }}>
-                                {new Date(msg.createdAt).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
-                              </span>
-                            </div>
+                        {(msg) => {
+                          const structured = () => parseStructuredMessage(msg.text)
+                          return (
+                            <div class={`message-row ${msg.role}`}>
+                              <div class="message-author">
+                                <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
+                                <span style={{ 'font-size': '10px', opacity: 0.6 }}>
+                                  {new Date(msg.createdAt).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
 
-                            {/* Badge de Delegação se a mensagem veio de outro agente */}
-                            <Show when={msg.senderAgentId}>
-                              <span class="delegation-badge">🤝 Mensagem Delegada</span>
-                            </Show>
-
-                            <div class={`message-bubble ${msg.role}`}>
-                              {msg.text}
-
-                              {/* Lista de Anexos anexados na mensagem */}
-                              <Show when={msg.attachments && msg.attachments.length > 0}>
-                                <div class="message-attachments-list">
-                                  <For each={msg.attachments}>
-                                    {(att) => (
-                                      <button
-                                        type="button"
-                                        class="attachment-card"
-                                        onClick={() => handleOpenFile(att.filePath)}
-                                        title="Clique para abrir o arquivo no aplicativo padrão"
-                                      >
-                                        <span class="attachment-icon">📎</span>
-                                        <div class="attachment-info">
-                                          <span class="attachment-name">{att.fileName}</span>
-                                          <span class="attachment-size">
-                                            {formatFileSize(att.fileSize)} • {att.mimeType}
-                                          </span>
-                                        </div>
-                                      </button>
-                                    )}
-                                  </For>
-                                </div>
+                              {/* Badge de Delegação se a mensagem veio de outro agente */}
+                              <Show when={msg.senderAgentId}>
+                                <span class="delegation-badge">🤝 Mensagem Delegada</span>
                               </Show>
+
+                              <div class={`message-bubble ${msg.role}`}>
+                                <Show when={structured().delegationHeader}>
+                                  {(header) => (
+                                    <div class="structured-delegation-card">
+                                      <span class="structured-delegation-icon">🤝</span>
+                                      <span>{header()}</span>
+                                    </div>
+                                  )}
+                                </Show>
+
+                                <For each={structured().blocks}>
+                                  {(block) => (
+                                    <Show
+                                      when={block.kind === 'code'}
+                                      fallback={<div class="msg-text-segment">{block.content}</div>}
+                                    >
+                                      <div class="code-block-card">
+                                        <div class="code-block-header">
+                                          <span>{block.language || 'code'}</span>
+                                        </div>
+                                        <pre class="code-block-pre">
+                                          <code>{block.content}</code>
+                                        </pre>
+                                      </div>
+                                    </Show>
+                                  )}
+                                </For>
+
+                                {/* Lista de Anexos anexados na mensagem */}
+                                <Show when={msg.attachments && msg.attachments.length > 0}>
+                                  <div class="message-attachments-list">
+                                    <For each={msg.attachments}>
+                                      {(att) => (
+                                        <button
+                                          type="button"
+                                          class="attachment-card"
+                                          onClick={() => handleOpenFile(att.filePath)}
+                                          title="Clique para abrir o arquivo no aplicativo padrão"
+                                        >
+                                          <span class="attachment-icon">📎</span>
+                                          <div class="attachment-info">
+                                            <span class="attachment-name">{att.fileName}</span>
+                                            <span class="attachment-size">
+                                              {formatFileSize(att.fileSize)} • {att.mimeType}
+                                            </span>
+                                          </div>
+                                        </button>
+                                      )}
+                                    </For>
+                                  </div>
+                                </Show>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )
+                        }}
                       </For>
 
                       {/* Resposta em streaming em tempo real */}
@@ -4192,6 +5021,50 @@ export const App: Component = () => {
                   {/* Barra de input do chat */}
                   <div class="chat-input-container">
                     <form class="chat-input-form" onSubmit={handleSendMessage}>
+                      {/* Chips rápidos de menção (@Agente) e comandos (/comando) */}
+                      <div class="composer-quick-chips">
+                        <Show when={otherAgents().length > 0}>
+                          <span class="composer-chip-label">Delegar rápido:</span>
+                          <For each={otherAgents().slice(0, 5)}>
+                            {(teammate) => (
+                              <button
+                                type="button"
+                                class="composer-mention-chip"
+                                onClick={() => setInputText(`@${teammate.name} `)}
+                                title={`Delegar diretamente para ${teammate.name}`}
+                              >
+                                @{teammate.name}
+                              </button>
+                            )}
+                          </For>
+                        </Show>
+                        <span class="composer-chip-label">Atalhos:</span>
+                        <button
+                          type="button"
+                          class="composer-slash-chip"
+                          onClick={() => setInputText('/delegar ')}
+                          title="Abrir delegação ou usar /delegar Nome :: Tarefa"
+                        >
+                          /delegar
+                        </button>
+                        <button
+                          type="button"
+                          class="composer-slash-chip"
+                          onClick={() => setActiveSection('board')}
+                          title="Ir para o Quadro Geral (Ctrl+1)"
+                        >
+                          /quadro
+                        </button>
+                        <button
+                          type="button"
+                          class="composer-slash-chip"
+                          onClick={() => handleCreateThread()}
+                          title="Criar novo tópico de conversa"
+                        >
+                          /novo-topico
+                        </button>
+                      </div>
+
                       {/* Arquivos staged antes do envio */}
                       <Show when={stagedFiles().length > 0}>
                         <div class="attachments-preview-bar">
@@ -4216,13 +5089,13 @@ export const App: Component = () => {
 
                       <textarea
                         class="chat-textarea"
-                        placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                        placeholder={`Mensagem para ${agent().name} • Use @Nome para delegar a outro agente ou /quadro (Enter envia, Shift+Enter pula linha)`}
                         value={inputText()}
                         onInput={(e) => setInputText(e.currentTarget.value)}
                         onKeyDown={handleKeyDown}
                       />
                       <div class="chat-actions-bar">
-                        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                        <div class="composer-inline-pills">
                           <button
                             type="button"
                             class="btn-outline"
@@ -4232,13 +5105,65 @@ export const App: Component = () => {
                           >
                             📎 Anexar
                           </button>
-                          <span
-                            class={`provider-tag ${agent().provider}`}
-                            title="Provedor e modelo ativos para esta mensagem"
+
+                          {/* Seletores inline */}
+                          <select
+                            class={`composer-pill-select ${agent().provider}`}
+                            value={agent().provider}
+                            onChange={(e) =>
+                              handleSwitchProviderMidChat(
+                                agent().id,
+                                e.currentTarget.value as SupportedProvider,
+                              )
+                            }
+                            title="Trocar provedor de IA"
                           >
-                            {agent().provider} • {agent().model}
-                          </span>
-                          <span>
+                            <For each={connections().filter((c) => c.enabled)}>
+                              {(c) => (
+                                <option value={c.providerId}>
+                                  {PROVIDER_ICONS[c.providerId] || '🔗'} {c.name}
+                                </option>
+                              )}
+                            </For>
+                          </select>
+
+                          <input
+                            list={`inline-models-${agent().id}`}
+                            class="composer-pill-input"
+                            value={agent().model}
+                            onChange={(e) =>
+                              handleSwitchModelMidChat(agent().id, e.currentTarget.value)
+                            }
+                            placeholder="Modelo..."
+                            title="Trocar modelo rapidamente"
+                          />
+                          <datalist id={`inline-models-${agent().id}`}>
+                            <For
+                              each={
+                                connections().find((c) => c.providerId === agent().provider)
+                                  ?.models || [agent().model]
+                              }
+                            >
+                              {(m) => <option value={m} />}
+                            </For>
+                          </datalist>
+
+                          <select
+                            class="composer-pill-select"
+                            value={agent().autonomyLevel || 'autonomous'}
+                            onChange={(e) =>
+                              handleSwitchAutonomyLevel(
+                                agent().id,
+                                e.currentTarget.value as AutonomyLevel,
+                              )
+                            }
+                            title="Alternar nível de autonomia"
+                          >
+                            <option value="autonomous">⚡ Autônomo</option>
+                            <option value="cautious">🛡️ Cauteloso</option>
+                          </select>
+
+                          <span class="composer-queue-status">
                             {isQueuePaused() ? '⏸ Fila Pausada' : `${pendingTasksCount()} na fila`}
                           </span>
                         </div>
@@ -4254,7 +5179,7 @@ export const App: Component = () => {
                             class="btn-primary"
                             disabled={!inputText().trim() && stagedFiles().length === 0}
                           >
-                            Enviar
+                            Enviar ↵
                           </button>
                         </div>
                       </div>
@@ -5377,6 +6302,30 @@ export const App: Component = () => {
               <Show when={errorMessage()}>
                 <div style={{ color: 'var(--danger)', 'font-size': '12px' }}>{errorMessage()}</div>
               </Show>
+
+              <div class="form-group">
+                <span class="form-label-title">
+                  Modelos Prontos de Coworker (1 clique para preencher)
+                </span>
+                <div class="modal-template-strip">
+                  <For each={COWORKER_TEMPLATES}>
+                    {(tpl) => (
+                      <button
+                        type="button"
+                        class={`modal-template-pill ${name() === tpl.name ? 'active' : ''}`}
+                        onClick={() => applyCoworkerTemplate(tpl)}
+                        title={tpl.description}
+                      >
+                        <span>{tpl.avatar}</span>
+                        <span>{tpl.name}</span>
+                        <span class={`role-mini-tag ${tpl.role}`}>
+                          {tpl.role === 'orchestrator' ? '👑' : '🛠️'}
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </div>
 
               <div class="form-group ai-draft-box">
                 <label for="agent-ai-prompt">O que este agente deve fazer?</label>
@@ -6584,6 +7533,101 @@ export const App: Component = () => {
               <button type="button" class="btn-secondary" onClick={() => setShowSearchModal(false)}>
                 Fechar
               </button>
+            </div>
+          </div>
+        </dialog>
+      </Show>
+
+      {/* Paleta de Comandos Rápida (Ctrl+K / Ctrl+P) */}
+      <Show when={showCommandPalette()}>
+        <dialog
+          class="modal-overlay command-palette-overlay"
+          open
+          onClick={() => setShowCommandPalette(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setShowCommandPalette(false)
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              const max = Math.max(0, paletteItems().length - 1)
+              setPaletteIndex((i) => Math.min(max, i + 1))
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              setPaletteIndex((i) => Math.max(0, i - 1))
+            } else if (e.key === 'Enter') {
+              e.preventDefault()
+              const item = paletteItems()[paletteIndex()]
+              if (item) executePaletteItem(item)
+            }
+          }}
+        >
+          <div
+            class="command-palette-box"
+            role="document"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="command-palette-search">
+              <span class="command-palette-search-icon">⌘</span>
+              <input
+                type="text"
+                class="command-palette-input"
+                placeholder="Ir para agente, alternar modo (Quadro/Chat), contratar template ou delegar..."
+                value={paletteQuery()}
+                autofocus
+                onInput={(e) => {
+                  setPaletteQuery(e.currentTarget.value)
+                  setPaletteIndex(0)
+                }}
+              />
+              <kbd class="command-palette-esc">ESC</kbd>
+            </div>
+
+            <div class="command-palette-list">
+              <For
+                each={paletteItems()}
+                fallback={
+                  <div class="command-palette-empty">
+                    Nenhum comando ou agente encontrado para &ldquo;{paletteQuery()}&rdquo;.
+                  </div>
+                }
+              >
+                {(item, idx) => (
+                  <button
+                    type="button"
+                    class={`command-palette-item ${idx() === paletteIndex() ? 'selected' : ''}`}
+                    onMouseEnter={() => setPaletteIndex(idx())}
+                    onClick={() => executePaletteItem(item)}
+                  >
+                    <span class="command-palette-item-icon">{item.icon}</span>
+                    <div class="command-palette-item-main">
+                      <span class="command-palette-item-label">{item.label}</span>
+                      <span class="command-palette-item-sub">{item.sublabel}</span>
+                    </div>
+                    <Show when={item.shortcut}>
+                      <kbd class="command-palette-item-kbd">{item.shortcut}</kbd>
+                    </Show>
+                  </button>
+                )}
+              </For>
+            </div>
+
+            <div class="command-palette-footer">
+              <span>
+                <kbd>↑↓</kbd> navegar
+              </span>
+              <span>
+                <kbd>↵</kbd> executar
+              </span>
+              <span>
+                <kbd>Ctrl+1</kbd> Quadro
+              </span>
+              <span>
+                <kbd>Ctrl+2</kbd> Chat
+              </span>
+              <span>
+                <kbd>Ctrl+N</kbd> Novo Agente
+              </span>
             </div>
           </div>
         </dialog>
