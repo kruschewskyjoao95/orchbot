@@ -7,7 +7,7 @@ import { Notification } from 'electron'
 import { BrowserManager } from '../backend/browser/browser-manager'
 import { executeBrowserTool } from '../backend/browser/browser-tools'
 import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
-import { draftAgent } from '../backend/collaboration/agent-drafter'
+import { draftAgent, draftTeam } from '../backend/collaboration/agent-drafter'
 import { checkComputerUse, executeComputerAction } from '../backend/computer/computer-tools'
 import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
@@ -43,6 +43,7 @@ import {
   omarchyThemesDir,
   watchThemes,
 } from '../backend/themes/theme-service'
+import { startWebhookServer, webhookBaseUrl } from '../backend/triggers/webhook-server'
 import { NO_UPDATE_CHANNEL, SELF_UPDATE } from '../backend/updates/self-update'
 import {
   NPM_PACKAGES,
@@ -88,6 +89,7 @@ let attachmentManager: AttachmentManager | null = null
 let delegationService: DelegationService | null = null
 let browserManager: BrowserManager | null = null
 let cronScheduler: CronScheduler | null = null
+let webhookServer: import('node:http').Server | null = null
 
 function getDatabase(): OrchbotDatabase {
   if (!db) {
@@ -992,6 +994,39 @@ ${out.slice(-800)}`,
   ipcMain.handle('orchbot:draft-agent', (_e, p: { prompt: string; baseAgentId?: string }) =>
     draftAgent(database, providerRegistry, String(p?.prompt ?? ''), p?.baseAgentId),
   )
+  ipcMain.handle('orchbot:draft-team', (_e, prompt: string) =>
+    draftTeam(database, providerRegistry, String(prompt ?? '')),
+  )
+  ipcMain.handle('orchbot:list-approvals', () => database.listPendingApprovals())
+  ipcMain.handle(
+    'orchbot:decide-approval',
+    (_e, p: { id: string; approved: boolean; note?: string }) =>
+      queue.decideApproval(
+        String(p?.id),
+        p?.approved === true,
+        typeof p?.note === 'string' ? p.note.slice(0, 2000) : undefined,
+      ),
+  )
+  ipcMain.handle('orchbot:list-webhook-triggers', (_e, agentId: string) =>
+    database.listWebhookTriggers(String(agentId)),
+  )
+  ipcMain.handle(
+    'orchbot:create-webhook-trigger',
+    (_e, p: { agentId: string; title: string; instruction: string }) => {
+      const instruction = String(p?.instruction ?? '').slice(0, 8000)
+      if (!instruction.trim())
+        throw new Error('Escreva o que o robô deve fazer quando for chamado.')
+      return database.createWebhookTrigger(
+        String(p?.agentId),
+        String(p?.title ?? '').slice(0, 80),
+        instruction,
+      )
+    },
+  )
+  ipcMain.handle('orchbot:delete-webhook-trigger', (_e, id: string) =>
+    database.deleteWebhookTrigger(String(id)),
+  )
+  ipcMain.handle('orchbot:webhook-base-url', () => webhookBaseUrl(webhookServer))
   ipcMain.handle('orchbot:channel-list', (_e, includeArchived: boolean) =>
     database.listChannels(Boolean(includeArchived)),
   )
@@ -1319,6 +1354,13 @@ if (gotLock)
     setManagedCliRoot(path.join(app.getPath('userData'), 'cli'))
     registerIpcHandlers()
     createWindow()
+    startWebhookServer(getDatabase(), getQueueManager())
+      .then((server) => {
+        webhookServer = server
+      })
+      .catch(() => {
+        // porta ocupada: o app segue, só sem webhooks (a tela avisa)
+      })
 
     appUpdater = createAppUpdater(
       () => getDatabase().getSettings(),
@@ -1354,6 +1396,7 @@ app.on('before-quit', () => {
 
 app.on('window-all-closed', () => {
   cronScheduler?.close()
+  webhookServer?.close()
   if (process.platform !== 'darwin') {
     db?.close()
     app.quit()

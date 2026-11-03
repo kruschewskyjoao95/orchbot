@@ -3,11 +3,18 @@ import path from 'node:path'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import {
   type Agent,
+  type Approval,
   type Message,
   type StreamChunkEvent,
   type TaskQueueItem,
   effectiveCapabilities,
 } from '../../shared/types'
+import {
+  APPROVAL_INSTRUCTIONS,
+  approvalAnswerPrompt,
+  parseApprovalRequests,
+  stripApprovalRequests,
+} from '../approvals/approval-protocol'
 import {
   MAX_BROWSER_ROUNDS,
   argsFor,
@@ -22,7 +29,7 @@ import {
   parseCollabDirectives,
   stripCollabDirectives,
 } from '../collaboration/collab-protocol'
-import { CollaborationService } from '../collaboration/collaboration-service'
+import { CollaborationService, MAX_CHANNEL_DEPTH } from '../collaboration/collaboration-service'
 import {
   MAX_COMPUTER_ROUNDS,
   argsForComputer,
@@ -310,10 +317,10 @@ export class QueueManager {
   }
 
   /** Junta tudo que os despachantes pediram numa única mensagem de continuação. */
-  private flushFollowUps(task: TaskQueueItem, agentId: string): void {
+  private flushFollowUps(task: TaskQueueItem, agentId: string): boolean {
     const sections = this.followUps.get(task.id)
     this.followUps.delete(task.id)
-    if (!sections?.length || this.isClosed || !this.db.isOpen()) return
+    if (!sections?.length || this.isClosed || !this.db.isOpen()) return false
     this.enqueue(
       agentId,
       task.threadId,
@@ -327,6 +334,51 @@ export class QueueManager {
         : undefined,
       (task.browserRounds ?? 0) + 1,
     )
+    return true
+  }
+
+  /** Usuário respondeu um pedido de aprovação: o robô continua de onde parou. */
+  public decideApproval(id: string, approved: boolean, note?: string): Approval {
+    const approval = this.db.decideApproval(
+      id,
+      approved ? 'approved' : 'declined',
+      note?.trim() || undefined,
+    )
+    const task = approval.taskId ? this.db.getTask(approval.taskId) : null
+    this.db.addMessage(
+      approval.threadId,
+      'user',
+      `${approved ? '✅ Aprovado' : '❌ Recusado'}: ${approval.text}${approval.note ? `\n${approval.note}` : ''}`,
+    )
+    this.enqueue(
+      approval.agentId,
+      approval.threadId,
+      approvalAnswerPrompt(approval),
+      task?.delegationDepth ?? 1,
+      task?.originThreadId
+        ? { originThreadId: task.originThreadId, originAgentId: task.originAgentId }
+        : undefined,
+    )
+    return approval
+  }
+
+  /** Cadeia: o resultado final de um pedido segue para o próximo robô configurado. */
+  private handOff(task: TaskQueueItem, agent: Agent, result: string): void {
+    const next = agent.handoffAgentId ? this.db.getAgent(agent.handoffAgentId) : null
+    if (!next || next.id === agent.id || !result.trim() || this.isClosed || !this.db.isOpen())
+      return
+    const depth = (task.delegationDepth ?? 1) + 1
+    const threadId = depth <= MAX_CHANNEL_DEPTH ? this.collab.latestThread(next.id) : undefined
+    const text = threadId
+      ? `⛓️ Resultado passado para ${next.name}.`
+      : `⛓️ A cadeia parou em ${agent.name}: ${depth > MAX_CHANNEL_DEPTH ? 'limite de etapas atingido' : `${next.name} não tem conversa`}.`
+    if (threadId) {
+      const prompt = `[TRABALHO RECEBIDO DE ${agent.name}]\n${result.trim()}\n\nContinue a partir disto, fazendo a sua parte.`
+      this.db.addMessage(threadId, 'user', prompt, agent.id, next.id)
+      this.enqueue(next.id, threadId, prompt, depth)
+    }
+    const notice = this.db.addMessage(task.threadId, 'system', text)
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
   }
 
   /** Executa [[SKILL:*]]; list e load voltam ao robô num novo turno. */
@@ -721,6 +773,8 @@ export class QueueManager {
       )
     }
 
+    contextSections.push(APPROVAL_INSTRUCTIONS)
+
     // 6. Papel de orquestrador: equipe + protocolo de delegação
     if (agent.role === 'orchestrator') {
       const team = teamForOrchestrator(agent, this.db.listAgents())
@@ -920,10 +974,13 @@ export class QueueManager {
           const memoryDirectives = parseMemoryDirectives(fullText)
           const collabDirectives = parseCollabDirectives(fullText)
           const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
-          const stripped = stripSkillDirectives(
-            stripCollabDirectives(
-              stripMemoryDirectives(
-                stripComputerDirectives(stripNewChatDirectives(stripBrowserDirectives(fullText))),
+          const approvalRequests = parseApprovalRequests(fullText)
+          const stripped = stripApprovalRequests(
+            stripSkillDirectives(
+              stripCollabDirectives(
+                stripMemoryDirectives(
+                  stripComputerDirectives(stripNewChatDirectives(stripBrowserDirectives(fullText))),
+                ),
               ),
             ),
           )
@@ -934,16 +991,38 @@ export class QueueManager {
             nextTask.threadId,
             'assistant',
             visibleText.trim() ||
-              (memoryDirectives.length > 0 ||
-              collabDirectives.length > 0 ||
-              skillDirectives.length > 0
-                ? '🧠 Consultando a memória…'
-                : parseBrowserDirectives(fullText).length > 0
-                  ? '🌐 Consultando o navegador…'
-                  : isOrchestrator
-                    ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
-                    : '(Nenhum conteúdo retornado)'),
+              (approvalRequests.length > 0
+                ? '✋ Preciso da sua aprovação antes de continuar.'
+                : memoryDirectives.length > 0 ||
+                    collabDirectives.length > 0 ||
+                    skillDirectives.length > 0
+                  ? '🧠 Consultando a memória…'
+                  : parseBrowserDirectives(fullText).length > 0
+                    ? '🌐 Consultando o navegador…'
+                    : isOrchestrator
+                      ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
+                      : '(Nenhum conteúdo retornado)'),
           )
+
+          // 1a. Pedido de aprovação: o robô para aqui até o usuário responder.
+          for (const text of approvalRequests) {
+            const approval = this.db.createApproval({
+              agentId,
+              threadId: nextTask.threadId,
+              taskId: nextTask.id,
+              text,
+            })
+            const notice = this.db.addMessage(
+              nextTask.threadId,
+              'system',
+              `✋ ${agent.name} pede sua aprovação: ${approval.text.slice(0, 200)}`,
+            )
+            this.events?.onTurnFinished?.({
+              threadId: nextTask.threadId,
+              message: notice,
+              task: nextTask,
+            })
+          }
 
           if (turnUsage)
             this.db.setMessageUsage(
@@ -961,6 +1040,7 @@ export class QueueManager {
             this.dispatchDelegations(nextTask, agent, fullText)
           } else if (
             nextTask.originThreadId &&
+            approvalRequests.length === 0 &&
             parseBrowserDirectives(fullText).length === 0 &&
             !needsMemoryFollowUp(memoryDirectives) &&
             !needsCollabFollowUp(collabDirectives) &&
@@ -1007,7 +1087,19 @@ export class QueueManager {
               followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
             }
           }
-          void Promise.allSettled(followUpWork).then(() => this.flushFollowUps(nextTask, agentId))
+          // Cadeia só no fim de um pedido do usuário/rotina/webhook: não em delegações,
+          // canais, mensagens diretas, nem enquanto espera aprovação ou especialistas.
+          const canHandOff =
+            !!agent.handoffAgentId &&
+            approvalRequests.length === 0 &&
+            !nextTask.originThreadId &&
+            !nextTask.prompt.startsWith('[Mensagem direta de') &&
+            !(isOrchestrator && parseDelegationDirectives(fullText).length > 0) &&
+            !this.db.getChannelByThread(nextTask.threadId)
+          void Promise.allSettled(followUpWork).then(() => {
+            if (!this.flushFollowUps(nextTask, agentId) && canHandOff)
+              this.handOff(nextTask, agent, visibleText)
+          })
 
           // 1d. Robô inicia um novo chat (quando a capacidade permite)
           {
