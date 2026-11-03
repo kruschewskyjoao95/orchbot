@@ -29,6 +29,10 @@ export class ProviderRegistry {
     return adapter
   }
 
+  public registerAdapter(adapter: ProviderAdapter): void {
+    this.adapters.set(adapter.id, adapter)
+  }
+
   public async checkAllAvailability(): Promise<Record<SupportedProvider, ProviderInfo>> {
     const [codex, claude, grok, muse] = await Promise.all([
       this.getAdapter('codex').checkAvailability(),

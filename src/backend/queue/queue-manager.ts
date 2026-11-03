@@ -10,9 +10,29 @@ export interface QueueManagerEvents {
   onTaskStatusChanged: (event: { task: TaskQueueItem }) => void
 }
 
+export function isQuotaOrRateLimitError(error: string): boolean {
+  if (!error) return false
+  const lower = error.toLowerCase()
+  return (
+    lower.includes('429') ||
+    lower.includes('too many requests') ||
+    lower.includes('quota') ||
+    lower.includes('rate_limit') ||
+    lower.includes('rate limit') ||
+    lower.includes('insufficient_quota') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('overloaded') ||
+    lower.includes('exceeded your current quota') ||
+    lower.includes('capacity exceeded') ||
+    lower.includes('tokens per min') ||
+    lower.includes('requests per min')
+  )
+}
+
 export class QueueManager {
   private pausedAgents = new Set<string>()
   private isProcessingAgent = new Set<string>()
+  private taskFallbackAttempts = new Map<string, Set<string>>()
   private isClosed = false
 
   constructor(
@@ -190,6 +210,17 @@ export class QueueManager {
       contextSections.push(`[INSTRUÇÕES DO AGENTE]\n${agent.instructions.trim()}`)
     }
 
+    // 5. Nível de Autonomia do Agente
+    if (agent.autonomyLevel === 'cautious') {
+      contextSections.push(
+        '[NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO]\nVocê está operando em Modo Cauteloso. Peça confirmação expressa ao usuário antes de qualquer clique no navegador, preenchimento de campos ou comandos de terminal. Não execute ações destrutivas ou de escrita externa sem validação prévia.',
+      )
+    } else {
+      contextSections.push(
+        '[NÍVEL DE AUTONOMIA: ⚡ MODO AUTÔNOMO]\nVocê está operando em Modo Autônomo. Execute as tarefas e subtarefas da fila sequencialmente até concluir o objetivo com precisão.',
+      )
+    }
+
     const effectiveInstructions =
       contextSections.length > 0 ? contextSections.join('\n\n') : undefined
 
@@ -209,6 +240,48 @@ export class QueueManager {
           })
         },
         onError: (error) => {
+          // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
+          if (isQuotaOrRateLimitError(error)) {
+            const tried = this.taskFallbackAttempts.get(nextTask.id) ?? new Set<string>()
+            tried.add(agent.provider)
+            this.taskFallbackAttempts.set(nextTask.id, tried)
+
+            const enabledConnections = this.db.listConnections().filter((c) => c.enabled)
+            const fallback = enabledConnections.find((c) => !tried.has(c.providerId))
+
+            if (fallback) {
+              this.registry.removeActiveExecution(nextTask.threadId)
+              this.isProcessingAgent.delete(agentId)
+
+              // 1. Mensagem de sistema avisando ao usuário sobre o failover automático
+              const failoverNotice = `⚠️ Cota ou limite de requisições excedido no provedor ${agent.provider.toUpperCase()} (${error}). Realizando failover automático e transparente para ${fallback.providerId.toUpperCase()} (${fallback.defaultModel})...`
+              const systemMsg = this.db.addMessage(nextTask.threadId, 'system', failoverNotice)
+              this.events?.onTurnFinished?.({
+                threadId: nextTask.threadId,
+                message: systemMsg,
+                task: nextTask,
+              })
+
+              // 2. Atualiza o agente para o provedor e modelo alternativo
+              this.db.updateAgent({
+                id: agent.id,
+                provider: fallback.providerId,
+                model: fallback.defaultModel,
+              })
+
+              // 3. Reseta status da tarefa para pendente
+              this.db.updateTaskStatus(nextTask.id, 'pending')
+
+              // 4. Continua a execução imediatamente com o novo provedor
+              setTimeout(() => {
+                this.processNextForAgent(agentId)
+              }, 50)
+              return
+            }
+          }
+
+          // Se não houver fallback habilitado ou não for erro de cota
+          this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
 
@@ -226,6 +299,7 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
+          this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
 

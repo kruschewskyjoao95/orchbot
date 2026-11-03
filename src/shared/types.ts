@@ -22,6 +22,8 @@ export interface UpdateConnectionInput {
   defaultModel?: string
 }
 
+export type AutonomyLevel = 'cautious' | 'autonomous'
+
 export interface Agent {
   id: string
   name: string
@@ -30,6 +32,7 @@ export interface Agent {
   instructions: string
   workspacePath: string
   avatar?: string
+  autonomyLevel?: AutonomyLevel
   createdAt: string
   updatedAt: string
 }
@@ -40,6 +43,7 @@ export interface CreateAgentInput {
   model: string
   instructions?: string
   workspacePath: string
+  autonomyLevel?: AutonomyLevel
 }
 
 export interface UpdateAgentInput {
@@ -49,6 +53,7 @@ export interface UpdateAgentInput {
   model?: string
   instructions?: string
   workspacePath?: string
+  autonomyLevel?: AutonomyLevel
 }
 
 export interface Thread {
@@ -296,11 +301,16 @@ export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
     throw new Error('O caminho do workspace é obrigatório')
   }
 
-  return {
+  const rawAutonomy = (raw as Record<string, unknown>).autonomyLevel
+  const result: CreateAgentInput = {
     name: name.trim(),
     provider,
     model: model.trim(),
     instructions: typeof instructions === 'string' ? instructions.trim() : '',
     workspacePath: workspacePath.trim(),
   }
+  if (rawAutonomy !== undefined) {
+    result.autonomyLevel = rawAutonomy === 'cautious' ? 'cautious' : 'autonomous'
+  }
+  return result
 }

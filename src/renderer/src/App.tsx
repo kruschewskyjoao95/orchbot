@@ -1,6 +1,7 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import type {
   Agent,
+  AutonomyLevel,
   BrowserPageContent,
   BrowserTab,
   Message,
@@ -108,6 +109,7 @@ export const App: Component = () => {
   const [model, setModel] = createSignal('gpt-4o')
   const [workspacePath, setWorkspacePath] = createSignal('/home/joao/Documents/Orchbot')
   const [instructions, setInstructions] = createSignal('')
+  const [autonomyLevel, setAutonomyLevel] = createSignal<AutonomyLevel>('autonomous')
 
   let messagesEndRef: HTMLDivElement | undefined
 
@@ -315,6 +317,15 @@ export const App: Component = () => {
     const agent = currentAgent()
     const tabId = activeTabId()
     if (!agent || !tabId || !window.orchbot || !selector.trim()) return
+
+    // Modo Cauteloso: Solicita confirmação explícita antes de qualquer clique
+    if (agent.autonomyLevel === 'cautious') {
+      const confirmed = window.confirm(
+        `🛡️ [Modo Cauteloso]\n\nO agente está configurado para pedir permissão antes de ações de navegação.\n\nDeseja confirmar a execução do clique no elemento CSS:\n"${selector.trim()}"?`,
+      )
+      if (!confirmed) return
+    }
+
     try {
       await window.orchbot.browserClick(agent.id, tabId, selector.trim())
       setBrowserStatusMsg(`Elemento "${selector}" clicado com sucesso!`)
@@ -328,6 +339,15 @@ export const App: Component = () => {
     const agent = currentAgent()
     const tabId = activeTabId()
     if (!agent || !tabId || !window.orchbot || !selector.trim()) return
+
+    // Modo Cauteloso: Solicita confirmação explícita antes de qualquer digitação/preenchimento
+    if (agent.autonomyLevel === 'cautious') {
+      const confirmed = window.confirm(
+        `🛡️ [Modo Cauteloso]\n\nO agente está configurado para pedir permissão antes de ações de formulário.\n\nDeseja confirmar o preenchimento do campo CSS:\n"${selector.trim()}" com o valor:\n"${value}"?`,
+      )
+      if (!confirmed) return
+    }
+
     try {
       await window.orchbot.browserFill(agent.id, tabId, selector.trim(), value)
       setBrowserStatusMsg(`Campo "${selector}" preenchido com sucesso!`)
@@ -595,6 +615,22 @@ export const App: Component = () => {
     }
   }
 
+  const handleSwitchAutonomyLevel = async (agentId: string, newLevel: AutonomyLevel) => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          autonomyLevel: newLevel,
+        })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(
+        `Erro ao trocar nível de autonomia: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   const handleCreateAgent = async (e: Event) => {
     e.preventDefault()
     setErrorMessage(null)
@@ -611,6 +647,7 @@ export const App: Component = () => {
         model: model(),
         workspacePath: workspacePath(),
         instructions: instructions(),
+        autonomyLevel: autonomyLevel(),
       })
 
       await loadAgents()
@@ -620,6 +657,7 @@ export const App: Component = () => {
       // Limpar formulário
       setName('')
       setInstructions('')
+      setAutonomyLevel('autonomous')
     } catch (err: unknown) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1180,6 +1218,24 @@ export const App: Component = () => {
                               >
                                 {(m) => <option value={m}>{m}</option>}
                               </For>
+                            </select>
+                          </div>
+
+                          <div class="midchat-field">
+                            <span class="midchat-label">Autonomia:</span>
+                            <select
+                              class={`chat-autonomy-select ${agent().autonomyLevel || 'autonomous'}`}
+                              value={agent().autonomyLevel || 'autonomous'}
+                              onChange={(e) =>
+                                handleSwitchAutonomyLevel(
+                                  agent().id,
+                                  e.currentTarget.value as AutonomyLevel,
+                                )
+                              }
+                              title="Nível de autonomia do agente (Modo Cauteloso pergunta antes de ações de browser/terminal)"
+                            >
+                              <option value="autonomous">⚡ Autônomo</option>
+                              <option value="cautious">🛡️ Cauteloso</option>
                             </select>
                           </div>
                         </div>
@@ -2618,6 +2674,32 @@ export const App: Component = () => {
                   onInput={(e) => setWorkspacePath(e.currentTarget.value)}
                   required
                 />
+              </div>
+
+              <div class="form-group">
+                <label for="agent-autonomy">Nível de Autonomia</label>
+                <select
+                  id="agent-autonomy"
+                  style={{
+                    'background-color': 'var(--bg-card)',
+                    border: '1px solid var(--border)',
+                    'border-radius': 'var(--radius-sm)',
+                    padding: '8px 12px',
+                    color: 'var(--text-main)',
+                    'font-size': '13px',
+                    outline: 'none',
+                    width: '100%',
+                  }}
+                  value={autonomyLevel()}
+                  onChange={(e) => setAutonomyLevel(e.currentTarget.value as AutonomyLevel)}
+                >
+                  <option value="autonomous">
+                    ⚡ Modo Autônomo (Executa tarefas da fila sequencialmente)
+                  </option>
+                  <option value="cautious">
+                    🛡️ Modo Cauteloso (Pede confirmação antes de ações e cliques)
+                  </option>
+                </select>
               </div>
 
               <div class="form-group">

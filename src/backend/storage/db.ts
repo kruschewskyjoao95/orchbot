@@ -110,6 +110,7 @@ export class OrchbotDatabase {
         instructions TEXT NOT NULL,
         workspace_path TEXT NOT NULL,
         avatar TEXT,
+        autonomy_level TEXT DEFAULT 'autonomous',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -212,6 +213,7 @@ export class OrchbotDatabase {
         ALTER TABLE messages ADD COLUMN sender_agent_id TEXT;
         ALTER TABLE messages ADD COLUMN recipient_agent_id TEXT;
         ALTER TABLE task_queue ADD COLUMN delegation_depth INTEGER DEFAULT 1;
+        ALTER TABLE agents ADD COLUMN autonomy_level TEXT DEFAULT 'autonomous';
       `)
     } catch {
       // Ignora se as colunas já existirem no banco
@@ -369,6 +371,7 @@ export class OrchbotDatabase {
         instructions, 
         workspace_path AS workspacePath, 
         avatar, 
+        COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -387,6 +390,7 @@ export class OrchbotDatabase {
         instructions, 
         workspace_path AS workspacePath, 
         avatar, 
+        COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -406,13 +410,14 @@ export class OrchbotDatabase {
       model: input.model,
       instructions: input.instructions || '',
       workspacePath: input.workspacePath,
+      autonomyLevel: input.autonomyLevel || 'autonomous',
       createdAt: now,
       updatedAt: now,
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO agents (id, name, provider, model, instructions, workspace_path, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, name, provider, model, instructions, workspace_path, autonomy_level, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     stmt.run(
@@ -422,6 +427,7 @@ export class OrchbotDatabase {
       agent.model,
       agent.instructions,
       agent.workspacePath,
+      agent.autonomyLevel,
       agent.createdAt,
       agent.updatedAt,
     )
@@ -449,14 +455,15 @@ export class OrchbotDatabase {
     const model = input.model ?? current.model
     const instructions = input.instructions ?? current.instructions
     const workspacePath = input.workspacePath ?? current.workspacePath
+    const autonomyLevel = input.autonomyLevel ?? current.autonomyLevel ?? 'autonomous'
 
     const stmt = this.db.prepare(`
       UPDATE agents
-      SET name = ?, provider = ?, model = ?, instructions = ?, workspace_path = ?, updated_at = ?
+      SET name = ?, provider = ?, model = ?, instructions = ?, workspace_path = ?, autonomy_level = ?, updated_at = ?
       WHERE id = ?
     `)
 
-    stmt.run(name, provider, model, instructions, workspacePath, now, input.id)
+    stmt.run(name, provider, model, instructions, workspacePath, autonomyLevel, now, input.id)
 
     const updated = this.getAgent(input.id)
     if (!updated) {
@@ -652,6 +659,7 @@ export class OrchbotDatabase {
         a.instructions, 
         a.workspace_path AS workspacePath, 
         a.avatar, 
+        COALESCE(a.autonomy_level, 'autonomous') AS autonomyLevel,
         a.created_at AS createdAt, 
         a.updated_at AS updatedAt
       FROM agents a
