@@ -248,6 +248,12 @@ export interface OrchbotApi {
   searchProjectMemory: (agentId: string, query: string) => Promise<SearchResultGroup>
   getWorkspaceRules: (agentId: string) => Promise<WorkspaceRulesInfo>
   indexWorkspace: (agentId: string) => Promise<{ indexedCount: number }>
+  getScheduledTasks: (agentId?: string) => Promise<ScheduledTask[]>
+  createScheduledTask: (input: CreateScheduledTaskInput) => Promise<ScheduledTask>
+  updateScheduledTask: (input: UpdateScheduledTaskInput) => Promise<ScheduledTask>
+  deleteScheduledTask: (id: string) => Promise<boolean>
+  runScheduledTaskNow: (id: string) => Promise<boolean>
+  onScheduledTaskTriggered: (listener: (task: ScheduledTask) => void) => () => void
 }
 
 export interface SearchMessageResult {
@@ -313,4 +319,83 @@ export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
     result.autonomyLevel = rawAutonomy === 'cautious' ? 'cautious' : 'autonomous'
   }
   return result
+}
+
+export type ScheduledTaskType = 'routine' | 'browser_monitor'
+
+export interface ScheduledTask {
+  id: string
+  agentId: string
+  threadId?: string | null
+  title: string
+  prompt: string
+  cronExpression: string
+  taskType: ScheduledTaskType
+  targetUrl?: string | null
+  enabled: boolean
+  lastRunAt?: string | null
+  nextRunAt?: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateScheduledTaskInput {
+  agentId: string
+  threadId?: string
+  title: string
+  prompt: string
+  cronExpression: string
+  taskType?: ScheduledTaskType
+  targetUrl?: string
+  enabled?: boolean
+}
+
+export interface UpdateScheduledTaskInput {
+  id: string
+  title?: string
+  prompt?: string
+  cronExpression?: string
+  taskType?: ScheduledTaskType
+  targetUrl?: string
+  enabled?: boolean
+  nextRunAt?: string
+  lastRunAt?: string
+}
+
+export function validateCreateScheduledTaskInput(raw: unknown): CreateScheduledTaskInput {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error('Entrada inválida para criação de agendamento')
+  }
+
+  const { agentId, title, prompt, cronExpression, taskType, targetUrl, threadId, enabled } =
+    raw as Record<string, unknown>
+
+  if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+    throw new Error('O ID do agente é obrigatório')
+  }
+
+  if (typeof title !== 'string' || title.trim().length === 0) {
+    throw new Error('O título do agendamento é obrigatório')
+  }
+
+  if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+    throw new Error('A instrução/prompt do agendamento é obrigatória')
+  }
+
+  if (typeof cronExpression !== 'string' || cronExpression.trim().length === 0) {
+    throw new Error('A expressão cron é obrigatória')
+  }
+
+  return {
+    agentId: agentId.trim(),
+    title: title.trim(),
+    prompt: prompt.trim(),
+    cronExpression: cronExpression.trim(),
+    threadId:
+      typeof threadId === 'string' && threadId.trim().length > 0 ? threadId.trim() : undefined,
+    taskType: taskType === 'browser_monitor' ? 'browser_monitor' : 'routine',
+    targetUrl:
+      typeof targetUrl === 'string' && targetUrl.trim().length > 0 ? targetUrl.trim() : undefined,
+    enabled: enabled !== false,
+  }
 }

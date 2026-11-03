@@ -3,6 +3,7 @@ import path from 'node:path'
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import { BrowserManager } from '../backend/browser/browser-manager'
 import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
+import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
@@ -11,12 +12,14 @@ import { AttachmentManager } from '../backend/storage/attachment-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
 import type {
   BrowserBounds,
+  CreateScheduledTaskInput,
   DelegationInput,
   SupportedProvider,
   UpdateAgentInput,
   UpdateConnectionInput,
+  UpdateScheduledTaskInput,
 } from '../shared/types'
-import { validateCreateAgentInput } from '../shared/types'
+import { validateCreateAgentInput, validateCreateScheduledTaskInput } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let db: OrchbotDatabase | null = null
@@ -25,6 +28,7 @@ let queueManager: QueueManager | null = null
 let attachmentManager: AttachmentManager | null = null
 let delegationService: DelegationService | null = null
 let browserManager: BrowserManager | null = null
+let cronScheduler: CronScheduler | null = null
 
 function getDatabase(): OrchbotDatabase {
   if (!db) {
@@ -87,6 +91,19 @@ function getBrowserManager(): BrowserManager {
     })
   }
   return browserManager
+}
+
+function getCronScheduler(): CronScheduler {
+  if (!cronScheduler) {
+    cronScheduler = new CronScheduler(getDatabase(), getQueueManager(), getBrowserManager(), {
+      tickIntervalMs: 10000,
+      onTaskTriggered: (task) => {
+        mainWindow?.webContents.send('orchbot:scheduled-task-triggered', task)
+      },
+    })
+    cronScheduler.start()
+  }
+  return cronScheduler
 }
 
 function createWindow(): void {
@@ -474,6 +491,32 @@ function registerIpcHandlers(): void {
       return true
     },
   )
+
+  // --- Agendamentos & Tarefas em Background (Cron) ---
+  const scheduler = getCronScheduler()
+
+  ipcMain.handle('orchbot:get-scheduled-tasks', (_event, agentId?: string) => {
+    return database.listScheduledTasks(agentId)
+  })
+
+  ipcMain.handle('orchbot:create-scheduled-task', (_event, rawInput: unknown) => {
+    const input = validateCreateScheduledTaskInput(rawInput)
+    return database.createScheduledTask(input)
+  })
+
+  ipcMain.handle('orchbot:update-scheduled-task', (_event, input: UpdateScheduledTaskInput) => {
+    return database.updateScheduledTask(input)
+  })
+
+  ipcMain.handle('orchbot:delete-scheduled-task', (_event, id: string) => {
+    if (typeof id !== 'string') throw new Error('ID do agendamento inválido')
+    return database.deleteScheduledTask(id)
+  })
+
+  ipcMain.handle('orchbot:run-scheduled-task-now', async (_event, id: string) => {
+    if (typeof id !== 'string') throw new Error('ID do agendamento inválido')
+    return await scheduler.runNow(id)
+  })
 }
 
 app.whenReady().then(() => {
@@ -488,6 +531,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  cronScheduler?.close()
   if (process.platform !== 'darwin') {
     db?.close()
     app.quit()

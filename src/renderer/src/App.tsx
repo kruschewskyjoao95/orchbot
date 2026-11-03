@@ -1,4 +1,5 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import { describeCron } from '../../backend/cron/cron-parser'
 import type {
   Agent,
   AutonomyLevel,
@@ -7,6 +8,8 @@ import type {
   Message,
   ProviderConnection,
   ProviderInfo,
+  ScheduledTask,
+  ScheduledTaskType,
   SearchResultGroup,
   SelectedFile,
   SupportedProvider,
@@ -102,6 +105,18 @@ export const App: Component = () => {
   const [isIndexing, setIsIndexing] = createSignal(false)
   const [indexingMsg, setIndexingMsg] = createSignal<string | null>(null)
   const [searchTab, setSearchTab] = createSignal<'messages' | 'files'>('messages')
+
+  // Agendamento & Tarefas em Background (Cron) signals
+  const [showCronModal, setShowCronModal] = createSignal(false)
+  const [scheduledTasks, setScheduledTasks] = createSignal<ScheduledTask[]>([])
+  const [cronFormTitle, setCronFormTitle] = createSignal('')
+  const [cronFormPrompt, setCronFormPrompt] = createSignal('')
+  const [cronFormExpr, setCronFormExpr] = createSignal('0 9 * * *')
+  const [cronFormType, setCronFormType] = createSignal<ScheduledTaskType>('routine')
+  const [cronFormTargetUrl, setCronFormTargetUrl] = createSignal('')
+  const [cronFormThreadId, setCronFormThreadId] = createSignal('')
+  const [cronRunningId, setCronRunningId] = createSignal<string | null>(null)
+  const [cronSuccessMsg, setCronSuccessMsg] = createSignal<string | null>(null)
 
   // Form signals
   const [name, setName] = createSignal('')
@@ -424,12 +439,20 @@ export const App: Component = () => {
       }
     })
 
+    const unsubCronTriggered = window.orchbot.onScheduledTaskTriggered?.((task) => {
+      const agentId = selectedAgentId()
+      if (agentId && task.agentId === agentId) {
+        loadScheduledTasks(agentId)
+      }
+    })
+
     onCleanup(() => {
       unsubChunk()
       unsubFinished()
       unsubError()
       unsubTask()
       unsubBrowserTab()
+      unsubCronTriggered?.()
     })
   })
 
@@ -449,6 +472,7 @@ export const App: Component = () => {
       loadQueue(id)
       loadBrowserTabs(id)
       loadWorkspaceRulesData(id)
+      loadScheduledTasks(id)
       handleIndexWorkspace(id)
     }
   })
@@ -925,6 +949,106 @@ export const App: Component = () => {
     setShowSearchModal(false)
   }
 
+  // --- Agendamentos & Tarefas em Background (Cron) Handlers ---
+  const loadScheduledTasks = async (agentId?: string) => {
+    try {
+      const id = agentId || selectedAgentId()
+      if (!id || !window.orchbot) return
+      const list = await window.orchbot.getScheduledTasks(id)
+      setScheduledTasks(list)
+    } catch (err) {
+      console.error('Erro ao carregar agendamentos:', err)
+    }
+  }
+
+  const handleCreateScheduledTask = async (e: Event) => {
+    e.preventDefault()
+    const agentId = selectedAgentId()
+    if (!agentId || !window.orchbot) return
+    const title = cronFormTitle().trim()
+    const prompt = cronFormPrompt().trim()
+    const cronExpr = cronFormExpr().trim()
+
+    if (!title || !prompt || !cronExpr) {
+      alert('Preencha o título, instrução e a expressão cron.')
+      return
+    }
+
+    try {
+      await window.orchbot.createScheduledTask({
+        agentId,
+        title,
+        prompt,
+        cronExpression: cronExpr,
+        taskType: cronFormType(),
+        targetUrl: cronFormType() === 'browser_monitor' ? cronFormTargetUrl().trim() : undefined,
+        threadId: cronFormThreadId() || activeThread()?.id,
+      })
+
+      setCronSuccessMsg('Agendamento criado com sucesso!')
+      setTimeout(() => setCronSuccessMsg(null), 3000)
+      setCronFormTitle('')
+      setCronFormPrompt('')
+      setCronFormTargetUrl('')
+      await loadScheduledTasks(agentId)
+    } catch (err: unknown) {
+      alert(`Erro ao criar agendamento: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleToggleScheduledTask = async (task: ScheduledTask) => {
+    if (!window.orchbot) return
+    try {
+      await window.orchbot.updateScheduledTask({
+        id: task.id,
+        enabled: !task.enabled,
+      })
+      await loadScheduledTasks(task.agentId)
+    } catch (err: unknown) {
+      alert(`Erro ao alternar agendamento: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleRunScheduledTaskNow = async (task: ScheduledTask) => {
+    if (!window.orchbot) return
+    setCronRunningId(task.id)
+    try {
+      await window.orchbot.runScheduledTaskNow(task.id)
+      setCronSuccessMsg(`Rotina "${task.title}" disparada com sucesso!`)
+      setTimeout(() => setCronSuccessMsg(null), 3000)
+      await loadScheduledTasks(task.agentId)
+    } catch (err: unknown) {
+      alert(`Erro ao disparar agendamento: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setCronRunningId(null)
+    }
+  }
+
+  const handleDeleteScheduledTask = async (task: ScheduledTask) => {
+    if (!confirm(`Deseja realmente remover o agendamento "${task.title}"?`)) return
+    if (!window.orchbot) return
+    try {
+      await window.orchbot.deleteScheduledTask(task.id)
+      await loadScheduledTasks(task.agentId)
+    } catch (err: unknown) {
+      alert(`Erro ao remover agendamento: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const applyCronPreset = (
+    title: string,
+    cron: string,
+    type: ScheduledTaskType,
+    prompt: string,
+    url = '',
+  ) => {
+    setCronFormTitle(title)
+    setCronFormExpr(cron)
+    setCronFormType(type)
+    setCronFormPrompt(prompt)
+    setCronFormTargetUrl(url)
+  }
+
   const togglePauseQueue = async () => {
     const agent = currentAgent()
     if (!agent || !window.orchbot) return
@@ -1255,6 +1379,17 @@ export const App: Component = () => {
                             📜 {workspaceRules()?.filename} (Regras Ativas)
                           </button>
                         </Show>
+                        <button
+                          type="button"
+                          class="cron-badge"
+                          onClick={() => setShowCronModal(true)}
+                          title="Gerenciar rotinas e tarefas em background agendadas via Cron"
+                        >
+                          ⏰ Agendamentos (Cron)
+                          {scheduledTasks().length > 0
+                            ? ` (${scheduledTasks().filter((t) => t.enabled).length}/${scheduledTasks().length})`
+                            : ''}
+                        </button>
                       </div>
                     </div>
 
@@ -2721,6 +2856,417 @@ export const App: Component = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </dialog>
+      </Show>
+
+      {/* Modal de Agendamentos & Tarefas em Background (Cron) */}
+      <Show when={showCronModal()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowCronModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowCronModal(false)}
+        >
+          <div
+            class="modal-content cron-modal-container"
+            role="document"
+            style={{
+              width: '840px',
+              'max-height': '85vh',
+              display: 'flex',
+              'flex-direction': 'column',
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <div>
+                <span class="modal-title">⏰ Agendamentos & Rotinas em Background (Cron)</span>
+                <div
+                  style={{ 'font-size': '11px', color: 'var(--text-muted)', 'margin-top': '2px' }}
+                >
+                  Agente ativo: <strong>{currentAgent()?.name}</strong> • Automação periódica de
+                  tarefas e monitoramento de páginas
+                </div>
+              </div>
+              <button type="button" class="modal-close" onClick={() => setShowCronModal(false)}>
+                ✕
+              </button>
+            </div>
+
+            <Show when={cronSuccessMsg()}>
+              <div
+                style={{
+                  margin: '10px 20px 0',
+                  padding: '8px 12px',
+                  background: 'rgba(34, 197, 94, 0.15)',
+                  border: '1px solid rgba(34, 197, 94, 0.3)',
+                  'border-radius': 'var(--radius-sm)',
+                  color: '#22c55e',
+                  'font-size': '12px',
+                }}
+              >
+                ✅ {cronSuccessMsg()}
+              </div>
+            </Show>
+
+            <div
+              style={{
+                padding: '16px 20px',
+                'overflow-y': 'auto',
+                flex: 1,
+                display: 'flex',
+                'flex-direction': 'column',
+                gap: '20px',
+              }}
+            >
+              {/* Seção 1: Atalhos / Presets Rápidos */}
+              <div>
+                <div
+                  style={{
+                    'font-size': '12px',
+                    'font-weight': '600',
+                    color: 'var(--text-main)',
+                    'margin-bottom': '8px',
+                  }}
+                >
+                  💡 Sugestões Rápidas de Rotinas
+                </div>
+                <div class="cron-presets-strip">
+                  <button
+                    type="button"
+                    class="cron-preset-btn"
+                    onClick={() =>
+                      applyCronPreset(
+                        'Resumo Diário de Issues e Testes',
+                        '0 9 * * *',
+                        'routine',
+                        'Todo dia às 09:00 verifique as issues abertas ou rode a suíte de testes e me dê um resumo detalhado.',
+                      )
+                    }
+                  >
+                    🌅 Todo dia às 09:00 (Issues & Testes)
+                  </button>
+                  <button
+                    type="button"
+                    class="cron-preset-btn"
+                    onClick={() =>
+                      applyCronPreset(
+                        'Monitoramento de Status Web',
+                        '*/30 * * * *',
+                        'browser_monitor',
+                        'Acesse a página informada no navegador, verifique o status dos serviços e reporte alertas ou incidentes.',
+                        'https://status.github.com',
+                      )
+                    }
+                  >
+                    🌐 A cada 30 min (Monitoramento Web)
+                  </button>
+                  <button
+                    type="button"
+                    class="cron-preset-btn"
+                    onClick={() =>
+                      applyCronPreset(
+                        'Verificação Horária de Sanidade',
+                        '0 * * * *',
+                        'routine',
+                        'Execute uma verificação rápida de compilação e integridade no workspace e reporte o status.',
+                      )
+                    }
+                  >
+                    ⚡ A cada hora (Health check)
+                  </button>
+                </div>
+              </div>
+
+              {/* Seção 2: Lista de Agendamentos Ativos */}
+              <div>
+                <div
+                  style={{
+                    display: 'flex',
+                    'align-items': 'center',
+                    'justify-content': 'space-between',
+                    'margin-bottom': '10px',
+                  }}
+                >
+                  <span
+                    style={{ 'font-size': '12px', 'font-weight': '600', color: 'var(--text-main)' }}
+                  >
+                    Rotinas Cadastradas ({scheduledTasks().length})
+                  </span>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    style={{ padding: '3px 8px', 'font-size': '11px' }}
+                    onClick={() => loadScheduledTasks()}
+                  >
+                    🔄 Atualizar Lista
+                  </button>
+                </div>
+
+                <Show
+                  when={scheduledTasks().length > 0}
+                  fallback={
+                    <div
+                      style={{
+                        padding: '24px',
+                        'text-align': 'center',
+                        background: 'var(--bg-card)',
+                        border: '1px dashed var(--border)',
+                        'border-radius': 'var(--radius-sm)',
+                        color: 'var(--text-muted)',
+                        'font-size': '12px',
+                      }}
+                    >
+                      Nenhuma rotina agendada para este agente. Cadastre uma nova rotina abaixo para
+                      automação em background.
+                    </div>
+                  }
+                >
+                  <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px' }}>
+                    <For each={scheduledTasks()}>
+                      {(task) => (
+                        <div class={`cron-task-card ${task.enabled ? 'active' : 'disabled'}`}>
+                          <div class="cron-task-header">
+                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                              <span class={`cron-type-badge ${task.taskType}`}>
+                                {task.taskType === 'browser_monitor'
+                                  ? '🌐 Monitoramento Web'
+                                  : '📋 Rotina'}
+                              </span>
+                              <strong style={{ 'font-size': '13px', color: 'var(--text-main)' }}>
+                                {task.title}
+                              </strong>
+                            </div>
+                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                              <button
+                                type="button"
+                                class={`cron-toggle-btn ${task.enabled ? 'enabled' : 'disabled'}`}
+                                onClick={() => handleToggleScheduledTask(task)}
+                                title={
+                                  task.enabled ? 'Clique para desativar' : 'Clique para ativar'
+                                }
+                              >
+                                {task.enabled ? '✅ Ativo' : '⏸️ Pausado'}
+                              </button>
+                              <button
+                                type="button"
+                                class="btn-outline"
+                                style={{ padding: '3px 8px', 'font-size': '11px' }}
+                                disabled={cronRunningId() === task.id}
+                                onClick={() => handleRunScheduledTaskNow(task)}
+                                title="Executar imediatamente sem esperar o cronômetro"
+                              >
+                                {cronRunningId() === task.id ? 'Executando...' : '▶️ Rodar Agora'}
+                              </button>
+                              <button
+                                type="button"
+                                class="btn-danger"
+                                style={{ padding: '3px 6px', 'font-size': '11px' }}
+                                onClick={() => handleDeleteScheduledTask(task)}
+                                title="Excluir agendamento"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+
+                          <div class="cron-task-body">
+                            <div
+                              style={{
+                                'font-size': '12px',
+                                color: 'var(--text-main)',
+                                'margin-bottom': '6px',
+                                'white-space': 'pre-wrap',
+                              }}
+                            >
+                              {task.prompt}
+                            </div>
+                            <Show when={task.targetUrl}>
+                              <div
+                                style={{
+                                  'font-size': '11px',
+                                  color: 'var(--accent)',
+                                  'margin-bottom': '6px',
+                                }}
+                              >
+                                🔗 <strong>URL Alvo:</strong> <code>{task.targetUrl}</code>
+                              </div>
+                            </Show>
+                            <div class="cron-task-meta">
+                              <span>
+                                ⏰ Expressão: <code>{task.cronExpression}</code> (
+                                {describeCron(task.cronExpression)})
+                              </span>
+                              <span>
+                                ⏳ Próximo disparo:{' '}
+                                <strong>
+                                  {task.nextRunAt
+                                    ? new Date(task.nextRunAt).toLocaleString()
+                                    : 'Não agendado'}
+                                </strong>
+                              </span>
+                              <span>
+                                🏁 Última execução:{' '}
+                                {task.lastRunAt
+                                  ? new Date(task.lastRunAt).toLocaleString()
+                                  : 'Ainda não executado'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+
+              {/* Seção 3: Cadastrar Novo Agendamento */}
+              <div class="cron-create-section">
+                <div
+                  style={{
+                    'font-size': '12px',
+                    'font-weight': '600',
+                    color: 'var(--text-main)',
+                    'margin-bottom': '12px',
+                  }}
+                >
+                  ➕ Novo Agendamento para {currentAgent()?.name}
+                </div>
+
+                <form class="modal-form" onSubmit={handleCreateScheduledTask}>
+                  <div class="form-group">
+                    <label for="cron-title">Título da Rotina</label>
+                    <input
+                      id="cron-title"
+                      type="text"
+                      placeholder="Ex: Resumo Diário de Issues e Testes"
+                      value={cronFormTitle()}
+                      onInput={(e) => setCronFormTitle(e.currentTarget.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '12px' }}>
+                    <div class="form-group">
+                      <label for="cron-type">Tipo de Tarefa</label>
+                      <select
+                        id="cron-type"
+                        value={cronFormType()}
+                        onChange={(e) =>
+                          setCronFormType(e.currentTarget.value as ScheduledTaskType)
+                        }
+                        style={{
+                          'background-color': 'var(--bg-card)',
+                          border: '1px solid var(--border)',
+                          'border-radius': 'var(--radius-sm)',
+                          padding: '8px 12px',
+                          color: 'var(--text-main)',
+                          'font-size': '13px',
+                          outline: 'none',
+                          width: '100%',
+                        }}
+                      >
+                        <option value="routine">📋 Rotina de IA (Código, Testes, Issues)</option>
+                        <option value="browser_monitor">
+                          🌐 Monitoramento Periódico de Página Web
+                        </option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="cron-preset-select">Frequência (Cron)</label>
+                      <select
+                        id="cron-preset-select"
+                        value={cronFormExpr()}
+                        onChange={(e) => setCronFormExpr(e.currentTarget.value)}
+                        style={{
+                          'background-color': 'var(--bg-card)',
+                          border: '1px solid var(--border)',
+                          'border-radius': 'var(--radius-sm)',
+                          padding: '8px 12px',
+                          color: 'var(--text-main)',
+                          'font-size': '13px',
+                          outline: 'none',
+                          width: '100%',
+                        }}
+                      >
+                        <option value="0 9 * * *">🌅 Todo dia às 09:00 (0 9 * * *)</option>
+                        <option value="0 0 * * *">🌙 Todo dia à meia-noite (0 0 * * *)</option>
+                        <option value="0 * * * *">🕐 A cada hora no minuto 0 (0 * * * *)</option>
+                        <option value="*/30 * * * *">⏱️ A cada 30 minutos (*/30 * * * *)</option>
+                        <option value="*/15 * * * *">⚡ A cada 15 minutos (*/15 * * * *)</option>
+                        <option value="*/5 * * * *">🚀 A cada 5 minutos (*/5 * * * *)</option>
+                        <option value="0 0 * * 0">📅 Todo domingo (0 0 * * 0)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="cron-expr-input">Expressão Cron Customizada</label>
+                    <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                      <input
+                        id="cron-expr-input"
+                        type="text"
+                        placeholder="minuto hora dia mês dia-da-semana (ex: 0 9 * * *)"
+                        value={cronFormExpr()}
+                        onInput={(e) => setCronFormExpr(e.currentTarget.value)}
+                        required
+                        style={{ flex: 1 }}
+                      />
+                      <span style={{ 'font-size': '11px', color: 'var(--accent)' }}>
+                        {describeCron(cronFormExpr())}
+                      </span>
+                    </div>
+                  </div>
+
+                  <Show when={cronFormType() === 'browser_monitor'}>
+                    <div class="form-group">
+                      <label for="cron-target-url">URL da Página Web a Monitorar</label>
+                      <input
+                        id="cron-target-url"
+                        type="url"
+                        placeholder="https://github.com/org/repo/issues ou https://status.github.com"
+                        value={cronFormTargetUrl()}
+                        onInput={(e) => setCronFormTargetUrl(e.currentTarget.value)}
+                        required
+                      />
+                    </div>
+                  </Show>
+
+                  <div class="form-group">
+                    <label for="cron-prompt">Instrução / Prompt da Rotina</label>
+                    <textarea
+                      id="cron-prompt"
+                      placeholder="Ex: Verifique as issues abertas ou rode a suíte de testes e me dê um resumo."
+                      value={cronFormPrompt()}
+                      onInput={(e) => setCronFormPrompt(e.currentTarget.value)}
+                      required
+                      style={{ height: '70px' }}
+                    />
+                  </div>
+
+                  <div
+                    style={{ display: 'flex', 'justify-content': 'flex-end', 'margin-top': '8px' }}
+                  >
+                    <button
+                      type="submit"
+                      class="btn-primary"
+                      style={{ padding: '8px 16px', 'font-size': '12.5px' }}
+                    >
+                      ➕ Salvar Agendamento
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div class="modal-actions" style={{ padding: '12px 20px' }}>
+              <button type="button" class="btn-secondary" onClick={() => setShowCronModal(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
         </dialog>
       </Show>

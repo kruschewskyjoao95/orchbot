@@ -3,8 +3,10 @@ import type {
   BrowserBounds,
   BrowserTab,
   CreateAgentInput,
+  CreateScheduledTaskInput,
   DelegationInput,
   OrchbotApi,
+  ScheduledTask,
   StreamChunkEvent,
   SupportedProvider,
   TaskStatusChangedEvent,
@@ -12,6 +14,7 @@ import type {
   TurnFinishedEvent,
   UpdateAgentInput,
   UpdateConnectionInput,
+  UpdateScheduledTaskInput,
 } from '../shared/types'
 
 const api: OrchbotApi = {
@@ -114,6 +117,21 @@ const api: OrchbotApi = {
   getWorkspaceRules: (agentId: string) =>
     ipcRenderer.invoke('orchbot:get-workspace-rules', agentId),
   indexWorkspace: (agentId: string) => ipcRenderer.invoke('orchbot:index-workspace', agentId),
+  getScheduledTasks: (agentId?: string) =>
+    ipcRenderer.invoke('orchbot:get-scheduled-tasks', agentId),
+  createScheduledTask: (input: CreateScheduledTaskInput) =>
+    ipcRenderer.invoke('orchbot:create-scheduled-task', input),
+  updateScheduledTask: (input: UpdateScheduledTaskInput) =>
+    ipcRenderer.invoke('orchbot:update-scheduled-task', input),
+  deleteScheduledTask: (id: string) => ipcRenderer.invoke('orchbot:delete-scheduled-task', id),
+  runScheduledTaskNow: (id: string) => ipcRenderer.invoke('orchbot:run-scheduled-task-now', id),
+  onScheduledTaskTriggered: (listener: (task: ScheduledTask) => void) => {
+    const handler = (_event: unknown, task: ScheduledTask) => listener(task)
+    ipcRenderer.on('orchbot:scheduled-task-triggered', handler)
+    return () => {
+      ipcRenderer.removeListener('orchbot:scheduled-task-triggered', handler)
+    }
+  },
 }
 
 contextBridge.exposeInMainWorld('orchbot', api)

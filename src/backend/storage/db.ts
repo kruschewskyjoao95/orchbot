@@ -6,8 +6,10 @@ import type {
   Agent,
   Attachment,
   CreateAgentInput,
+  CreateScheduledTaskInput,
   Message,
   ProviderConnection,
+  ScheduledTask,
   SearchFileResult,
   SearchMessageResult,
   SearchResultGroup,
@@ -17,7 +19,9 @@ import type {
   Thread,
   UpdateAgentInput,
   UpdateConnectionInput,
+  UpdateScheduledTaskInput,
 } from '../../shared/types'
+import { calculateNextRun, isValidCron } from '../cron/cron-parser'
 
 export function sanitizeFtsQuery(raw: string): string {
   if (!raw || typeof raw !== 'string') return ''
@@ -206,6 +210,25 @@ export class OrchbotDatabase {
       CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
         DELETE FROM messages_fts WHERE message_id = old.id;
       END;
+
+      CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        cron_expression TEXT NOT NULL,
+        task_type TEXT NOT NULL DEFAULT 'routine',
+        target_url TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_run_at TEXT,
+        next_run_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sched_agent ON scheduled_tasks(agent_id);
+      CREATE INDEX IF NOT EXISTS idx_sched_next ON scheduled_tasks(enabled, next_run_at);
     `)
 
     try {
@@ -928,6 +951,231 @@ export class OrchbotDatabase {
     const messages = this.searchMessages(rawQuery, { agentId, limit })
     const files = this.searchWorkspaceFiles(agentId, rawQuery, limit)
     return { messages, files }
+  }
+
+  // --- Agendamentos & Tarefas em Background (Cron) ---
+
+  public createScheduledTask(input: CreateScheduledTaskInput): ScheduledTask {
+    const id = randomUUID()
+    const now = new Date()
+    const nowIso = now.toISOString()
+    const nextRun = isValidCron(input.cronExpression)
+      ? calculateNextRun(input.cronExpression, now).toISOString()
+      : null
+
+    const task: ScheduledTask = {
+      id,
+      agentId: input.agentId,
+      threadId: input.threadId ?? null,
+      title: input.title,
+      prompt: input.prompt,
+      cronExpression: input.cronExpression,
+      taskType: input.taskType || 'routine',
+      targetUrl: input.targetUrl ?? null,
+      enabled: input.enabled !== false,
+      lastRunAt: null,
+      nextRunAt: nextRun,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO scheduled_tasks (
+        id, agent_id, thread_id, title, prompt, cron_expression, 
+        task_type, target_url, enabled, last_run_at, next_run_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    stmt.run(
+      task.id,
+      task.agentId,
+      task.threadId,
+      task.title,
+      task.prompt,
+      task.cronExpression,
+      task.taskType,
+      task.targetUrl,
+      task.enabled ? 1 : 0,
+      task.lastRunAt,
+      task.nextRunAt,
+      task.createdAt,
+      task.updatedAt,
+    )
+
+    return task
+  }
+
+  public getScheduledTask(id: string): ScheduledTask | null {
+    const stmt = this.db.prepare(`
+      SELECT 
+        id,
+        agent_id AS agentId,
+        thread_id AS threadId,
+        title,
+        prompt,
+        cron_expression AS cronExpression,
+        task_type AS taskType,
+        target_url AS targetUrl,
+        enabled,
+        last_run_at AS lastRunAt,
+        next_run_at AS nextRunAt,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM scheduled_tasks
+      WHERE id = ?
+    `)
+    const raw = stmt.get(id) as Record<string, unknown> | undefined
+    if (!raw) return null
+    return {
+      ...(raw as unknown as ScheduledTask),
+      enabled: raw.enabled === 1 || raw.enabled === true,
+    }
+  }
+
+  public listScheduledTasks(agentId?: string): ScheduledTask[] {
+    const query = agentId
+      ? `SELECT 
+          id,
+          agent_id AS agentId,
+          thread_id AS threadId,
+          title,
+          prompt,
+          cron_expression AS cronExpression,
+          task_type AS taskType,
+          target_url AS targetUrl,
+          enabled,
+          last_run_at AS lastRunAt,
+          next_run_at AS nextRunAt,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM scheduled_tasks
+        WHERE agent_id = ?
+        ORDER BY created_at DESC`
+      : `SELECT 
+          id,
+          agent_id AS agentId,
+          thread_id AS threadId,
+          title,
+          prompt,
+          cron_expression AS cronExpression,
+          task_type AS taskType,
+          target_url AS targetUrl,
+          enabled,
+          last_run_at AS lastRunAt,
+          next_run_at AS nextRunAt,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM scheduled_tasks
+        ORDER BY created_at DESC`
+
+    const stmt = this.db.prepare(query)
+    const rows = (agentId ? stmt.all(agentId) : stmt.all()) as Array<Record<string, unknown>>
+    return rows.map((r) => ({
+      ...(r as unknown as ScheduledTask),
+      enabled: r.enabled === 1 || r.enabled === true,
+    }))
+  }
+
+  public getDueScheduledTasks(referenceDateIso?: string): ScheduledTask[] {
+    const ref = referenceDateIso || new Date().toISOString()
+    const stmt = this.db.prepare(`
+      SELECT 
+        id,
+        agent_id AS agentId,
+        thread_id AS threadId,
+        title,
+        prompt,
+        cron_expression AS cronExpression,
+        task_type AS taskType,
+        target_url AS targetUrl,
+        enabled,
+        last_run_at AS lastRunAt,
+        next_run_at AS nextRunAt,
+        created_at AS createdAt,
+        updated_at AS updatedAt
+      FROM scheduled_tasks
+      WHERE enabled = 1
+        AND (next_run_at IS NULL OR next_run_at <= ?)
+      ORDER BY next_run_at ASC
+    `)
+    const rows = stmt.all(ref) as Array<Record<string, unknown>>
+    return rows.map((r) => ({
+      ...(r as unknown as ScheduledTask),
+      enabled: true,
+    }))
+  }
+
+  public updateScheduledTask(input: UpdateScheduledTaskInput): ScheduledTask {
+    const current = this.getScheduledTask(input.id)
+    if (!current) {
+      throw new Error(`Agendamento "${input.id}" não encontrado`)
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+    const title = input.title ?? current.title
+    const prompt = input.prompt ?? current.prompt
+    const cronExpression = input.cronExpression ?? current.cronExpression
+    const taskType = input.taskType ?? current.taskType
+    const targetUrl = input.targetUrl !== undefined ? input.targetUrl : current.targetUrl
+    const enabled = input.enabled !== undefined ? input.enabled : current.enabled
+    const lastRunAt = input.lastRunAt !== undefined ? input.lastRunAt : current.lastRunAt
+
+    let nextRunAt = input.nextRunAt !== undefined ? input.nextRunAt : current.nextRunAt
+    if (input.cronExpression || (input.enabled === true && !nextRunAt)) {
+      if (isValidCron(cronExpression)) {
+        nextRunAt = calculateNextRun(cronExpression, now).toISOString()
+      }
+    }
+
+    const stmt = this.db.prepare(`
+      UPDATE scheduled_tasks
+      SET 
+        title = ?,
+        prompt = ?,
+        cron_expression = ?,
+        task_type = ?,
+        target_url = ?,
+        enabled = ?,
+        last_run_at = ?,
+        next_run_at = ?,
+        updated_at = ?
+      WHERE id = ?
+    `)
+
+    stmt.run(
+      title,
+      prompt,
+      cronExpression,
+      taskType,
+      targetUrl,
+      enabled ? 1 : 0,
+      lastRunAt,
+      nextRunAt,
+      nowIso,
+      input.id,
+    )
+
+    const updated = this.getScheduledTask(input.id)
+    if (!updated) {
+      throw new Error('Falha ao atualizar agendamento')
+    }
+    return updated
+  }
+
+  public recordScheduledTaskRun(id: string, runTimeIso: string, nextRunIso: string): void {
+    const stmt = this.db.prepare(`
+      UPDATE scheduled_tasks
+      SET last_run_at = ?, next_run_at = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    stmt.run(runTimeIso, nextRunIso, runTimeIso, id)
+  }
+
+  public deleteScheduledTask(id: string): boolean {
+    const stmt = this.db.prepare('DELETE FROM scheduled_tasks WHERE id = ?')
+    stmt.run(id)
+    return true
   }
 
   public isOpen(): boolean {
