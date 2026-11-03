@@ -8,6 +8,9 @@ import type {
   CreateAgentInput,
   Message,
   ProviderConnection,
+  SearchFileResult,
+  SearchMessageResult,
+  SearchResultGroup,
   SupportedProvider,
   TaskQueueItem,
   TaskStatus,
@@ -15,6 +18,52 @@ import type {
   UpdateAgentInput,
   UpdateConnectionInput,
 } from '../../shared/types'
+
+export function sanitizeFtsQuery(raw: string): string {
+  if (!raw || typeof raw !== 'string') return ''
+  const words = raw
+    .replace(/[^\p{L}\p{N}\s_]/gu, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+  if (words.length === 0) return ''
+  return words.map((w) => `"${w}"*`).join(' OR ')
+}
+
+export const IGNORED_INDEX_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.cache',
+  'dist',
+  'out',
+  'build',
+  '.idea',
+  '.vscode',
+  '.next',
+  '.solid',
+  'coverage',
+])
+
+export const INDEXABLE_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.json',
+  '.md',
+  '.html',
+  '.css',
+  '.scss',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.sh',
+  '.py',
+  '.rs',
+  '.go',
+  '.sql',
+  '.txt',
+])
 
 export const PROVIDER_MODELS: Record<SupportedProvider, string[]> = {
   codex: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini', 'codex-preview'],
@@ -125,6 +174,37 @@ export class OrchbotDatabase {
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
       );
+
+      -- FTS5: Busca Full-Text e RAG de Mensagens
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        message_id UNINDEXED,
+        thread_id UNINDEXED,
+        agent_id UNINDEXED,
+        role UNINDEXED,
+        text,
+        tokenize='porter unicode61'
+      );
+
+      -- FTS5: Busca Full-Text de Arquivos do Repositório
+      CREATE VIRTUAL TABLE IF NOT EXISTS workspace_files_fts USING fts5(
+        agent_id UNINDEXED,
+        file_path UNINDEXED,
+        file_name,
+        content,
+        updated_at UNINDEXED,
+        tokenize='porter unicode61'
+      );
+
+      -- Triggers de sincronização automática entre mensagens e FTS5
+      CREATE TRIGGER IF NOT EXISTS trg_messages_ai AFTER INSERT ON messages BEGIN
+        INSERT INTO messages_fts (message_id, thread_id, agent_id, role, text)
+        SELECT new.id, new.thread_id, t.agent_id, new.role, new.text
+        FROM threads t WHERE t.id = new.thread_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_messages_ad AFTER DELETE ON messages BEGIN
+        DELETE FROM messages_fts WHERE message_id = old.id;
+      END;
     `)
 
     try {
@@ -135,6 +215,19 @@ export class OrchbotDatabase {
       `)
     } catch {
       // Ignora se as colunas já existirem no banco
+    }
+
+    try {
+      // Backfill de mensagens existentes no FTS5 caso já haja mensagens gravadas
+      this.db.exec(`
+        INSERT INTO messages_fts (message_id, thread_id, agent_id, role, text)
+        SELECT m.id, m.thread_id, t.agent_id, m.role, m.text
+        FROM messages m
+        JOIN threads t ON t.id = m.thread_id
+        WHERE m.id NOT IN (SELECT message_id FROM messages_fts);
+      `)
+    } catch {
+      // Ignora erro se a tabela estiver sincronizada
     }
   }
 
@@ -373,6 +466,12 @@ export class OrchbotDatabase {
   }
 
   public deleteAgent(id: string): boolean {
+    try {
+      this.db.prepare('DELETE FROM workspace_files_fts WHERE agent_id = ?').run(id)
+      this.db.prepare('DELETE FROM messages_fts WHERE agent_id = ?').run(id)
+    } catch {
+      // Ignora erro se tabelas FTS não existirem
+    }
     const stmt = this.db.prepare('DELETE FROM agents WHERE id = ?')
     stmt.run(id)
     return true
@@ -701,6 +800,126 @@ export class OrchbotDatabase {
     `)
     const info = stmt.run(now)
     return Number(info.changes)
+  }
+
+  public searchMessages(
+    rawQuery: string,
+    options?: { agentId?: string; limit?: number },
+  ): SearchMessageResult[] {
+    const ftsQuery = sanitizeFtsQuery(rawQuery)
+    if (!ftsQuery) return []
+
+    const limit = options?.limit ?? 20
+    const agentId = options?.agentId ?? null
+
+    const stmt = this.db.prepare(`
+      SELECT 
+        m.id,
+        m.thread_id AS threadId,
+        t.title AS threadTitle,
+        m.role,
+        m.text,
+        snippet(messages_fts, 4, '<b>', '</b>', '...', 20) AS snippet,
+        m.created_at AS createdAt
+      FROM messages_fts fts
+      JOIN messages m ON m.id = fts.message_id
+      JOIN threads t ON t.id = m.thread_id
+      WHERE messages_fts MATCH ?
+        AND (? IS NULL OR t.agent_id = ?)
+      ORDER BY fts.rank ASC
+      LIMIT ?
+    `)
+
+    return stmt.all(ftsQuery, agentId, agentId, limit) as unknown as SearchMessageResult[]
+  }
+
+  public indexWorkspaceFiles(agentId: string, workspacePath: string, maxFiles = 150): number {
+    if (!workspacePath || !fs.existsSync(workspacePath)) {
+      return 0
+    }
+
+    try {
+      this.db.prepare('DELETE FROM workspace_files_fts WHERE agent_id = ?').run(agentId)
+
+      const filesToIndex: Array<{ path: string; name: string; content: string }> = []
+
+      const walk = (currentDir: string) => {
+        if (filesToIndex.length >= maxFiles) return
+        try {
+          const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+          for (const entry of entries) {
+            if (filesToIndex.length >= maxFiles) break
+            if (entry.isDirectory()) {
+              if (!IGNORED_INDEX_DIRS.has(entry.name)) {
+                walk(path.join(currentDir, entry.name))
+              }
+            } else if (entry.isFile()) {
+              const ext = path.extname(entry.name).toLowerCase()
+              if (INDEXABLE_EXTENSIONS.has(ext)) {
+                const fullPath = path.join(currentDir, entry.name)
+                try {
+                  const stat = fs.statSync(fullPath)
+                  if (stat.size > 0 && stat.size <= 150 * 1024) {
+                    const content = fs.readFileSync(fullPath, 'utf-8')
+                    filesToIndex.push({
+                      path: fullPath,
+                      name: entry.name,
+                      content,
+                    })
+                  }
+                } catch {
+                  // Ignora arquivos que não puderem ser lidos
+                }
+              }
+            }
+          }
+        } catch {
+          // Ignora erros ao listar diretórios protegidos
+        }
+      }
+
+      walk(workspacePath)
+
+      const insertStmt = this.db.prepare(`
+        INSERT INTO workspace_files_fts (agent_id, file_path, file_name, content, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `)
+
+      const now = new Date().toISOString()
+      for (const f of filesToIndex) {
+        insertStmt.run(agentId, f.path, f.name, f.content, now)
+      }
+
+      return filesToIndex.length
+    } catch (err) {
+      console.error('Erro ao indexar workspace:', err)
+      return 0
+    }
+  }
+
+  public searchWorkspaceFiles(agentId: string, rawQuery: string, limit = 10): SearchFileResult[] {
+    const ftsQuery = sanitizeFtsQuery(rawQuery)
+    if (!ftsQuery) return []
+
+    const stmt = this.db.prepare(`
+      SELECT 
+        file_path AS filePath,
+        file_name AS fileName,
+        snippet(workspace_files_fts, 3, '<b>', '</b>', '...', 24) AS snippet
+      FROM workspace_files_fts
+      WHERE workspace_files_fts MATCH ?
+        AND agent_id = ?
+      ORDER BY rank ASC
+      LIMIT ?
+    `)
+
+    return stmt.all(ftsQuery, agentId, limit) as unknown as SearchFileResult[]
+  }
+
+  public searchProjectMemory(agentId: string, rawQuery: string, limit = 15): SearchResultGroup {
+    const messages = this.searchMessages(rawQuery, { agentId, limit })
+    const files = this.searchWorkspaceFiles(agentId, rawQuery, limit)
+    return { messages, files }
   }
 
   public isOpen(): boolean {

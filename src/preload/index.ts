@@ -109,6 +109,11 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:update-connection', input),
   testConnection: (providerId: SupportedProvider) =>
     ipcRenderer.invoke('orchbot:test-connection', providerId),
+  searchProjectMemory: (agentId: string, query: string) =>
+    ipcRenderer.invoke('orchbot:search-project-memory', { agentId, query }),
+  getWorkspaceRules: (agentId: string) =>
+    ipcRenderer.invoke('orchbot:get-workspace-rules', agentId),
+  indexWorkspace: (agentId: string) => ipcRenderer.invoke('orchbot:index-workspace', agentId),
 }
 
 contextBridge.exposeInMainWorld('orchbot', api)

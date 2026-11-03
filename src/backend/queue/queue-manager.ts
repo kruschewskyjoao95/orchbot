@@ -1,5 +1,6 @@
 import type { Message, StreamChunkEvent, TaskQueueItem } from '../../shared/types'
 import type { ProviderRegistry } from '../providers/registry'
+import { loadWorkspaceRules } from '../rag/workspace-rules'
 import type { OrchbotDatabase } from '../storage/db'
 
 export interface QueueManagerEvents {
@@ -144,12 +145,60 @@ export class QueueManager {
 
     const adapter = this.registry.getAdapter(agent.provider)
 
+    // 1. Diretrizes do Projeto (ORCHBOT.md / AGENTS.md)
+    const rules = loadWorkspaceRules(agent.workspacePath)
+    const contextSections: string[] = []
+
+    if (rules.exists && rules.content) {
+      contextSections.push(`[DIRETRIZES DO PROJETO (${rules.filename})]\n${rules.content}`)
+    }
+
+    // 2. Memória Contínua FTS5 (histórico de conversas anteriores relevantes)
+    try {
+      const relevantMsgs = this.db.searchMessages(nextTask.prompt, {
+        agentId,
+        limit: 3,
+      })
+      const filteredMsgs = relevantMsgs.filter((m) => m.text.trim() !== nextTask.prompt.trim())
+      if (filteredMsgs.length > 0) {
+        const memoryText = filteredMsgs
+          .map((m) => `- [Conversa "${m.threadTitle}" (${m.role})]: ${m.text.slice(0, 300)}`)
+          .join('\n')
+        contextSections.push(
+          `[MEMÓRIA DO PROJETO / HISTÓRICO DE CONVERSAS ANTERIORES]\n${memoryText}`,
+        )
+      }
+    } catch {
+      // Ignora falhas de busca de memória
+    }
+
+    // 3. Trechos relevantes do repositório (RAG local)
+    try {
+      const relevantFiles = this.db.searchWorkspaceFiles(agentId, nextTask.prompt, 3)
+      if (relevantFiles.length > 0) {
+        const filesText = relevantFiles
+          .map((f) => `- [Arquivo ${f.fileName}]: ${f.snippet.replace(/<\/?b>/g, '')}`)
+          .join('\n')
+        contextSections.push(`[TRECHOS RELEVANTES DO REPOSITÓRIO]\n${filesText}`)
+      }
+    } catch {
+      // Ignora falhas de busca em arquivos
+    }
+
+    // 4. Instruções originais do agente
+    if (agent.instructions?.trim()) {
+      contextSections.push(`[INSTRUÇÕES DO AGENTE]\n${agent.instructions.trim()}`)
+    }
+
+    const effectiveInstructions =
+      contextSections.length > 0 ? contextSections.join('\n\n') : undefined
+
     const execution = adapter.executeTurn(
       nextTask.prompt,
       {
         workspacePath: agent.workspacePath,
         model: agent.model,
-        instructions: agent.instructions,
+        instructions: effectiveInstructions,
       },
       {
         onChunk: (chunk, fullText) => {

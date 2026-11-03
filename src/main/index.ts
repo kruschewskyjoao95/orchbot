@@ -6,6 +6,7 @@ import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
+import { loadWorkspaceRules } from '../backend/rag/workspace-rules'
 import { AttachmentManager } from '../backend/storage/attachment-manager'
 import { OrchbotDatabase } from '../backend/storage/db'
 import type {
@@ -252,6 +253,32 @@ function registerIpcHandlers(): void {
         message: err instanceof Error ? err.message : String(err),
       }
     }
+  })
+
+  ipcMain.handle(
+    'orchbot:search-project-memory',
+    (_event, payload: { agentId: string; query: string }) => {
+      const { agentId, query } = payload
+      if (!agentId || typeof query !== 'string') {
+        throw new Error('Parâmetros inválidos para busca')
+      }
+      return database.searchProjectMemory(agentId, query)
+    },
+  )
+
+  ipcMain.handle('orchbot:get-workspace-rules', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('ID do agente inválido')
+    const agent = database.getAgent(agentId)
+    if (!agent) return { exists: false }
+    return loadWorkspaceRules(agent.workspacePath)
+  })
+
+  ipcMain.handle('orchbot:index-workspace', (_event, agentId: string) => {
+    if (typeof agentId !== 'string') throw new Error('ID do agente inválido')
+    const agent = database.getAgent(agentId)
+    if (!agent) return { indexedCount: 0 }
+    const count = database.indexWorkspaceFiles(agent.id, agent.workspacePath)
+    return { indexedCount: count }
   })
 
   ipcMain.handle(

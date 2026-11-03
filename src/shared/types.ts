@@ -240,6 +240,37 @@ export interface OrchbotApi {
   getConnections: () => Promise<ProviderConnection[]>
   updateConnection: (input: UpdateConnectionInput) => Promise<ProviderConnection>
   testConnection: (providerId: SupportedProvider) => Promise<{ success: boolean; message: string }>
+  searchProjectMemory: (agentId: string, query: string) => Promise<SearchResultGroup>
+  getWorkspaceRules: (agentId: string) => Promise<WorkspaceRulesInfo>
+  indexWorkspace: (agentId: string) => Promise<{ indexedCount: number }>
+}
+
+export interface SearchMessageResult {
+  id: string
+  threadId: string
+  threadTitle: string
+  role: string
+  text: string
+  snippet: string
+  createdAt?: string
+}
+
+export interface SearchFileResult {
+  filePath: string
+  fileName: string
+  snippet: string
+}
+
+export interface SearchResultGroup {
+  messages: SearchMessageResult[]
+  files: SearchFileResult[]
+}
+
+export interface WorkspaceRulesInfo {
+  exists: boolean
+  filename?: string
+  filePath?: string
+  content?: string
 }
 
 export function validateCreateAgentInput(raw: unknown): CreateAgentInput {

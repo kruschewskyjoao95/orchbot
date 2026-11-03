@@ -6,11 +6,13 @@ import type {
   Message,
   ProviderConnection,
   ProviderInfo,
+  SearchResultGroup,
   SelectedFile,
   SupportedProvider,
   SystemStatus,
   TaskQueueItem,
   Thread,
+  WorkspaceRulesInfo,
 } from '../../shared/types'
 
 export const App: Component = () => {
@@ -88,6 +90,17 @@ export const App: Component = () => {
   const [showModal, setShowModal] = createSignal(false)
   const [loading, setLoading] = createSignal(false)
   const [errorMessage, setErrorMessage] = createSignal<string | null>(null)
+
+  // Regras do Projeto (ORCHBOT.md / AGENTS.md) e RAG FTS5 signals
+  const [workspaceRules, setWorkspaceRules] = createSignal<WorkspaceRulesInfo | null>(null)
+  const [showRulesModal, setShowRulesModal] = createSignal(false)
+  const [showSearchModal, setShowSearchModal] = createSignal(false)
+  const [searchQuery, setSearchQuery] = createSignal('')
+  const [searchResults, setSearchResults] = createSignal<SearchResultGroup | null>(null)
+  const [isSearching, setIsSearching] = createSignal(false)
+  const [isIndexing, setIsIndexing] = createSignal(false)
+  const [indexingMsg, setIndexingMsg] = createSignal<string | null>(null)
+  const [searchTab, setSearchTab] = createSignal<'messages' | 'files'>('messages')
 
   // Form signals
   const [name, setName] = createSignal('')
@@ -410,9 +423,13 @@ export const App: Component = () => {
       setStagedFiles([])
       setBrowserInspectData(null)
       setBrowserScreenshotUrl(null)
+      setSearchResults(null)
+      setSearchQuery('')
       loadThreadAndMessages(id)
       loadQueue(id)
       loadBrowserTabs(id)
+      loadWorkspaceRulesData(id)
+      handleIndexWorkspace(id)
     }
   })
 
@@ -806,6 +823,58 @@ export const App: Component = () => {
     }
   }
 
+  const loadWorkspaceRulesData = async (agentId: string) => {
+    try {
+      if (window.orchbot) {
+        const rules = await window.orchbot.getWorkspaceRules(agentId)
+        setWorkspaceRules(rules)
+      }
+    } catch (err) {
+      console.error('Erro ao buscar regras do workspace:', err)
+    }
+  }
+
+  const handleIndexWorkspace = async (agentId?: string) => {
+    const id = agentId || selectedAgentId()
+    if (!id || !window.orchbot) return
+    setIsIndexing(true)
+    setIndexingMsg('Indexando repositório com SQLite FTS5...')
+    try {
+      const res = await window.orchbot.indexWorkspace(id)
+      setIndexingMsg(`${res.indexedCount} arquivos indexados com sucesso!`)
+      setTimeout(() => setIndexingMsg(null), 3000)
+    } catch {
+      setIndexingMsg('Erro ao indexar workspace')
+      setTimeout(() => setIndexingMsg(null), 3000)
+    } finally {
+      setIsIndexing(false)
+    }
+  }
+
+  const handleSearchMemory = async (e?: Event) => {
+    e?.preventDefault()
+    const id = selectedAgentId()
+    const query = searchQuery().trim()
+    if (!id || !query || !window.orchbot) return
+    setIsSearching(true)
+    try {
+      const results = await window.orchbot.searchProjectMemory(id, query)
+      setSearchResults(results)
+    } catch (err) {
+      console.error('Erro na busca FTS5:', err)
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  const handleSelectSearchResultThread = async (threadId: string) => {
+    const thread = agentThreads().find((t) => t.id === threadId)
+    if (thread) {
+      await handleSelectThread(thread)
+    }
+    setShowSearchModal(false)
+  }
+
   const togglePauseQueue = async () => {
     const agent = currentAgent()
     if (!agent || !window.orchbot) return
@@ -1108,6 +1177,16 @@ export const App: Component = () => {
                         <span>
                           Workspace: <strong>{agent().workspacePath}</strong>
                         </span>
+                        <Show when={workspaceRules()?.exists}>
+                          <button
+                            type="button"
+                            class="rules-badge"
+                            onClick={() => setShowRulesModal(true)}
+                            title={`Diretrizes do projeto carregadas de ${workspaceRules()?.filename}`}
+                          >
+                            📜 {workspaceRules()?.filename} (Regras Ativas)
+                          </button>
+                        </Show>
                       </div>
                     </div>
 
@@ -1134,6 +1213,16 @@ export const App: Component = () => {
                     </div>
 
                     <div class="header-actions">
+                      {/* Botão Buscar Memória & RAG Full-Text */}
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={() => setShowSearchModal(true)}
+                        title="Busca ultrarrápida em conversas e arquivos do projeto via SQLite FTS5"
+                      >
+                        🔍 Buscar / RAG
+                      </button>
+
                       {/* Botão Delegar para outro agente */}
                       <button
                         type="button"
@@ -2505,6 +2594,228 @@ export const App: Component = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </dialog>
+      </Show>
+
+      {/* Modal de Diretrizes do Projeto (ORCHBOT.md / AGENTS.md) */}
+      <Show when={showRulesModal()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowRulesModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowRulesModal(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            style={{ width: '680px', 'max-height': '80vh' }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <div>
+                <span class="modal-title">
+                  📜 Diretrizes do Projeto ({workspaceRules()?.filename})
+                </span>
+                <div
+                  style={{
+                    'font-size': '11px',
+                    color: 'var(--text-muted)',
+                    'margin-top': '2px',
+                  }}
+                >
+                  Arquivo detectado: <code>{workspaceRules()?.filePath}</code>
+                </div>
+              </div>
+              <button type="button" class="modal-close" onClick={() => setShowRulesModal(false)}>
+                ✕
+              </button>
+            </div>
+
+            <div
+              style={{
+                padding: '16px 20px',
+                'overflow-y': 'auto',
+                flex: 1,
+              }}
+            >
+              <div
+                style={{
+                  'font-size': '12px',
+                  color: 'var(--text-muted)',
+                  'margin-bottom': '12px',
+                  'line-height': '1.5',
+                }}
+              >
+                Estas diretrizes de arquitetura e padrões são injetadas automaticamente em cada
+                turno de execução do agente, garantindo que o bot respeite suas preferências sem
+                necessidade de repetir prompts.
+              </div>
+              <pre class="rules-pre-content">{workspaceRules()?.content}</pre>
+            </div>
+
+            <div class="modal-actions" style={{ padding: '12px 20px' }}>
+              <button type="button" class="btn-primary" onClick={() => setShowRulesModal(false)}>
+                Entendido
+              </button>
+            </div>
+          </div>
+        </dialog>
+      </Show>
+
+      {/* Modal de Busca Rápida Full-Text & RAG (SQLite FTS5) */}
+      <Show when={showSearchModal()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowSearchModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowSearchModal(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            style={{ width: '740px', 'max-height': '85vh' }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <div>
+                <span class="modal-title">🔍 Busca Rápida de Memória & RAG (SQLite FTS5)</span>
+                <div
+                  style={{
+                    'font-size': '11px',
+                    color: 'var(--text-muted)',
+                    'margin-top': '2px',
+                  }}
+                >
+                  Pesquise instantaneamente no histórico de conversas e nos arquivos do projeto.
+                </div>
+              </div>
+              <button type="button" class="modal-close" onClick={() => setShowSearchModal(false)}>
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '16px 20px 8px 20px' }}>
+              <form class="search-form-row" onSubmit={handleSearchMemory}>
+                <input
+                  type="text"
+                  class="search-input"
+                  placeholder="Ex: sqlite, arquitetura, refatoração, css, fts5, electron..."
+                  value={searchQuery()}
+                  onInput={(e) => setSearchQuery(e.currentTarget.value)}
+                />
+                <button
+                  type="submit"
+                  class="btn-primary"
+                  disabled={isSearching() || !searchQuery().trim()}
+                >
+                  {isSearching() ? 'Buscando...' : 'Buscar'}
+                </button>
+                <button
+                  type="button"
+                  class="btn-outline"
+                  onClick={() => handleIndexWorkspace()}
+                  disabled={isIndexing()}
+                  title="Reindexar arquivos de código do workspace no SQLite FTS5"
+                >
+                  {isIndexing() ? 'Indexando...' : '🔄 Reindexar'}
+                </button>
+              </form>
+
+              <Show when={indexingMsg()}>
+                <div class="search-status-feedback">ℹ️ {indexingMsg()}</div>
+              </Show>
+
+              {/* Abas de Resultados */}
+              <div class="search-tabs-row">
+                <button
+                  type="button"
+                  class={`search-tab-btn ${searchTab() === 'messages' ? 'active' : ''}`}
+                  onClick={() => setSearchTab('messages')}
+                >
+                  💬 Conversas Anteriores ({searchResults()?.messages.length ?? 0})
+                </button>
+                <button
+                  type="button"
+                  class={`search-tab-btn ${searchTab() === 'files' ? 'active' : ''}`}
+                  onClick={() => setSearchTab('files')}
+                >
+                  📁 Arquivos do Repositório ({searchResults()?.files.length ?? 0})
+                </button>
+              </div>
+            </div>
+
+            {/* Lista de Resultados */}
+            <div class="search-results-container">
+              <Show when={searchTab() === 'messages'}>
+                <For
+                  each={searchResults()?.messages}
+                  fallback={
+                    <div class="search-empty-state">
+                      {searchQuery().trim()
+                        ? 'Nenhuma mensagem ou conversa encontrada para este termo.'
+                        : 'Digite um termo acima para pesquisar em todo o histórico de conversas.'}
+                    </div>
+                  }
+                >
+                  {(res) => (
+                    <div class="search-result-item">
+                      <div class="search-result-header">
+                        <div class="search-result-meta">
+                          <span class="search-result-thread">💬 {res.threadTitle}</span>
+                          <span class="search-result-role">
+                            {res.role === 'user' ? 'Usuário' : 'Assistente'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          class="queue-btn-action"
+                          onClick={() => handleSelectSearchResultThread(res.threadId)}
+                        >
+                          Ir para Conversa ↗
+                        </button>
+                      </div>
+                      <div class="search-result-snippet" innerHTML={res.snippet} />
+                    </div>
+                  )}
+                </For>
+              </Show>
+
+              <Show when={searchTab() === 'files'}>
+                <For
+                  each={searchResults()?.files}
+                  fallback={
+                    <div class="search-empty-state">
+                      {searchQuery().trim()
+                        ? 'Nenhum arquivo do repositório encontrado com este termo.'
+                        : 'Digite um termo acima para pesquisar no conteúdo dos arquivos indexados.'}
+                    </div>
+                  }
+                >
+                  {(file) => (
+                    <div class="search-result-item">
+                      <div class="search-result-header">
+                        <div class="search-result-meta">
+                          <span class="search-result-thread">📁 {file.fileName}</span>
+                          <span class="search-result-role" style={{ 'font-size': '10px' }}>
+                            {file.filePath}
+                          </span>
+                        </div>
+                      </div>
+                      <div class="search-result-snippet code" innerHTML={file.snippet} />
+                    </div>
+                  )}
+                </For>
+              </Show>
+            </div>
+
+            <div class="modal-actions" style={{ padding: '12px 20px' }}>
+              <button type="button" class="btn-secondary" onClick={() => setShowSearchModal(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
         </dialog>
       </Show>
