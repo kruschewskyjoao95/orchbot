@@ -57,6 +57,33 @@ describe('Orchbot Database and Persistence', () => {
     expect(fetched?.provider).toBe('claude')
   })
 
+  it('deve atualizar provedor e modelo de um agente durante a conversa', () => {
+    const input = validateCreateAgentInput({
+      name: 'Agente Flexível',
+      provider: 'codex',
+      model: 'gpt-4o',
+      workspacePath: '/tmp/workspace-flex',
+    })
+
+    const created = db.createAgent(input)
+    expect(created.provider).toBe('codex')
+    expect(created.model).toBe('gpt-4o')
+
+    // Troca no meio da conversa para claude
+    const updated = db.updateAgent({
+      id: created.id,
+      provider: 'claude',
+      model: 'claude-3-7-sonnet',
+    })
+
+    expect(updated.provider).toBe('claude')
+    expect(updated.model).toBe('claude-3-7-sonnet')
+
+    const reloaded = db.getAgent(created.id)
+    expect(reloaded?.provider).toBe('claude')
+    expect(reloaded?.model).toBe('claude-3-7-sonnet')
+  })
+
   it('deve deletar um agente em cascata', () => {
     const input = validateCreateAgentInput({
       name: 'Agente Deletável',

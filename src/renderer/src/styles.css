@@ -279,6 +279,77 @@ body {
   gap: 10px;
 }
 
+.agent-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.midchat-switcher-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background-color: rgba(0, 0, 0, 0.25);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.midchat-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.midchat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.chat-provider-select {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  outline: none;
+}
+
+.chat-provider-select.codex {
+  border-color: rgba(16, 185, 129, 0.4);
+  color: var(--accent-codex);
+}
+
+.chat-provider-select.claude {
+  border-color: rgba(245, 158, 11, 0.4);
+  color: var(--accent-claude);
+}
+
+.chat-provider-select.grok {
+  border-color: rgba(236, 72, 153, 0.4);
+  color: var(--accent-grok);
+}
+
+.chat-provider-select.muse {
+  border-color: rgba(139, 92, 246, 0.4);
+  color: var(--accent-muse);
+}
+
+.chat-model-select {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-main);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  cursor: pointer;
+  outline: none;
+}
+
 .agent-meta {
   display: flex;
   gap: 14px;

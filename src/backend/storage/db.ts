@@ -12,6 +12,7 @@ import type {
   TaskQueueItem,
   TaskStatus,
   Thread,
+  UpdateAgentInput,
   UpdateConnectionInput,
 } from '../../shared/types'
 
@@ -341,6 +342,34 @@ export class OrchbotDatabase {
     threadStmt.run(threadId, agent.id, 'Conversa Inicial', now)
 
     return agent
+  }
+
+  public updateAgent(input: UpdateAgentInput): Agent {
+    const current = this.getAgent(input.id)
+    if (!current) {
+      throw new Error(`Agente com ID ${input.id} não encontrado`)
+    }
+
+    const now = new Date().toISOString()
+    const name = input.name ?? current.name
+    const provider = input.provider ?? current.provider
+    const model = input.model ?? current.model
+    const instructions = input.instructions ?? current.instructions
+    const workspacePath = input.workspacePath ?? current.workspacePath
+
+    const stmt = this.db.prepare(`
+      UPDATE agents
+      SET name = ?, provider = ?, model = ?, instructions = ?, workspace_path = ?, updated_at = ?
+      WHERE id = ?
+    `)
+
+    stmt.run(name, provider, model, instructions, workspacePath, now, input.id)
+
+    const updated = this.getAgent(input.id)
+    if (!updated) {
+      throw new Error(`Falha ao recuperar agente atualizado: ${input.id}`)
+    }
+    return updated
   }
 
   public deleteAgent(id: string): boolean {

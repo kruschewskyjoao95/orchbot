@@ -532,6 +532,46 @@ export const App: Component = () => {
     }))
   }
 
+  const handleSwitchProviderMidChat = async (agentId: string, newProvider: SupportedProvider) => {
+    try {
+      const conn = connections().find((c) => c.providerId === newProvider)
+      const newModel =
+        conn?.defaultModel ||
+        (newProvider === 'codex'
+          ? 'gpt-4o'
+          : newProvider === 'claude'
+            ? 'claude-3-7-sonnet'
+            : newProvider === 'grok'
+              ? 'grok-2'
+              : 'gemini-2.0-flash')
+
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          provider: newProvider,
+          model: newModel,
+        })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar provedor: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSwitchModelMidChat = async (agentId: string, newModel: string) => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          model: newModel,
+        })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar modelo: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const handleCreateAgent = async (e: Event) => {
     e.preventDefault()
     setErrorMessage(null)
@@ -934,14 +974,68 @@ export const App: Component = () => {
                   {/* Header do Agente */}
                   <header class="agent-detail-header">
                     <div class="agent-info">
-                      <h2>
-                        {agent().name}
-                        <span class={`provider-tag ${agent().provider}`}>{agent().provider}</span>
-                      </h2>
+                      <div class="agent-title-row">
+                        <h2>{agent().name}</h2>
+
+                        {/* Seletor dinâmico de Provedor durante a conversa */}
+                        <div
+                          class="midchat-switcher-group"
+                          title="Trocar provedor de IA a qualquer momento na conversa"
+                        >
+                          <div class="midchat-field">
+                            <span class="midchat-label">Provedor:</span>
+                            <select
+                              class={`chat-provider-select ${agent().provider}`}
+                              value={agent().provider}
+                              onChange={(e) =>
+                                handleSwitchProviderMidChat(
+                                  agent().id,
+                                  e.currentTarget.value as SupportedProvider,
+                                )
+                              }
+                            >
+                              <For each={connections().filter((c) => c.enabled)}>
+                                {(c) => (
+                                  <option value={c.providerId}>
+                                    {c.providerId === 'codex'
+                                      ? '🟢 Codex'
+                                      : c.providerId === 'claude'
+                                        ? '🟣 Claude'
+                                        : c.providerId === 'grok'
+                                          ? '⚡ Grok'
+                                          : c.providerId === 'muse'
+                                            ? '✨ Muse'
+                                            : c.name}
+                                  </option>
+                                )}
+                              </For>
+                            </select>
+                          </div>
+
+                          <div class="midchat-field">
+                            <span class="midchat-label">Modelo:</span>
+                            <select
+                              class="chat-model-select"
+                              value={agent().model}
+                              onChange={(e) =>
+                                handleSwitchModelMidChat(agent().id, e.currentTarget.value)
+                              }
+                              title="Trocar modelo a qualquer momento"
+                            >
+                              <For
+                                each={
+                                  connections().find((c) => c.providerId === agent().provider)
+                                    ?.models || [agent().model]
+                                }
+                              >
+                                {(m) => <option value={m}>{m}</option>}
+                              </For>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
                       <div class="agent-meta">
-                        <span>
-                          Modelo: <strong>{agent().model}</strong>
-                        </span>
                         <span>
                           Workspace: <strong>{agent().workspacePath}</strong>
                         </span>
@@ -1241,8 +1335,13 @@ export const App: Component = () => {
                             >
                               📎 Anexar
                             </button>
+                            <span
+                              class={`provider-tag ${agent().provider}`}
+                              title="Provedor e modelo ativos para esta mensagem"
+                            >
+                              {agent().provider} • {agent().model}
+                            </span>
                             <span>
-                              Workspace: <code>{agent().workspacePath}</code> |{' '}
                               {isQueuePaused()
                                 ? '⏸ Fila Pausada'
                                 : `${pendingTasksCount()} na fila`}

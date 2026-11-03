@@ -42,6 +42,15 @@ export interface CreateAgentInput {
   workspacePath: string
 }
 
+export interface UpdateAgentInput {
+  id: string
+  name?: string
+  provider?: SupportedProvider
+  model?: string
+  instructions?: string
+  workspacePath?: string
+}
+
 export interface Thread {
   id: string
   agentId: string
@@ -181,6 +190,7 @@ export interface OrchbotApi {
   getAgents: () => Promise<Agent[]>
   getAgent: (id: string) => Promise<Agent | null>
   createAgent: (input: CreateAgentInput) => Promise<Agent>
+  updateAgent: (input: UpdateAgentInput) => Promise<Agent>
   deleteAgent: (id: string) => Promise<boolean>
   getThreads: (agentId: string) => Promise<Thread[]>
   getMessages: (threadId: string) => Promise<Message[]>

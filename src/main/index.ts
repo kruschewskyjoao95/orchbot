@@ -12,6 +12,7 @@ import type {
   BrowserBounds,
   DelegationInput,
   SupportedProvider,
+  UpdateAgentInput,
   UpdateConnectionInput,
 } from '../shared/types'
 import { validateCreateAgentInput } from '../shared/types'
@@ -144,6 +145,13 @@ function registerIpcHandlers(): void {
   ipcMain.handle('orchbot:create-agent', (_event, rawInput: unknown) => {
     const validated = validateCreateAgentInput(rawInput)
     return database.createAgent(validated)
+  })
+
+  ipcMain.handle('orchbot:update-agent', (_event, input: UpdateAgentInput) => {
+    if (!input || typeof input.id !== 'string') {
+      throw new Error('ID do agente obrigatório para atualização')
+    }
+    return database.updateAgent(input)
   })
 
   ipcMain.handle('orchbot:delete-agent', async (_event, id: string) => {
