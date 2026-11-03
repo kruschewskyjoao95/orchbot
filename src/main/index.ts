@@ -75,6 +75,7 @@ import type {
   UpdateScheduledTaskInput,
 } from '../shared/types'
 import { validateCreateAgentInput, validateCreateScheduledTaskInput } from '../shared/types'
+import { createDefaultAgentWorkspace } from './agent-workspace'
 import { createAppUpdater } from './app-updater'
 import { registerAppImageDesktop, setLinuxAutostart } from './linux-desktop'
 import { iconPath, initShell } from './shell'
@@ -605,8 +606,15 @@ ${out.slice(-800)}`,
   })
 
   ipcMain.handle('orchbot:create-agent', (_event, rawInput: unknown) => {
+    const input = rawInput as { workspacePath?: unknown; name?: unknown } | null
+    // Sem pasta escolhida: cada agente ganha a sua em ~/Orchbot (o campo fica em "Avançado").
+    if (input && typeof input === 'object' && !String(input.workspacePath ?? '').trim())
+      input.workspacePath = createDefaultAgentWorkspace(
+        path.join(app.getPath('home'), 'Orchbot'),
+        String(input.name ?? ''),
+      )
     const validated = validateCreateAgentInput(
-      rawInput,
+      input,
       database.listConnections().map((c) => c.providerId),
     )
     return database.createAgent(validated)
