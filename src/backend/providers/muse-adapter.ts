@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile)
 
 export class MuseAdapter implements ProviderAdapter {
   public readonly id = 'muse'
-  public readonly name = 'Muse (Google Gemini)'
+  public readonly name = 'Muse Code'
 
   public async checkAvailability(): Promise<ProviderInfo> {
     try {
@@ -22,25 +22,17 @@ export class MuseAdapter implements ProviderAdapter {
         version: stdout.trim(),
       }
     } catch {
-      try {
-        const { stdout } = await execFileAsync('gemini', ['--version'])
+      const apiKey = process.env.MUSE_API_KEY || process.env.MUSE_TOKEN
+      if (apiKey) {
         return {
           available: true,
-          version: `Gemini CLI: ${stdout.trim()}`,
+          version: 'Muse API configurada (via ENV)',
         }
-      } catch {
-        const apiKey = process.env.GEMINI_API_KEY || process.env.MUSE_API_KEY
-        if (apiKey) {
-          return {
-            available: true,
-            version: 'Google Gemini API configurada (via ENV)',
-          }
-        }
-        return {
-          available: false,
-          error:
-            'CLI muse/gemini não encontrado no PATH e nenhuma variável GEMINI_API_KEY/MUSE_API_KEY detectada.',
-        }
+      }
+      return {
+        available: false,
+        error:
+          'CLI muse não encontrado no PATH e nenhuma variável de ambiente MUSE_API_KEY/MUSE_TOKEN detectada.',
       }
     }
   }
@@ -51,10 +43,10 @@ export class MuseAdapter implements ProviderAdapter {
     callbacks: ExecutionCallbacks,
   ): ActiveExecution {
     const cmd = 'muse'
-    const args = ['exec', '--model', options.model ?? 'gemini-2.0-flash']
+    const args = ['exec', '--model', options.model ?? 'muse-spark-1.3']
 
     if (options.workspacePath) {
-      args.push('--dir', options.workspacePath)
+      args.push('--workspace', options.workspacePath)
     }
 
     const effectivePrompt = options.instructions

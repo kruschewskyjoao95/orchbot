@@ -502,10 +502,10 @@ export const App: Component = () => {
     if (conn) {
       setModel(conn.defaultModel)
     } else {
-      if (p === 'codex') setModel('gpt-4o')
-      else if (p === 'claude') setModel('claude-3-7-sonnet')
-      else if (p === 'grok') setModel('grok-2')
-      else if (p === 'muse') setModel('gemini-2.0-flash')
+      if (p === 'codex') setModel('gpt-6.1-sol')
+      else if (p === 'claude') setModel('claude-sonnet-5-5')
+      else if (p === 'grok') setModel('grok-3')
+      else if (p === 'muse') setModel('muse-spark-1.3')
     }
   }
 
@@ -605,12 +605,12 @@ export const App: Component = () => {
       const newModel =
         conn?.defaultModel ||
         (newProvider === 'codex'
-          ? 'gpt-4o'
+          ? 'gpt-6.1-sol'
           : newProvider === 'claude'
-            ? 'claude-3-7-sonnet'
+            ? 'claude-sonnet-5-5'
             : newProvider === 'grok'
-              ? 'grok-2'
-              : 'gemini-2.0-flash')
+              ? 'grok-3'
+              : 'muse-spark-1.3')
 
       if (window.orchbot) {
         const updated = await window.orchbot.updateAgent({
@@ -1195,21 +1195,53 @@ export const App: Component = () => {
             </button>
           </div>
           <div class="provider-status-list">
-            <div class="provider-status-item">
+            <div
+              class="provider-status-item"
+              title={providerStatuses()?.codex.version || providerStatuses()?.codex.error || ''}
+            >
               <span class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`} />
-              <span>Codex: {providerStatuses()?.codex.available ? 'Pronto' : 'Ausente'}</span>
+              <span>
+                Codex:{' '}
+                {providerStatuses()?.codex.available
+                  ? providerStatuses()?.codex.version || 'Pronto'
+                  : 'Ausente'}
+              </span>
             </div>
-            <div class="provider-status-item">
+            <div
+              class="provider-status-item"
+              title={providerStatuses()?.claude.version || providerStatuses()?.claude.error || ''}
+            >
               <span class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`} />
-              <span>Claude: {providerStatuses()?.claude.available ? 'Pronto' : 'Ausente'}</span>
+              <span>
+                Claude:{' '}
+                {providerStatuses()?.claude.available
+                  ? providerStatuses()?.claude.version || 'Pronto'
+                  : 'Ausente'}
+              </span>
             </div>
-            <div class="provider-status-item">
+            <div
+              class="provider-status-item"
+              title={providerStatuses()?.grok.version || providerStatuses()?.grok.error || ''}
+            >
               <span class={`status-dot ${providerStatuses()?.grok.available ? 'online' : ''}`} />
-              <span>Grok: {providerStatuses()?.grok.available ? 'Pronto' : 'Ausente'}</span>
+              <span>
+                Grok:{' '}
+                {providerStatuses()?.grok.available
+                  ? providerStatuses()?.grok.version || 'Pronto'
+                  : 'Ausente'}
+              </span>
             </div>
-            <div class="provider-status-item">
+            <div
+              class="provider-status-item"
+              title={providerStatuses()?.muse.version || providerStatuses()?.muse.error || ''}
+            >
               <span class={`status-dot ${providerStatuses()?.muse.available ? 'online' : ''}`} />
-              <span>Muse: {providerStatuses()?.muse.available ? 'Pronto' : 'Ausente'}</span>
+              <span>
+                Muse:{' '}
+                {providerStatuses()?.muse.available
+                  ? providerStatuses()?.muse.version || 'Pronto'
+                  : 'Ausente'}
+              </span>
             </div>
           </div>
           <Show when={systemStatus()}>
@@ -2402,6 +2434,10 @@ export const App: Component = () => {
                             <div class="connection-name">{conn.name}</div>
                             <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
                               ID: <code>{conn.providerId}</code>
+                              <Show when={conn.version}>
+                                {' • '}
+                                <span style={{ color: 'var(--text-main)' }}>{conn.version}</span>
+                              </Show>
                             </div>
                           </div>
                         </div>
@@ -2424,7 +2460,12 @@ export const App: Component = () => {
                                 </span>
                               }
                             >
-                              <span class="connection-status-pill online">● Conectado</span>
+                              <span
+                                class="connection-status-pill online"
+                                title={conn.version || 'CLI operacional'}
+                              >
+                                ● Conectado
+                              </span>
                             </Show>
                           </Show>
 

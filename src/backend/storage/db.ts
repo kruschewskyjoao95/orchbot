@@ -70,16 +70,16 @@ export const INDEXABLE_EXTENSIONS = new Set([
 ])
 
 export const PROVIDER_MODELS: Record<SupportedProvider, string[]> = {
-  codex: ['gpt-4o', 'gpt-4o-mini', 'o1', 'o3-mini', 'codex-preview'],
-  claude: ['claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus'],
-  grok: ['grok-2', 'grok-2-1212', 'grok-beta', 'grok-2-vision-1212'],
-  muse: [
-    'gemini-2.0-flash',
-    'gemini-2.0-pro-exp',
-    'gemini-1.5-pro',
-    'gemini-1.5-flash',
-    'muse-thinking',
+  codex: ['gpt-6.1-sol', 'o3', 'o3-mini', 'o1', 'gpt-4.5-preview', 'gpt-4o', 'gpt-4o-mini'],
+  claude: [
+    'claude-sonnet-5-5',
+    'claude-opus-5-5',
+    'claude-haiku-5-5',
+    'claude-3-7-sonnet',
+    'claude-3-5-sonnet',
   ],
+  grok: ['grok-3', 'grok-3-mini', 'grok-2', 'grok-2-1212', 'grok-beta'],
+  muse: ['muse-spark-1.3', 'muse-pro', 'muse-standard', 'muse-code', 'muse-fast'],
 }
 
 export class OrchbotDatabase {
@@ -254,6 +254,34 @@ export class OrchbotDatabase {
     } catch {
       // Ignora erro se a tabela estiver sincronizada
     }
+
+    try {
+      // Migração para corrigir provedores legados (ex: Muse associado erroneamente a Gemini)
+      // e atualizar modelos padrão para as versões vigentes de 2026
+      this.db.exec(`
+        UPDATE provider_connections 
+        SET name = 'Muse Code', default_model = 'muse-spark-1.3' 
+        WHERE provider_id = 'muse' AND (name LIKE '%Gemini%' OR default_model LIKE 'gemini%');
+
+        UPDATE provider_connections 
+        SET default_model = 'gpt-6.1-sol' 
+        WHERE provider_id = 'codex' AND default_model = 'gpt-4o';
+
+        UPDATE provider_connections 
+        SET name = 'Claude Code (Anthropic)', default_model = 'claude-sonnet-5-5' 
+        WHERE provider_id = 'claude' AND (default_model = 'claude-3-7-sonnet' OR name = 'Claude (Anthropic)');
+
+        UPDATE provider_connections 
+        SET default_model = 'grok-3' 
+        WHERE provider_id = 'grok' AND default_model = 'grok-2';
+
+        UPDATE agents 
+        SET model = 'muse-spark-1.3' 
+        WHERE provider = 'muse' AND model LIKE 'gemini%';
+      `)
+    } catch {
+      // Ignora erro se as tabelas ainda não existirem
+    }
   }
 
   private seedDefaultConnections(): void {
@@ -263,10 +291,10 @@ export class OrchbotDatabase {
       model: string
       endpoint?: string
     }> = [
-      { id: 'codex', name: 'Codex (OpenAI)', model: 'gpt-4o' },
-      { id: 'claude', name: 'Claude (Anthropic)', model: 'claude-3-7-sonnet' },
-      { id: 'grok', name: 'Grok (xAI)', model: 'grok-2', endpoint: 'https://api.x.ai/v1' },
-      { id: 'muse', name: 'Muse (Google Gemini)', model: 'gemini-2.0-flash' },
+      { id: 'codex', name: 'Codex (OpenAI)', model: 'gpt-6.1-sol' },
+      { id: 'claude', name: 'Claude Code (Anthropic)', model: 'claude-sonnet-5-5' },
+      { id: 'grok', name: 'Grok (xAI)', model: 'grok-3', endpoint: 'https://api.x.ai/v1' },
+      { id: 'muse', name: 'Muse Code', model: 'muse-spark-1.3' },
     ]
 
     const now = new Date().toISOString()
@@ -450,7 +478,7 @@ export class OrchbotDatabase {
       agent.model,
       agent.instructions,
       agent.workspacePath,
-      agent.autonomyLevel,
+      agent.autonomyLevel ?? 'autonomous',
       agent.createdAt,
       agent.updatedAt,
     )
@@ -989,15 +1017,15 @@ export class OrchbotDatabase {
     stmt.run(
       task.id,
       task.agentId,
-      task.threadId,
+      task.threadId ?? null,
       task.title,
       task.prompt,
       task.cronExpression,
       task.taskType,
-      task.targetUrl,
+      task.targetUrl ?? null,
       task.enabled ? 1 : 0,
-      task.lastRunAt,
-      task.nextRunAt,
+      task.lastRunAt ?? null,
+      task.nextRunAt ?? null,
       task.createdAt,
       task.updatedAt,
     )
@@ -1148,10 +1176,10 @@ export class OrchbotDatabase {
       prompt,
       cronExpression,
       taskType,
-      targetUrl,
+      targetUrl ?? null,
       enabled ? 1 : 0,
-      lastRunAt,
-      nextRunAt,
+      lastRunAt ?? null,
+      nextRunAt ?? null,
       nowIso,
       input.id,
     )

@@ -33,19 +33,25 @@ describe('Conexões & Provedores (Codex, Claude, Grok, Muse)', () => {
 
     const codex = connections.find((c) => c.providerId === 'codex')
     expect(codex?.enabled).toBe(true)
-    expect(codex?.defaultModel).toBe('gpt-4o')
-    expect(codex?.models).toContain('gpt-4o')
+    expect(codex?.defaultModel).toBe('gpt-6.1-sol')
+    expect(codex?.models).toContain('gpt-6.1-sol')
     expect(codex?.models).toContain('o1')
+
+    const claude = connections.find((c) => c.providerId === 'claude')
+    expect(claude?.enabled).toBe(true)
+    expect(claude?.defaultModel).toBe('claude-sonnet-5-5')
+    expect(claude?.models).toContain('claude-sonnet-5-5')
 
     const grok = connections.find((c) => c.providerId === 'grok')
     expect(grok?.enabled).toBe(true)
-    expect(grok?.defaultModel).toBe('grok-2')
-    expect(grok?.models).toContain('grok-2')
+    expect(grok?.defaultModel).toBe('grok-3')
+    expect(grok?.models).toContain('grok-3')
 
     const muse = connections.find((c) => c.providerId === 'muse')
     expect(muse?.enabled).toBe(true)
-    expect(muse?.defaultModel).toBe('gemini-2.0-flash')
-    expect(muse?.models).toContain('gemini-2.0-flash')
+    expect(muse?.name).toBe('Muse Code')
+    expect(muse?.defaultModel).toBe('muse-spark-1.3')
+    expect(muse?.models).toContain('muse-spark-1.3')
   })
 
   it('deve atualizar o estado de ativação e parâmetros de uma conexão', () => {

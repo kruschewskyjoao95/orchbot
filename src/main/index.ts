@@ -234,6 +234,7 @@ function registerIpcHandlers(): void {
       return {
         ...conn,
         available: status?.available ?? false,
+        version: status?.version,
         error: status?.error,
       }
     })

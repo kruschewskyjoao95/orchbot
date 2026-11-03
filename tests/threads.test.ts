@@ -135,7 +135,7 @@ describe('Multiple Conversation Threads per Agent', () => {
       validateCreateAgentInput({
         name: 'Agent Cascade',
         provider: 'muse',
-        model: 'gemini-2.0-flash',
+        model: 'muse-spark-1.3',
         workspacePath: '/tmp/workspace-cascade',
       }),
     )
