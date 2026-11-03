@@ -11,6 +11,7 @@
   --accent-codex: #10b981;
   --accent-claude: #f59e0b;
   --accent-grok: #ec4899;
+  --accent-gemini: #0284c7;
   --accent-muse: #8b5cf6;
   --danger: #ef4444;
   --danger-hover: #dc2626;
@@ -175,6 +176,12 @@ body {
   border: 1px solid rgba(236, 72, 153, 0.3);
 }
 
+.provider-tag.gemini {
+  background-color: rgba(2, 132, 199, 0.15);
+  color: var(--accent-gemini);
+  border: 1px solid rgba(2, 132, 199, 0.3);
+}
+
 .provider-tag.muse {
   background-color: rgba(139, 92, 246, 0.15);
   color: var(--accent-muse);
@@ -332,6 +339,11 @@ body {
 .chat-provider-select.grok {
   border-color: rgba(236, 72, 153, 0.4);
   color: var(--accent-grok);
+}
+
+.chat-provider-select.gemini {
+  border-color: rgba(2, 132, 199, 0.4);
+  color: var(--accent-gemini);
 }
 
 .chat-provider-select.muse {
@@ -846,6 +858,11 @@ body {
 .provider-card.selected.grok {
   border-color: var(--accent-grok);
   background-color: rgba(236, 72, 153, 0.08);
+}
+
+.provider-card.selected.gemini {
+  border-color: var(--accent-gemini);
+  background-color: rgba(2, 132, 199, 0.08);
 }
 
 .provider-card.selected.muse {
@@ -1472,6 +1489,10 @@ dialog.modal-overlay,
 
 .connection-box.active-grok {
   border-top: 3px solid var(--accent-grok);
+}
+
+.connection-box.active-gemini {
+  border-top: 3px solid var(--accent-gemini);
 }
 
 .connection-box.active-muse {

@@ -1,4 +1,4 @@
-export type SupportedProvider = 'codex' | 'claude' | 'grok' | 'muse'
+export type SupportedProvider = 'codex' | 'claude' | 'grok' | 'gemini' | 'muse'
 
 export interface ProviderConnection {
   providerId: SupportedProvider
@@ -295,8 +295,14 @@ export function validateCreateAgentInput(raw: unknown): CreateAgentInput {
     throw new Error('O nome do agente é obrigatório')
   }
 
-  if (provider !== 'codex' && provider !== 'claude' && provider !== 'grok' && provider !== 'muse') {
-    throw new Error('Provedor inválido (suportados: codex, claude, grok, muse)')
+  if (
+    provider !== 'codex' &&
+    provider !== 'claude' &&
+    provider !== 'grok' &&
+    provider !== 'gemini' &&
+    provider !== 'muse'
+  ) {
+    throw new Error('Provedor inválido (suportados: codex, claude, grok, gemini, muse)')
   }
 
   if (typeof model !== 'string' || model.trim().length === 0) {

@@ -1,6 +1,7 @@
 import type { ProviderInfo, SupportedProvider } from '../../shared/types'
 import { ClaudeAdapter } from './claude-adapter'
 import { CodexAdapter } from './codex-adapter'
+import { GeminiAdapter } from './gemini-adapter'
 import { GrokAdapter } from './grok-adapter'
 import { MuseAdapter } from './muse-adapter'
 import type { ActiveExecution, ProviderAdapter } from './types'
@@ -13,11 +14,13 @@ export class ProviderRegistry {
     const codex = new CodexAdapter()
     const claude = new ClaudeAdapter()
     const grok = new GrokAdapter()
+    const gemini = new GeminiAdapter()
     const muse = new MuseAdapter()
 
     this.adapters.set(codex.id, codex)
     this.adapters.set(claude.id, claude)
     this.adapters.set(grok.id, grok)
+    this.adapters.set(gemini.id, gemini)
     this.adapters.set(muse.id, muse)
   }
 
@@ -34,10 +37,11 @@ export class ProviderRegistry {
   }
 
   public async checkAllAvailability(): Promise<Record<SupportedProvider, ProviderInfo>> {
-    const [codex, claude, grok, muse] = await Promise.all([
+    const [codex, claude, grok, gemini, muse] = await Promise.all([
       this.getAdapter('codex').checkAvailability(),
       this.getAdapter('claude').checkAvailability(),
       this.getAdapter('grok').checkAvailability(),
+      this.getAdapter('gemini').checkAvailability(),
       this.getAdapter('muse').checkAvailability(),
     ])
 
@@ -45,6 +49,7 @@ export class ProviderRegistry {
       codex,
       claude,
       grok,
+      gemini,
       muse,
     }
   }

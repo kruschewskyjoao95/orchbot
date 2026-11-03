@@ -70,15 +70,45 @@ export const INDEXABLE_EXTENSIONS = new Set([
 ])
 
 export const PROVIDER_MODELS: Record<SupportedProvider, string[]> = {
-  codex: ['gpt-6.1-sol', 'o3', 'o3-mini', 'o1', 'gpt-4.5-preview', 'gpt-4o', 'gpt-4o-mini'],
+  codex: [
+    'gpt-6.1-astra',
+    'gpt-6.1-sol',
+    'gpt-6.1-terra',
+    'gpt-6-luna',
+    'gpt-5.4-mini',
+    'o3',
+    'o3-mini',
+    'o1',
+    'gpt-4.5-preview',
+    'gpt-4o',
+    'gpt-4o-mini',
+  ],
   claude: [
-    'claude-sonnet-5-5',
     'claude-opus-5-5',
+    'claude-sonnet-5-5',
     'claude-haiku-5-5',
     'claude-3-7-sonnet',
     'claude-3-5-sonnet',
   ],
-  grok: ['grok-3', 'grok-3-mini', 'grok-2', 'grok-2-1212', 'grok-beta'],
+  grok: [
+    'grok-7',
+    'grok-7-mini',
+    'grok-7-vision',
+    'grok-4.7',
+    'grok-4',
+    'grok-3',
+    'grok-3-mini',
+    'grok-2',
+  ],
+  gemini: [
+    'gemini-3.8-flash',
+    'gemini-3.8-pro',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.0-pro-exp',
+    'gemini-1.5-pro',
+  ],
   muse: ['muse-spark-1.3', 'muse-pro', 'muse-standard', 'muse-code', 'muse-fast'],
 }
 
@@ -258,6 +288,7 @@ export class OrchbotDatabase {
     try {
       // Migração para corrigir provedores legados (ex: Muse associado erroneamente a Gemini)
       // e atualizar modelos padrão para as versões vigentes de 2026
+      const nowIso = new Date().toISOString()
       this.db.exec(`
         UPDATE provider_connections 
         SET name = 'Muse Code', default_model = 'muse-spark-1.3' 
@@ -265,15 +296,15 @@ export class OrchbotDatabase {
 
         UPDATE provider_connections 
         SET default_model = 'gpt-6.1-sol' 
-        WHERE provider_id = 'codex' AND default_model = 'gpt-4o';
+        WHERE provider_id = 'codex' AND (default_model = 'gpt-4o' OR default_model = '');
 
         UPDATE provider_connections 
         SET name = 'Claude Code (Anthropic)', default_model = 'claude-sonnet-5-5' 
         WHERE provider_id = 'claude' AND (default_model = 'claude-3-7-sonnet' OR name = 'Claude (Anthropic)');
 
         UPDATE provider_connections 
-        SET default_model = 'grok-3' 
-        WHERE provider_id = 'grok' AND default_model = 'grok-2';
+        SET default_model = 'grok-7' 
+        WHERE provider_id = 'grok' AND (default_model = 'grok-2' OR default_model = 'grok-3');
 
         UPDATE agents 
         SET model = 'muse-spark-1.3' 
@@ -293,7 +324,8 @@ export class OrchbotDatabase {
     }> = [
       { id: 'codex', name: 'Codex (OpenAI)', model: 'gpt-6.1-sol' },
       { id: 'claude', name: 'Claude Code (Anthropic)', model: 'claude-sonnet-5-5' },
-      { id: 'grok', name: 'Grok (xAI)', model: 'grok-3', endpoint: 'https://api.x.ai/v1' },
+      { id: 'grok', name: 'Grok (xAI)', model: 'grok-7', endpoint: 'https://api.x.ai/v1' },
+      { id: 'gemini', name: 'Google Gemini', model: 'gemini-3.8-flash' },
       { id: 'muse', name: 'Muse Code', model: 'muse-spark-1.3' },
     ]
 

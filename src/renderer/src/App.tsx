@@ -504,7 +504,8 @@ export const App: Component = () => {
     } else {
       if (p === 'codex') setModel('gpt-6.1-sol')
       else if (p === 'claude') setModel('claude-sonnet-5-5')
-      else if (p === 'grok') setModel('grok-3')
+      else if (p === 'grok') setModel('grok-7')
+      else if (p === 'gemini') setModel('gemini-3.8-flash')
       else if (p === 'muse') setModel('muse-spark-1.3')
     }
   }
@@ -609,8 +610,10 @@ export const App: Component = () => {
           : newProvider === 'claude'
             ? 'claude-sonnet-5-5'
             : newProvider === 'grok'
-              ? 'grok-3'
-              : 'muse-spark-1.3')
+              ? 'grok-7'
+              : newProvider === 'gemini'
+                ? 'gemini-3.8-flash'
+                : 'muse-spark-1.3')
 
       if (window.orchbot) {
         const updated = await window.orchbot.updateAgent({
@@ -1233,6 +1236,18 @@ export const App: Component = () => {
             </div>
             <div
               class="provider-status-item"
+              title={providerStatuses()?.gemini.version || providerStatuses()?.gemini.error || ''}
+            >
+              <span class={`status-dot ${providerStatuses()?.gemini.available ? 'online' : ''}`} />
+              <span>
+                Gemini:{' '}
+                {providerStatuses()?.gemini.available
+                  ? providerStatuses()?.gemini.version || 'Pronto'
+                  : 'Ausente'}
+              </span>
+            </div>
+            <div
+              class="provider-status-item"
               title={providerStatuses()?.muse.version || providerStatuses()?.muse.error || ''}
             >
               <span class={`status-dot ${providerStatuses()?.muse.available ? 'online' : ''}`} />
@@ -1347,9 +1362,11 @@ export const App: Component = () => {
                                         ? '🟣 Claude'
                                         : c.providerId === 'grok'
                                           ? '⚡ Grok'
-                                          : c.providerId === 'muse'
-                                            ? '✨ Muse'
-                                            : c.name}
+                                          : c.providerId === 'gemini'
+                                            ? '🔷 Gemini'
+                                            : c.providerId === 'muse'
+                                              ? '✨ Muse'
+                                              : c.name}
                                   </option>
                                 )}
                               </For>
@@ -1358,23 +1375,27 @@ export const App: Component = () => {
 
                           <div class="midchat-field">
                             <span class="midchat-label">Modelo:</span>
-                            <select
+                            <input
+                              list={`midchat-models-${agent().id}`}
                               class="chat-model-select"
                               value={agent().model}
                               onChange={(e) =>
                                 handleSwitchModelMidChat(agent().id, e.currentTarget.value)
                               }
-                              title="Trocar modelo a qualquer momento"
-                            >
+                              placeholder="Modelo..."
+                              style={{ width: '160px', padding: '4px 8px', 'font-size': '12px' }}
+                              title="Selecione na lista ou digite qualquer modelo (ex: gpt-6.1-astra, gpt-6.1-terra, grok-7)"
+                            />
+                            <datalist id={`midchat-models-${agent().id}`}>
                               <For
                                 each={
                                   connections().find((c) => c.providerId === agent().provider)
                                     ?.models || [agent().model]
                                 }
                               >
-                                {(m) => <option value={m}>{m}</option>}
+                                {(m) => <option value={m} />}
                               </For>
-                            </select>
+                            </datalist>
                           </div>
 
                           <div class="midchat-field">
@@ -2416,6 +2437,8 @@ export const App: Component = () => {
                         return '🟣'
                       case 'grok':
                         return '⚡'
+                      case 'gemini':
+                        return '🔷'
                       case 'muse':
                         return '✨'
                       default:
@@ -2495,21 +2518,24 @@ export const App: Component = () => {
                           >
                             Modelo Padrão
                           </label>
-                          <select
+                          <input
                             id={`conn-model-${conn.providerId}`}
+                            list={`conn-models-${conn.providerId}`}
                             class="connection-input"
                             value={draft().defaultModel ?? conn.defaultModel}
-                            onChange={(e) =>
+                            onInput={(e) =>
                               updateDraftField(
                                 conn.providerId,
                                 'defaultModel',
                                 e.currentTarget.value,
                               )
                             }
+                            placeholder="Selecione na lista ou digite qualquer modelo..."
                             disabled={!conn.enabled}
-                          >
-                            <For each={conn.models}>{(m) => <option value={m}>{m}</option>}</For>
-                          </select>
+                          />
+                          <datalist id={`conn-models-${conn.providerId}`}>
+                            <For each={conn.models}>{(m) => <option value={m} />}</For>
+                          </datalist>
                         </div>
 
                         <div class="connection-field">

@@ -13,3 +13,4 @@ Este documento define as regras fundamentais de arquitetura, padrões de estilo 
 - **Linter & Formatter**: Biome (`bun run lint`). Todo o código submetido deve passar limpo sem avisos ou erros.
 - **Testes Unitários**: Vitest (`bun run test`). Toda nova feature deve conter testes em `tests/`.
 - **Interface Reativa**: SolidJS no frontend renderizado com Electron, componentes leves e modularizados.
+q

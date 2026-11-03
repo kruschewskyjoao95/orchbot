@@ -21,31 +21,42 @@ describe('Conexões & Provedores (Codex, Claude, Grok, Muse)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  it('deve inicializar com as 4 conexões padrão (Codex, Claude, Grok, Muse)', () => {
+  it('deve inicializar com as 5 conexões padrão (Codex, Claude, Grok, Gemini, Muse)', () => {
     const connections = db.listConnections()
-    expect(connections.length).toBe(4)
+    expect(connections.length).toBe(5)
 
     const ids = connections.map((c) => c.providerId)
     expect(ids).toContain('codex')
     expect(ids).toContain('claude')
     expect(ids).toContain('grok')
+    expect(ids).toContain('gemini')
     expect(ids).toContain('muse')
 
     const codex = connections.find((c) => c.providerId === 'codex')
     expect(codex?.enabled).toBe(true)
     expect(codex?.defaultModel).toBe('gpt-6.1-sol')
+    expect(codex?.models).toContain('gpt-6.1-astra')
     expect(codex?.models).toContain('gpt-6.1-sol')
+    expect(codex?.models).toContain('gpt-6.1-terra')
     expect(codex?.models).toContain('o1')
 
     const claude = connections.find((c) => c.providerId === 'claude')
     expect(claude?.enabled).toBe(true)
     expect(claude?.defaultModel).toBe('claude-sonnet-5-5')
     expect(claude?.models).toContain('claude-sonnet-5-5')
+    expect(claude?.models).toContain('claude-opus-5-5')
 
     const grok = connections.find((c) => c.providerId === 'grok')
     expect(grok?.enabled).toBe(true)
-    expect(grok?.defaultModel).toBe('grok-3')
-    expect(grok?.models).toContain('grok-3')
+    expect(grok?.defaultModel).toBe('grok-7')
+    expect(grok?.models).toContain('grok-7')
+    expect(grok?.models).toContain('grok-4.7')
+
+    const gemini = connections.find((c) => c.providerId === 'gemini')
+    expect(gemini?.enabled).toBe(true)
+    expect(gemini?.name).toBe('Google Gemini')
+    expect(gemini?.defaultModel).toBe('gemini-3.8-flash')
+    expect(gemini?.models).toContain('gemini-3.8-flash')
 
     const muse = connections.find((c) => c.providerId === 'muse')
     expect(muse?.enabled).toBe(true)
@@ -76,18 +87,20 @@ describe('Conexões & Provedores (Codex, Claude, Grok, Muse)', () => {
     expect(retrieved?.defaultModel).toBe('grok-beta')
   })
 
-  it('deve verificar disponibilidade no ProviderRegistry para os 4 provedores', async () => {
+  it('deve verificar disponibilidade no ProviderRegistry para os 5 provedores', async () => {
     const registry = new ProviderRegistry()
     const statuses = await registry.checkAllAvailability()
 
     expect(statuses.codex).toBeDefined()
     expect(statuses.claude).toBeDefined()
     expect(statuses.grok).toBeDefined()
+    expect(statuses.gemini).toBeDefined()
     expect(statuses.muse).toBeDefined()
 
     expect(typeof statuses.codex.available).toBe('boolean')
     expect(typeof statuses.claude.available).toBe('boolean')
     expect(typeof statuses.grok.available).toBe('boolean')
+    expect(typeof statuses.gemini.available).toBe('boolean')
     expect(typeof statuses.muse.available).toBe('boolean')
   })
 
