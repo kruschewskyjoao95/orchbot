@@ -1,41 +1,37 @@
-import { type ChildProcess, execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { ProviderInfo } from '../../shared/types'
+import type { ProviderInfo, SupportedProvider } from '../../shared/types'
+import { getCatalogEntry } from './catalog'
+import { checkCliAvailability, resolveCliCommand } from './cli-utils'
+import { runStreamingCli, withInstructions } from './runner'
 import type {
   ActiveExecution,
   ExecutionCallbacks,
   ExecutionOptions,
   ProviderAdapter,
+  ProviderRuntimeConfig,
 } from './types'
 
-const execFileAsync = promisify(execFile)
-
 export class GrokAdapter implements ProviderAdapter {
-  public readonly id = 'grok'
+  public readonly id: SupportedProvider = 'grok'
   public readonly name = 'Grok (xAI)'
 
-  public async checkAvailability(): Promise<ProviderInfo> {
+  public async checkAvailability(config?: ProviderRuntimeConfig): Promise<ProviderInfo> {
+    return checkCliAvailability('grok', config)
+  }
+
+  public async discoverModels(config?: ProviderRuntimeConfig): Promise<string[]> {
+    const entry = getCatalogEntry('grok')
     try {
-      const { stdout } = await execFileAsync('grok', ['--version'])
-      return {
-        available: true,
-        version: stdout.trim(),
-      }
-    } catch {
-      // Se não houver CLI grok instalado, verifica se há chave de ambiente ou mock disponível
-      const apiKey = process.env.GROK_API_KEY || process.env.XAI_API_KEY
-      if (apiKey) {
-        return {
-          available: true,
-          version: 'xAI API configurada (via ENV)',
-        }
-      }
-      return {
-        available: false,
-        error:
-          'CLI grok não encontrado no PATH e nenhuma variável GROK_API_KEY/XAI_API_KEY detectada.',
-      }
-    }
+      const { stdout } = await promisify(execFile)(
+        resolveCliCommand(entry.cliCommand, config?.cliPath),
+        ['models'],
+        { timeout: 20000 },
+      )
+      const models = [...stdout.matchAll(/^\s*[*-]\s+(\S+)/gm)].map((m) => m[1])
+      if (models.length > 0) return models
+    } catch {}
+    return [...entry.models]
   }
 
   public executeTurn(
@@ -43,66 +39,29 @@ export class GrokAdapter implements ProviderAdapter {
     options: ExecutionOptions,
     callbacks: ExecutionCallbacks,
   ): ActiveExecution {
-    const args = ['exec', '--model', options.model ?? 'grok-2']
-
-    if (options.workspacePath) {
-      args.push('--workspace', options.workspacePath)
-    }
-
-    const effectivePrompt = options.instructions
-      ? `[Instruções do Sistema: ${options.instructions}]\n\n${prompt}`
-      : prompt
-
-    args.push(effectivePrompt)
-
-    let isInterrupted = false
-    let child: ChildProcess | null = null
-    let fullText = ''
-    let stderrText = ''
-
-    try {
-      child = spawn('grok', args, {
-        cwd: options.workspacePath,
-        env: { ...process.env },
-      })
-
-      child.stdout?.on('data', (data: Buffer) => {
-        if (isInterrupted) return
-        const chunk = data.toString()
-        fullText += chunk
-        callbacks.onChunk(chunk, fullText)
-      })
-
-      child.stderr?.on('data', (data: Buffer) => {
-        stderrText += data.toString()
-      })
-
-      child.on('error', (err) => {
-        if (isInterrupted) return
-        callbacks.onError(`Erro ao executar grok: ${err.message}`)
-      })
-
-      child.on('close', (code) => {
-        if (isInterrupted) return
-        if (code === 0) {
-          callbacks.onDone(fullText)
-        } else {
-          callbacks.onError(`Processo grok finalizou com código ${code}. ${stderrText}`.trim())
-        }
-      })
-    } catch (err: unknown) {
-      callbacks.onError(
-        `Falha ao iniciar adapter Grok: ${err instanceof Error ? err.message : String(err)}`,
-      )
-    }
-
-    return {
-      interrupt: () => {
-        isInterrupted = true
-        if (child && !child.killed) {
-          child.kill('SIGTERM')
-        }
+    return runStreamingCli(
+      {
+        cliCommand: 'grok',
+        label: 'grok',
+        envKeys: ['GROK_API_KEY', 'XAI_API_KEY'],
+        mode: 'lines-json',
+        buildArgs: (p, opts) => {
+          // CLI real: grok -p/--single <prompt> -m <model> --output-format streaming-json
+          const args = [
+            '--single',
+            withInstructions(p, opts.instructions),
+            '--output-format',
+            'streaming-json',
+          ]
+          if (opts.model) args.push('-m', opts.model)
+          if (opts.providerConfig?.effort)
+            args.push('--reasoning-effort', opts.providerConfig.effort)
+          return args
+        },
       },
-    }
+      prompt,
+      options,
+      callbacks,
+    )
   }
 }

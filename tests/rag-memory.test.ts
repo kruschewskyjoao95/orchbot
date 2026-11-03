@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderAdapter } from '../src/backend/providers/types'
 import { QueueManager } from '../src/backend/queue/queue-manager'
 import { loadWorkspaceRules } from '../src/backend/rag/workspace-rules'
@@ -192,7 +192,7 @@ describe('Memória Contínua FTS5 & RAG do Repositório', () => {
       )
 
       // Aguarda processamento do QueueManager
-      await new Promise((resolve) => setTimeout(resolve, 80))
+      await vi.waitFor(() => expect(capturedInstructions).toBeDefined(), { timeout: 3000 })
 
       expect(capturedInstructions).toBeDefined()
       // Verifica presença das regras do projeto

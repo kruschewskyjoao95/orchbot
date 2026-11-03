@@ -1,7 +1,7 @@
-# Orchbot — Roadmap completo inspirado no OpenBot
+# Orchbot — Roadmap completo
 
-> Referência: [nightly-labs/openbot](https://github.com/nightly-labs/openbot) — workspace desktop local-first para teammates de IA persistentes (Codex, Claude, Grok via ACP, filas locais, browser embarcado, chat agente-a-agente).
-> Este documento é o plano de construção de algo parecido, adaptado para o projeto `Orchbot/`.
+> Workspace desktop local-first para teammates de IA persistentes (Codex, Claude, Grok via ACP, filas locais, browser embarcado, chat agente-a-agente).
+> Este documento é o plano de construção do projeto `Orchbot/`.
 
 ## 1. Visão e escopo
 
@@ -65,7 +65,7 @@ renderer ──► contracts ◄── preload ◄── main ──► backend
 |---|---|---|
 | `orchbot.db` (agentes, conversas, filas, reactions, anexos, bindings) | `backend` | Fonte da verdade, migrações irreversíveis, sem backup assumido |
 | Sessões nativas (`~/.codex`, `~/.claude` etc.) | providers | Estado de login/resume, não é storage de conversa |
-| `browser-tabs.json` | browser host | Fora do `openbot.db`, versionado, revalidado a cada leitura |
+| `browser-tabs.json` | browser host | Fora do `orchbot.db`, versionado, revalidado a cada leitura |
 | Cache de conta no celular | mobile | Cópia cifrada read-only, host é fonte da verdade |
 | Contas/memberships/convites | Cloudflare D1 | Nunca chats ou arquivos |
 
@@ -151,7 +151,7 @@ routines(id, agent_id, instruction, trigger_json, next_due_at, paused)
 - [ ] Browser persistente com `browser-tabs.json` versionado fora do DB.
 - [ ] Execução via CDP: open, inspect, input seguro, `run_script`.
 - [ ] Autenticação segura de browser, takeover interativo com approval card.
-- [ ] Expor no catálogo como `openbot_browser.*` com schemas preguiçosos via `tool_search`.
+- [ ] Expor no catálogo como `orchbot_browser.*` com schemas preguiçosos via `tool_search`.
 - **Sai:** agente abre página, extrai dado e preenche campo sob supervisão.
 - **Validação:** script manual: abrir URL, ler título, clicar, capturar evidência sem vazar segredo em log.
 
@@ -160,7 +160,7 @@ routines(id, agent_id, instruction, trigger_json, next_due_at, paused)
 - [ ] Team API versionada (`*-v1` capabilities: `quiet-turn`, `routine-flows`, `memory-review` etc.).
 - [ ] Host local como dono de conversas/arquivos; clientes remotos via Signal/WebRTC ou HTTP relay.
 - [ ] Mobile Expo: cache cifrado read-only, notificações, Live Activity.
-- [ ] Docker + `install-server.sh` + `openbot login` para VPS.
+- [ ] Docker + `install-server.sh` + `orchbot login` para VPS.
 - **Sai:** desktop em casa acessível pelo celular; segundo desktop como cliente remoto.
 - **Validação:** sign-out/session expiry/server removal apagam cache; D1 nunca contém texto de chat.
 
@@ -228,7 +228,60 @@ biome check --write --max-diagnostics=none <paths>
 
 Estimativa para 1 dev experiente: MVP (Fases 0–5 enxutas) em 8–14 semanas; Fases 6–7 adicionam 4–8 semanas.
 
-## 9. Checklist de pronto (DoD do MVP)
+## 9. Status atual e próximos passos
+
+> Atualizado na sessão de implementação do design + providers + orquestração.
+> O núcleo abaixo já está implementado e testado no app (Electron + SolidJS + SQLite).
+
+### 9.1 Já implementado
+
+- [x] Design system híbrido (desktop denso + respiro visual), temas dark/light/sistema, escala de interface e cor do logotipo.
+- [x] 10 providers com adapters reais: Codex, Claude, Grok, Gemini, Muse, Antigravity, OpenCode, Copilot, Pi e Kimi.
+- [x] Catálogo único de providers (`src/backend/providers/catalog.ts`): comando, modelos, env keys, esforço e descoberta de modelos via CLI (Antigravity/OpenCode).
+- [x] Configuração de provider que vale na execução: caminho da CLI, API key, endpoint e esforço chegam ao turno.
+- [x] Ícone de configuração ⚙ por provider (card e sidebar) com modal de configuração avançada.
+- [x] Detecção de atualização de CLI (npm) com banner, notificação nativa, dispensar por versão e botão Atualizar.
+- [x] Projetos (pastas criadas no disco) agrupando robôs na sidebar.
+- [x] Robô com nome, descrição (o que ele faz), instruções, esforço próprio e modo de contexto.
+- [x] Orquestrador: usuário fala só com ele; ele delega aos especialistas do projeto e resume os resultados.
+- [x] Economia de tokens: modo Econômico/Padrão/Completo por robô, histórico resumido e regras truncadas por modo.
+- [x] Navegador dos robôs: abrir/inspecionar/clicar/preencher painéis web (Meta Ads, Google Ads) com login persistente por robô.
+- [x] Uso do computador: listar apps, screenshot, abrir app, clicar, digitar e teclas (grim/hyprctl/wtype), com status de prontidão.
+- [x] Configurações: Geral, Aparência, Conversas, Comportamento do app, Agents (Defaults com contagem `x of N on`) e Permissões.
+- [x] Defaults de Agents com override por robô: scripts locais, iniciar novos chats, plano antes de tarefas longas, orientar (Fila/Imediato).
+- [x] Aba Perfil: tokens estimados, mensagens, sequências, heatmap de 365 dias, destaques, colegas mais ativos e uso de modelos.
+- [x] Pesquisa de referência salva em `docs/research-providers-openbot-paseo.md`.
+- [x] Suíte de testes cobrindo providers, projetos, orquestração, contexto, navegador, computador, perfil, updates e configurações.
+
+### 9.2 Falta implementar — prioridade alta (nesta ordem)
+
+1. [x] **Chave segura (`safeStorage`)** — chaves cifradas no SQLite, migração das antigas e renderer recebe apenas indicação de chave cadastrada; fallback Linux `basic_text` bloqueado.
+2. [x] **Adapter ACP genérico** — cliente ACP v1 por stdio, comando/argumentos configuráveis pela tela, streaming, cancelamento, descoberta de modelos via configOptions e confirmação nativa de permissões. Ver `docs/acp.md`.
+3. [x] **Provedor customizado pela tela** — cadastro de APIs OpenAI-compatible com chave protegida, edição/remoção, streaming HTTP, descoberta de modelos e integração com robôs e fallback. Ver `docs/custom-providers.md`.
+4. [x] **Sessão persistente do CLI** — resume nativo de Codex/Claude por conversa, IDs persistidos no SQLite, isolamento de workspace/conexão, cancelamento ordenado e reinício explícito sem apagar mensagens. Ver `docs/native-sessions.md`.
+
+### 9.3 Falta implementar — prioridade média
+
+5. [x] **Várias contas por provedor** — chaves próprias, perfis isolados de Codex/Claude, seleção por robô e fallback de cota entre contas antes de trocar de provedor. Ver `docs/provider-accounts.md`.
+6. [x] **Instalação gerenciada de CLI** — instala o CLI em pasta própria do app (`npm --prefix`), com versão fixada e remoção, usado automaticamente quando não há caminho próprio. Ver `docs/distribution.md`.
+7. [x] **Status de login fino** — estados separados, checagens reais em Codex/Claude/Pi/OpenCode/Muse e ACP; versões ou CLIs sem verificação segura ficam como login não verificado. Ver `docs/provider-login-status.md`.
+8. [ ] **Uso real de tokens** — ler o consumo reportado pela CLI em vez de estimar por caracteres no Perfil.
+9. [x] **Update fora do npm** — Grok (`grok update`) e Pi (`pi update --self`) atualizam pelo próprio CLI; Muse e Antigravity não têm canal (a tela explica o motivo).
+10. [ ] **Contexto Git no turno** — injetar status/diff/commits recentes do workspace no contexto do agente.
+
+### 9.4 Falta implementar — segunda onda
+
+11. [ ] **Visão de verdade** — enviar screenshot (navegador/computador) para modelo com visão em vez de só texto.
+12. [ ] **Update do próprio Orchbot** — empacotamento, auto-update do app, bandeja do sistema e autostart no Linux.
+13. [ ] **Traduções reais** — hoje só Português (Brasil); seletor de idioma já persiste a preferência.
+14. [ ] **Envio de análises** — a permissão existe; falta o serviço/coletor (nenhum dado é enviado hoje).
+15. [ ] **Acesso remoto/mobile e voz** — salto de escopo (relay, app mobile, ditado). Só com decisão explícita de escopo.
+
+### 9.5 Ordem recomendada
+
+`safeStorage` → ACP genérico → provedor customizado → sessão persistente. Depois a fila 9.3 na ordem. A 9.4 só entra com decisão de produto.
+
+## 10. Checklist de pronto (DoD do MVP)
 
 - [ ] Dois agentes (Codex + Claude) com workspaces isolados.
 - [ ] Restart preserva tudo; troca de provider não reseta agente.

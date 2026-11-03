@@ -5,12 +5,60 @@
     "output": "dist",
     "buildResources": "build"
   },
-  "files": ["out/**/*", "package.json"],
+  "files": [
+    "out/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/skills",
+      "to": "skills"
+    },
+    {
+      "from": "build/icon.png",
+      "to": "icon.png"
+    }
+  ],
   "linux": {
-    "target": ["AppImage", "deb", "dir"],
+    "target": [
+      "AppImage",
+      "deb",
+      "dir"
+    ],
     "category": "Development",
     "maintainer": "Orchbot Team <support@orchbot.local>",
     "synopsis": "Desktop workspace local-first para agentes de IA persistentes",
-    "description": "Desktop workspace local-first para agentes de IA persistentes com Codex, Claude, filas locais duráveis, anexos gerenciados e browser embarcado."
-  }
+    "description": "Desktop workspace local-first para agentes de IA persistentes com Codex, Claude, filas locais duráveis, anexos gerenciados e browser embarcado.",
+    "mimeTypes": [
+      "x-scheme-handler/orchbot"
+    ]
+  },
+  "protocols": [
+    {
+      "name": "Orchbot",
+      "schemes": [
+        "orchbot"
+      ]
+    }
+  ],
+  "mac": {
+    "target": [
+      "dmg",
+      "zip"
+    ],
+    "category": "public.app-category.developer-tools"
+  },
+  "dmg": {
+    "title": "Orchbot ${version}"
+  },
+  "win": {
+    "target": [
+      "nsis"
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  },
+  "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
 }

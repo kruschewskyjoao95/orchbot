@@ -1,9 +1,72 @@
-import type { Message, StreamChunkEvent, TaskQueueItem } from '../../shared/types'
+import { createHash } from 'node:crypto'
+import path from 'node:path'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import {
+  type Agent,
+  type Message,
+  type StreamChunkEvent,
+  type TaskQueueItem,
+  effectiveCapabilities,
+} from '../../shared/types'
+import {
+  MAX_BROWSER_ROUNDS,
+  argsFor,
+  buildBrowserInstructions,
+  parseBrowserDirectives,
+  stripBrowserDirectives,
+  summarizeBrowserResult,
+  toolNameFor,
+} from '../browser/browser-protocol'
+import {
+  needsCollabFollowUp,
+  parseCollabDirectives,
+  stripCollabDirectives,
+} from '../collaboration/collab-protocol'
+import { CollaborationService } from '../collaboration/collaboration-service'
+import {
+  MAX_COMPUTER_ROUNDS,
+  argsForComputer,
+  buildComputerInstructions,
+  parseComputerDirectives,
+  stripComputerDirectives,
+} from '../computer/computer-protocol'
+import { buildThreadContext, capRulesContent } from '../context/context-builder'
+import { buildGitContext } from '../context/git-context'
+import { claudeMcp, codexMcp } from '../mcp/mcp-launch'
+import {
+  needsMemoryFollowUp,
+  parseMemoryDirectives,
+  stripMemoryDirectives,
+} from '../memory/memory-protocol'
+import { MemoryService } from '../memory/memory-service'
+import {
+  MAX_ORCHESTRATION_DEPTH,
+  buildOrchestratorInstructions,
+  parseDelegationDirectives,
+  parseNewChatDirective,
+  resolveDelegations,
+  stripDelegationDirectives,
+  stripNewChatDirectives,
+  teamForOrchestrator,
+} from '../orchestration/protocol'
+import { resolveAccountRuntime } from '../providers/account-config'
 import type { ProviderRegistry } from '../providers/registry'
+import type { McpLaunchServer, TurnUsage } from '../providers/types'
 import { loadWorkspaceRules } from '../rag/workspace-rules'
+import {
+  needsSkillFollowUp,
+  parseSkillDirectives,
+  stripSkillDirectives,
+} from '../skills/skill-protocol'
+import type { SkillService } from '../skills/skill-service'
 import type { OrchbotDatabase } from '../storage/db'
 
 export interface QueueManagerEvents {
+  onPermissionRequest: (
+    request: RequestPermissionRequest,
+    signal: AbortSignal,
+    agentName: string,
+  ) => Promise<string | undefined>
   onStreamChunk: (event: StreamChunkEvent) => void
   onTurnFinished: (event: { threadId: string; message: Message; task: TaskQueueItem }) => void
   onTurnError: (event: { threadId: string; error: string; task: TaskQueueItem }) => void
@@ -29,17 +92,48 @@ export function isQuotaOrRateLimitError(error: string): boolean {
   )
 }
 
+export type BrowserExecutor = (
+  agentId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+) => Promise<unknown>
+
+export type ComputerExecutor = (
+  agentId: string,
+  action: string,
+  args: Record<string, unknown>,
+) => Promise<string>
+
+const MAX_MEMORY_ROUNDS = 3
+
 export class QueueManager {
+  private browserExecutor: BrowserExecutor | null = null
+  private computerExecutor: ComputerExecutor | null = null
   private pausedAgents = new Set<string>()
   private isProcessingAgent = new Set<string>()
+  private nativeExecutionThreads = new Set<string>()
   private taskFallbackAttempts = new Map<string, Set<string>>()
   private isClosed = false
+  public readonly memory: MemoryService
+  public readonly collab: CollaborationService
+  private skills: SkillService | null = null
+  /** Seções de continuação acumuladas por tarefa: uma resposta gera no máximo UM turno de continuação. */
+  private followUps = new Map<string, string[]>()
+  private consentCheck: (() => boolean) | null = null
 
   constructor(
     private db: OrchbotDatabase,
     private registry: ProviderRegistry,
     private events?: Partial<QueueManagerEvents>,
   ) {
+    this.memory = new MemoryService(db)
+    this.collab = new CollaborationService(db, {
+      enqueue: (agentId, threadId, prompt, depth, origin) =>
+        this.enqueue(agentId, threadId, prompt, depth, origin),
+      cancelTask: (taskId) => this.cancel(taskId),
+    })
+    // Pausas sobrevivem a reinício; sem isso o agente pausado voltaria a rodar sozinho.
+    for (const id of this.db.listPausedAgentIds()) this.pausedAgents.add(id)
     // Reconciliação imediata na inicialização
     this.reconcile()
   }
@@ -52,6 +146,29 @@ export class QueueManager {
     this.events = events
   }
 
+  public setBrowserExecutor(executor: BrowserExecutor): void {
+    this.browserExecutor = executor
+  }
+
+  /** Sem o aceite do primeiro uso, nenhum agente executa (tarefas ficam pendentes). */
+  public setConsentCheck(check: () => boolean): void {
+    this.consentCheck = check
+  }
+
+  /** Reprocessa filas pendentes (ex.: logo após o aceite do aviso). */
+  public kick(): void {
+    for (const agent of this.db.listAgents())
+      setTimeout(() => this.processNextForAgent(agent.id), 0)
+  }
+
+  public setSkills(skills: SkillService): void {
+    this.skills = skills
+  }
+
+  public setComputerExecutor(executor: ComputerExecutor): void {
+    this.computerExecutor = executor
+  }
+
   public reconcile(): number {
     return this.db.reconcileRunningTasks()
   }
@@ -62,11 +179,13 @@ export class QueueManager {
 
   public pause(agentId: string): boolean {
     this.pausedAgents.add(agentId)
+    this.db.setAgentPaused(agentId, true)
     return true
   }
 
   public resume(agentId: string): boolean {
     this.pausedAgents.delete(agentId)
+    this.db.setAgentPaused(agentId, false)
     // Tenta processar próxima tarefa pendente
     setTimeout(() => {
       this.processNextForAgent(agentId)
@@ -79,8 +198,17 @@ export class QueueManager {
     threadId: string,
     prompt: string,
     delegationDepth = 1,
+    origin?: { originThreadId?: string; originAgentId?: string },
+    browserRounds = 0,
   ): TaskQueueItem {
-    const task = this.db.enqueueTask(agentId, threadId, prompt, delegationDepth)
+    const task = this.db.enqueueTask(
+      agentId,
+      threadId,
+      prompt,
+      delegationDepth,
+      origin,
+      browserRounds,
+    )
     this.events?.onTaskStatusChanged?.({ task })
 
     // Dispara processamento
@@ -91,20 +219,26 @@ export class QueueManager {
     return task
   }
 
+  /** Interrompe o turno ativo de uma thread (orientar enquanto trabalha). */
+  public interruptThread(threadId: string): boolean {
+    return this.registry.interruptThread(threadId)
+  }
+
   public cancel(taskId: string): boolean {
     const task = this.db.getTask(taskId)
     if (!task) return false
 
-    if (task.status === 'running') {
-      this.registry.interruptThread(task.threadId)
-    }
+    const waitsForClose =
+      task.status === 'running' && this.nativeExecutionThreads.has(task.threadId)
+    if (task.status === 'running') this.registry.interruptThread(task.threadId)
 
+    this.taskFallbackAttempts.delete(taskId)
     const updated = this.db.updateTaskStatus(taskId, 'cancelled', 'Cancelado pelo usuário')
-    this.isProcessingAgent.delete(task.agentId)
+    if (task.status === 'running' && !waitsForClose) this.isProcessingAgent.delete(task.agentId)
     this.events?.onTaskStatusChanged?.({ task: updated })
 
     // Processa próximo da fila se o cancelado estava rodando
-    if (task.status === 'running') {
+    if (task.status === 'running' && !waitsForClose) {
       setTimeout(() => {
         this.processNextForAgent(task.agentId)
       }, 0)
@@ -117,6 +251,7 @@ export class QueueManager {
     const task = this.db.getTask(taskId)
     if (!task) return false
 
+    this.taskFallbackAttempts.delete(taskId)
     const updated = this.db.updateTaskStatus(taskId, 'pending', null)
     this.events?.onTaskStatusChanged?.({ task: updated })
 
@@ -131,12 +266,292 @@ export class QueueManager {
     return this.db.listTasks(agentId)
   }
 
+  /** Executa os blocos [[COMPUTER:...]] e devolve o resultado ao robô. */
+  private async dispatchComputerDirectives(
+    task: TaskQueueItem,
+    agentId: string,
+    fullText: string,
+  ): Promise<void> {
+    const rounds = task.browserRounds ?? 0
+    if (rounds >= MAX_COMPUTER_ROUNDS) return
+    const directives = parseComputerDirectives(fullText)
+    if (directives.length === 0) return
+    if (!this.computerExecutor) return
+
+    const results: string[] = []
+    for (const directive of directives) {
+      try {
+        const summary = await this.computerExecutor(
+          agentId,
+          directive.action,
+          argsForComputer(directive),
+        )
+        results.push(`[${directive.action}] ${summary.slice(0, 1500)}`)
+      } catch (err: unknown) {
+        results.push(
+          `[${directive.action}] Erro: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `🖥️ Computador executou ${directives.length} comando(s). Lendo o resultado…`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+
+    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`)
+  }
+
+  private addFollowUp(task: TaskQueueItem, section: string): void {
+    const list = this.followUps.get(task.id) ?? []
+    list.push(section)
+    this.followUps.set(task.id, list)
+  }
+
+  /** Junta tudo que os despachantes pediram numa única mensagem de continuação. */
+  private flushFollowUps(task: TaskQueueItem, agentId: string): void {
+    const sections = this.followUps.get(task.id)
+    this.followUps.delete(task.id)
+    if (!sections?.length || this.isClosed || !this.db.isOpen()) return
+    this.enqueue(
+      agentId,
+      task.threadId,
+      [
+        sections.join('\n\n'),
+        'Com base nisto, continue a tarefa e responda ao usuário. Só emita novos blocos se faltar algo essencial.',
+      ].join('\n\n'),
+      task.delegationDepth ?? 1,
+      task.originThreadId
+        ? { originThreadId: task.originThreadId, originAgentId: task.originAgentId }
+        : undefined,
+      (task.browserRounds ?? 0) + 1,
+    )
+  }
+
+  /** Executa [[SKILL:*]]; list e load voltam ao robô num novo turno. */
+  private dispatchSkillDirectives(
+    task: TaskQueueItem,
+    agent: Agent,
+    directives: ReturnType<typeof parseSkillDirectives>,
+  ): void {
+    if (!this.skills || directives.length === 0) return
+    const rounds = task.browserRounds ?? 0
+    const lines = this.skills.run(agent, directives)
+    if (!needsSkillFollowUp(directives) || rounds >= MAX_MEMORY_ROUNDS) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        `🧩 ${lines.join(' ')}`.slice(0, 400),
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return
+    }
+    this.addFollowUp(task, `[RESULTADO DAS SKILLS]\n${lines.join('\n\n')}`)
+  }
+
+  /** MCP escolhido para o agente (Claude e Codex). Segredos vão pelo ambiente, nunca no argv. */
+  private mcpConfigFor(
+    agent: Agent,
+    task: TaskQueueItem,
+  ): { mcpServers?: McpLaunchServer[]; extraEnv?: Record<string, string> } {
+    // Antigravity também fala ACP (AntigravityAdapter estende AcpAdapter).
+    const viaAcp = agent.provider === 'acp' || agent.provider === 'antigravity'
+    if (agent.provider !== 'claude' && agent.provider !== 'codex' && !viaAcp) return {}
+    try {
+      const mcpServers = this.db.getAgentMcpLaunch(agent.id)
+      if (mcpServers.length === 0) return {}
+      // ACP leva os servidores no próprio protocolo (session/new): sem variáveis de ambiente.
+      if (viaAcp) return { mcpServers }
+      const { env } = (agent.provider === 'claude' ? claudeMcp : codexMcp)(mcpServers)
+      return { mcpServers, extraEnv: env }
+    } catch (err) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        `🔌 MCP desativado neste turno: ${err instanceof Error ? err.message : String(err)}`,
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return {}
+    }
+  }
+
+  /** Executa [[AGENT:*]] / [[CHANNEL:*]]; só `list` volta ao robô num novo turno. */
+  private dispatchCollabDirectives(
+    task: TaskQueueItem,
+    agent: Agent,
+    directives: ReturnType<typeof parseCollabDirectives>,
+  ): void {
+    if (directives.length === 0) return
+    const rounds = task.browserRounds ?? 0
+    const { lines, followUp } = this.collab.run(
+      agent,
+      { threadId: task.threadId, depth: task.delegationDepth ?? 1 },
+      directives,
+    )
+    if (!followUp || rounds >= MAX_MEMORY_ROUNDS) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        `🤝 ${lines.join(' ')}`.slice(0, 400),
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return
+    }
+    this.addFollowUp(task, `[RESULTADO DOS AGENTES]\n${lines.join('\n\n')}`)
+  }
+
+  /** Executa [[MEMORY:*]] / [[HISTORY:*]]; buscas e leituras voltam ao robô num novo turno. */
+  private dispatchMemoryDirectives(
+    task: TaskQueueItem,
+    agentId: string,
+    directives: ReturnType<typeof parseMemoryDirectives>,
+  ): void {
+    if (directives.length === 0) return
+    const rounds = task.browserRounds ?? 0
+    const results = this.memory.run(agentId, directives)
+    if (!needsMemoryFollowUp(directives) || rounds >= MAX_MEMORY_ROUNDS) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        `🧠 ${results.join(' ')}`.slice(0, 300),
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return
+    }
+    this.addFollowUp(task, `[RESULTADO DA MEMÓRIA]\n${results.join('\n\n')}`)
+  }
+
+  /** Executa os blocos [[BROWSER:...]] do turno e devolve o resultado ao robô. */
+  private async dispatchBrowserDirectives(
+    task: TaskQueueItem,
+    agentId: string,
+    fullText: string,
+  ): Promise<void> {
+    const rounds = task.browserRounds ?? 0
+    if (rounds >= MAX_BROWSER_ROUNDS) return
+    const directives = parseBrowserDirectives(fullText)
+    if (directives.length === 0) return
+
+    if (!this.browserExecutor) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        '🌐 O robô pediu o navegador, mas o navegador embutido não está disponível nesta sessão.',
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return
+    }
+
+    const results: string[] = []
+    for (const directive of directives) {
+      try {
+        const result = await this.browserExecutor(
+          agentId,
+          toolNameFor(directive.action),
+          argsFor(directive),
+        )
+        results.push(`[${directive.action}] ${summarizeBrowserResult(directive.action, result)}`)
+      } catch (err: unknown) {
+        results.push(
+          `[${directive.action}] Erro: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `🌐 Navegador executou ${directives.length} comando(s). Lendo o resultado…`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+
+    this.addFollowUp(task, `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`)
+  }
+
+  /** Orquestrador delegou: enfileira nos especialistas e avisa na conversa dele. */
+  private dispatchDelegations(
+    orchestratorTask: TaskQueueItem,
+    orchestrator: { id: string; name: string },
+    fullText: string,
+  ): void {
+    const depth = orchestratorTask.delegationDepth ?? 1
+    if (depth >= MAX_ORCHESTRATION_DEPTH) return
+    const directives = parseDelegationDirectives(fullText)
+    if (directives.length === 0) return
+
+    const orch = this.db.getAgent(orchestrator.id)
+    if (!orch) return
+    const team = teamForOrchestrator(orch, this.db.listAgents())
+    const { resolved, unknownTargets } = resolveDelegations(directives, team)
+    const notices: string[] = []
+
+    for (const item of resolved) {
+      const targetThreadId = this.collab.latestThread(item.agent.id)
+      if (!targetThreadId) {
+        notices.push(`⚠️ ${item.agent.name} não tem conversa disponível.`)
+        continue
+      }
+      const delegationPrompt = `[Tarefa Delegada por ${orchestrator.name}]:\n${item.task}`
+      this.db.addMessage(targetThreadId, 'user', delegationPrompt, orchestrator.id, item.agent.id)
+      this.enqueue(item.agent.id, targetThreadId, delegationPrompt, depth + 1, {
+        originThreadId: orchestratorTask.threadId,
+        originAgentId: orchestrator.id,
+      })
+      notices.push(`🤝 Delegado para ${item.agent.name}: ${item.task.slice(0, 120)}`)
+    }
+    for (const target of unknownTargets) {
+      notices.push(`⚠️ Especialista não encontrado: "${target}".`)
+    }
+
+    if (notices.length > 0) {
+      const notice = this.db.addMessage(orchestratorTask.threadId, 'system', notices.join('\n'))
+      this.events?.onTurnFinished?.({
+        threadId: orchestratorTask.threadId,
+        message: notice,
+        task: orchestratorTask,
+      })
+    }
+  }
+
+  /** Especialista terminou: devolve o resultado ao orquestrador resumir. */
+  private returnResultToOrchestrator(
+    task: TaskQueueItem,
+    workerName: string,
+    result: string,
+  ): void {
+    if (!task.originThreadId || !task.originAgentId) return
+    const originAgent = this.db.getAgent(task.originAgentId)
+    if (!originAgent) return
+    // Canal: o dono pode seguir coordenando (a profundidade continua subindo até MAX_CHANNEL_DEPTH).
+    const inChannel = Boolean(this.db.getChannelByThread(task.originThreadId))
+    const prompt = [
+      `[RESULTADO DO ESPECIALISTA ${workerName}]`,
+      result,
+      '',
+      inChannel
+        ? 'Continue coordenando a tarefa do canal: peça a próxima etapa se faltar algo, ou entregue o resultado final ao usuário.'
+        : 'Resuma este resultado para o usuário e diga os próximos passos, se houver. Não emita blocos de delegação nesta resposta.',
+    ].join('\n')
+    this.db.addMessage(task.originThreadId, 'system', `📥 Resultado de ${workerName} recebido.`)
+    this.enqueue(
+      task.originAgentId,
+      task.originThreadId,
+      prompt,
+      inChannel ? (task.delegationDepth ?? 1) : MAX_ORCHESTRATION_DEPTH,
+    )
+  }
+
   private async processNextForAgent(agentId: string): Promise<void> {
     if (this.isClosed || !this.db.isOpen()) {
       return
     }
 
     if (this.pausedAgents.has(agentId)) {
+      return
+    }
+
+    if (this.consentCheck && !this.consentCheck()) {
       return
     }
 
@@ -163,7 +578,62 @@ export class QueueManager {
       return
     }
 
+    let runtime: ReturnType<typeof resolveAccountRuntime>
+    try {
+      runtime = resolveAccountRuntime(this.db, agent.provider, agent.accountId)
+    } catch (err) {
+      this.taskFallbackAttempts.delete(nextTask.id)
+      const error = err instanceof Error ? err.message : 'Falha ao abrir a conta do provedor'
+      this.isProcessingAgent.delete(agentId)
+      const failed = this.db.updateTaskStatus(nextTask.id, 'failed', error)
+      this.events?.onTaskStatusChanged?.({ task: failed })
+      this.events?.onTurnError?.({ threadId: nextTask.threadId, error, task: failed })
+      if (nextTask.originThreadId) this.returnResultToOrchestrator(nextTask, agent.name, error)
+      setTimeout(() => this.processNextForAgent(agentId), 50)
+      return
+    }
+    const { connection, account, config } = runtime
+    const apiKey = config.apiKey
     const adapter = this.registry.getAdapter(agent.provider)
+
+    const sessionScope = createHash('sha256')
+      .update(
+        JSON.stringify([
+          path.resolve(agent.workspacePath),
+          connection?.cliPath ?? '',
+          connection?.endpoint ?? '',
+          apiKey ?? '',
+          ...(!account.isDefault ? [account.id, config.cliProfile?.directory ?? ''] : []),
+        ]),
+      )
+      .digest('hex')
+    // Git e compactação em paralelo; nenhum outro await depois da checagem abaixo.
+    const gitPromise = this.db.getSettings().gitContext
+      ? buildGitContext(agent.workspacePath, agent.contextMode ?? 'padrao').catch(() => null)
+      : Promise.resolve(null)
+    const compactNotice = await this.memory
+      .compactIfNeeded(
+        { agent, adapter, config },
+        nextTask.threadId,
+        nextTask.createdAt,
+        sessionScope,
+      )
+      .catch(() => undefined)
+    const git = await gitPromise
+    // A compactação pode levar até 90 s: a tarefa pode ter sido cancelada ou o app fechado nesse meio-tempo.
+    if (this.isClosed || !this.db.isOpen() || this.db.getTask(nextTask.id)?.status !== 'running')
+      return
+    if (compactNotice) {
+      const notice = this.db.addMessage(nextTask.threadId, 'system', compactNotice)
+      this.events?.onTurnFinished?.({
+        threadId: nextTask.threadId,
+        message: notice,
+        task: nextTask,
+      })
+    }
+    const resumeSessionId = adapter.supportsSessionResume
+      ? this.db.getProviderSession(nextTask.threadId, agent.provider, sessionScope)
+      : undefined
 
     // 1. Diretrizes do Projeto (ORCHBOT.md / AGENTS.md)
     const rules = loadWorkspaceRules(agent.workspacePath)
@@ -173,13 +643,20 @@ export class QueueManager {
       contextSections.push(`[DIRETRIZES DO PROJETO (${rules.filename})]\n${rules.content}`)
     }
 
+    // 1b. Estado do repositório git do workspace (barato e útil para agentes de código)
+    if (git) contextSections.push(git)
+
     // 2. Memória Contínua FTS5 (histórico de conversas anteriores relevantes)
     try {
       const relevantMsgs = this.db.searchMessages(nextTask.prompt, {
         agentId,
         limit: 3,
       })
-      const filteredMsgs = relevantMsgs.filter((m) => m.text.trim() !== nextTask.prompt.trim())
+      const filteredMsgs = relevantMsgs.filter(
+        (m) =>
+          m.text.trim() !== nextTask.prompt.trim() &&
+          (!resumeSessionId || m.threadId !== nextTask.threadId),
+      )
       if (filteredMsgs.length > 0) {
         const memoryText = filteredMsgs
           .map((m) => `- [Conversa "${m.threadTitle}" (${m.role})]: ${m.text.slice(0, 300)}`)
@@ -205,6 +682,29 @@ export class QueueManager {
       // Ignora falhas de busca em arquivos
     }
 
+    if (adapter.supportsSessionResume && !resumeSessionId) {
+      const messages = this.db
+        .listMessages(nextTask.threadId)
+        .filter((message) => message.createdAt <= nextTask.createdAt)
+      const currentMessage = messages.findLastIndex(
+        (message) =>
+          message.role === 'user' &&
+          (message.text.trim() === nextTask.prompt.trim() ||
+            nextTask.prompt.startsWith(`${message.text.trim()}\n\n[Arquivos anexados`)),
+      )
+      const history =
+        currentMessage >= 0
+          ? messages.slice(0, currentMessage)
+          : messages.filter((message) => message.createdAt < nextTask.createdAt)
+      const compacted = this.db.getThreadSummary(nextTask.threadId)
+      const bootstrap = buildThreadContext(
+        compacted ? this.memory.afterSummary(nextTask.threadId, history) : history,
+        agent.contextMode ?? 'padrao',
+        compacted?.summary,
+      )
+      if (bootstrap.text) contextSections.push(bootstrap.text)
+    }
+
     // 4. Instruções originais do agente
     if (agent.instructions?.trim()) {
       contextSections.push(`[INSTRUÇÕES DO AGENTE]\n${agent.instructions.trim()}`)
@@ -221,17 +721,103 @@ export class QueueManager {
       )
     }
 
+    // 6. Papel de orquestrador: equipe + protocolo de delegação
+    if (agent.role === 'orchestrator') {
+      const team = teamForOrchestrator(agent, this.db.listAgents())
+      contextSections.push(buildOrchestratorInstructions(agent, team))
+    }
+
+    // 6b. Capacidades (padrão do computador + override do robô)
+    const caps = effectiveCapabilities(agent, this.db.getSettings())
+    contextSections.push(
+      caps.localScripts
+        ? '[SCRIPTS LOCAIS] Você pode executar scripts locais e comandos do workspace quando isso ajudar a tarefa (com responsabilidade e sem apagar dados sem confirmação).'
+        : '[SCRIPTS LOCAIS] Scripts locais estão desligados para você: não execute comandos/scripts do computador; trabalhe apenas com análise e texto.',
+    )
+    if (caps.showPlanBeforeLongTasks) {
+      contextSections.push(
+        '[PLANO ANTES DE TAREFAS LONGAS] Se a tarefa for longa ou em várias etapas, comece a resposta apresentando um plano curto (até 6 passos numerados) e só então execute.',
+      )
+    }
+    if (caps.startsNewChats) {
+      contextSections.push(
+        '[NOVOS CHATS] Você pode iniciar uma conversa nova para um tópico separado, no máximo 1 por turno: [[NOVO-CHAT:Título do tópico]] tarefa inicial completa [[/NOVO-CHAT]]',
+      )
+    }
+
+    // 6c. Uso do computador (padrão do computador + override do robô)
+    if (caps.computerUse) {
+      contextSections.push(buildComputerInstructions(agent.name))
+    }
+
+    // 6d. Memória persistente + busca no histórico
+    contextSections.push(...this.memory.contextSections(agentId))
+    contextSections.push(...this.collab.contextSections(agent, nextTask.threadId))
+    if (this.skills) contextSections.push(this.skills.contextSection(agentId))
+
+    // 7. Navegador embutido do robô
+    if (agent.browserAccess !== false) {
+      contextSections.push(buildBrowserInstructions(agent.name))
+    }
+
     const effectiveInstructions =
       contextSections.length > 0 ? contextSections.join('\n\n') : undefined
 
+    // Uso de tokens informado pela CLI neste turno (gravado junto da resposta).
+    let turnUsage: TurnUsage | undefined
+    let nativeSessionId: string | undefined
+    if (adapter.supportsSessionResume) this.nativeExecutionThreads.add(nextTask.threadId)
     const execution = adapter.executeTurn(
       nextTask.prompt,
       {
         workspacePath: agent.workspacePath,
+        resumeSessionId,
         model: agent.model,
         instructions: effectiveInstructions,
+        providerConfig: {
+          ...config,
+          effort: agent.effort ?? connection.effort,
+          ...this.mcpConfigFor(agent, nextTask),
+        },
       },
       {
+        onUsage: (usage) => {
+          turnUsage = usage
+        },
+        onNotice: (text) => {
+          if (this.isClosed || !this.db.isOpen()) return
+          const notice = this.db.addMessage(nextTask.threadId, 'system', text)
+          this.events?.onTurnFinished?.({
+            threadId: nextTask.threadId,
+            message: notice,
+            task: nextTask,
+          })
+        },
+        onSessionId: (sessionId) => {
+          nativeSessionId = sessionId
+          if (!this.isClosed && this.db.isOpen() && this.db.getThread(nextTask.threadId))
+            this.db.saveProviderSession(nextTask.threadId, agent.provider, sessionScope, sessionId)
+        },
+        onInterrupted: () => {
+          this.taskFallbackAttempts.delete(nextTask.id)
+          this.nativeExecutionThreads.delete(nextTask.threadId)
+          if (this.isClosed || !this.db.isOpen()) return
+          this.registry.removeActiveExecution(nextTask.threadId)
+          this.isProcessingAgent.delete(agentId)
+          const current = this.db.getTask(nextTask.id)
+          if (current?.status === 'running') {
+            const interrupted = this.db.updateTaskStatus(
+              nextTask.id,
+              'interrupted',
+              'Interrompido pelo usuário',
+            )
+            this.events?.onTaskStatusChanged?.({ task: interrupted })
+          }
+          setTimeout(() => this.processNextForAgent(agentId), 0)
+        },
+        onPermissionRequest: (request, signal) =>
+          this.events?.onPermissionRequest?.(request, signal, agent.name) ??
+          Promise.resolve(undefined),
         onChunk: (chunk, fullText) => {
           this.events?.onStreamChunk?.({
             threadId: nextTask.threadId,
@@ -239,34 +825,49 @@ export class QueueManager {
             fullText,
           })
         },
-        onError: (error) => {
+        onError: (rawError) => {
+          const error = apiKey ? rawError.split(apiKey).join('[REDACTED]') : rawError
+          this.nativeExecutionThreads.delete(nextTask.threadId)
+          if (this.isClosed || !this.db.isOpen()) return
           // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
           if (isQuotaOrRateLimitError(error)) {
             const tried = this.taskFallbackAttempts.get(nextTask.id) ?? new Set<string>()
-            tried.add(agent.provider)
+            tried.add(account.id)
             this.taskFallbackAttempts.set(nextTask.id, tried)
 
             const enabledConnections = this.db.listConnections().filter((c) => c.enabled)
-            const fallback = enabledConnections.find((c) => !tried.has(c.providerId))
+            const sameProvider = this.db.getConnection(agent.provider)?.enabled
+              ? this.db
+                  .listProviderAccounts(agent.provider)
+                  .find((candidate) => candidate.enabled && !tried.has(candidate.id))
+              : undefined
+            const fallback =
+              sameProvider ??
+              enabledConnections
+                .filter((candidate) => candidate.providerId !== agent.provider)
+                .flatMap((candidate) => this.db.listProviderAccounts(candidate.providerId))
+                .find((candidate) => candidate.enabled && !tried.has(candidate.id))
 
             if (fallback) {
               this.registry.removeActiveExecution(nextTask.threadId)
               this.isProcessingAgent.delete(agentId)
-
-              // 1. Mensagem de sistema avisando ao usuário sobre o failover automático
-              const failoverNotice = `⚠️ Cota ou limite de requisições excedido no provedor ${agent.provider.toUpperCase()} (${error}). Realizando failover automático e transparente para ${fallback.providerId.toUpperCase()} (${fallback.defaultModel})...`
+              const fallbackConnection = this.db.getConnection(fallback.providerId)
+              if (!fallbackConnection) return
+              const failoverNotice = `⚠️ Cota ou limite excedido em ${agent.provider.toUpperCase()} / ${account.label} (${error}). Tentando ${fallback.providerId.toUpperCase()} / ${fallback.label}.`
               const systemMsg = this.db.addMessage(nextTask.threadId, 'system', failoverNotice)
               this.events?.onTurnFinished?.({
                 threadId: nextTask.threadId,
                 message: systemMsg,
                 task: nextTask,
               })
-
-              // 2. Atualiza o agente para o provedor e modelo alternativo
               this.db.updateAgent({
                 id: agent.id,
                 provider: fallback.providerId,
-                model: fallback.defaultModel,
+                accountId: fallback.id,
+                model:
+                  fallback.providerId === agent.provider
+                    ? agent.model
+                    : fallbackConnection.defaultModel,
               })
 
               // 3. Reseta status da tarefa para pendente
@@ -285,6 +886,14 @@ export class QueueManager {
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
 
+          if (nextTask.originThreadId) {
+            this.returnResultToOrchestrator(
+              nextTask,
+              agent.name,
+              `O especialista falhou ao executar a tarefa: ${error}`,
+            )
+          }
+
           const failedTask = this.db.updateTaskStatus(nextTask.id, 'failed', error)
           this.events?.onTaskStatusChanged?.({ task: failedTask })
           this.events?.onTurnError?.({
@@ -299,16 +908,127 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
+          this.nativeExecutionThreads.delete(nextTask.threadId)
+          if (this.isClosed || !this.db.isOpen()) return
           this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
+
+          // Orquestração: remove os blocos de delegação do texto visível
+          const isOrchestrator = agent.role === 'orchestrator'
+          const fullForDirectives = fullText
+          const memoryDirectives = parseMemoryDirectives(fullText)
+          const collabDirectives = parseCollabDirectives(fullText)
+          const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
+          const stripped = stripSkillDirectives(
+            stripCollabDirectives(
+              stripMemoryDirectives(
+                stripComputerDirectives(stripNewChatDirectives(stripBrowserDirectives(fullText))),
+              ),
+            ),
+          )
+          const visibleText = isOrchestrator ? stripDelegationDirectives(stripped) : stripped
 
           // 1. Grava a mensagem do assistente no histórico do chat
           const assistantMsg = this.db.addMessage(
             nextTask.threadId,
             'assistant',
-            fullText.trim() || '(Nenhum conteúdo retornado)',
+            visibleText.trim() ||
+              (memoryDirectives.length > 0 ||
+              collabDirectives.length > 0 ||
+              skillDirectives.length > 0
+                ? '🧠 Consultando a memória…'
+                : parseBrowserDirectives(fullText).length > 0
+                  ? '🌐 Consultando o navegador…'
+                  : isOrchestrator
+                    ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
+                    : '(Nenhum conteúdo retornado)'),
           )
+
+          if (turnUsage)
+            this.db.setMessageUsage(
+              assistantMsg.id,
+              this.db.perTurnUsage(
+                nextTask.threadId,
+                nativeSessionId ?? resumeSessionId,
+                turnUsage,
+              ),
+              nativeSessionId ?? resumeSessionId,
+            )
+
+          // 1b. Orquestrador delega aos especialistas; especialista devolve ao orquestrador
+          if (isOrchestrator) {
+            this.dispatchDelegations(nextTask, agent, fullText)
+          } else if (
+            nextTask.originThreadId &&
+            parseBrowserDirectives(fullText).length === 0 &&
+            !needsMemoryFollowUp(memoryDirectives) &&
+            !needsCollabFollowUp(collabDirectives) &&
+            !needsSkillFollowUp(skillDirectives)
+          ) {
+            this.returnResultToOrchestrator(nextTask, agent.name, fullText.trim())
+          }
+
+          // 1c. Comandos de navegador do robô (vale para qualquer papel)
+          const followUpWork: Promise<void>[] = []
+          if (agent.browserAccess !== false) {
+            followUpWork.push(this.dispatchBrowserDirectives(nextTask, agentId, fullText))
+          }
+
+          // 1c0. Canal: a resposta do agente vai para o log compartilhado
+          {
+            const inChannel = this.db.getChannelByThread(nextTask.threadId)
+            if (inChannel && visibleText.trim())
+              this.db.addChannelMessage(inChannel.channel.id, agentId, visibleText.trim())
+          }
+
+          // 1c0b. Conversa entre agentes e pedidos dentro de canais
+          this.dispatchCollabDirectives(nextTask, agent, collabDirectives)
+
+          // 1c0c. Skills
+          this.dispatchSkillDirectives(nextTask, agent, skillDirectives)
+
+          // 1c1. Memória e histórico locais
+          this.dispatchMemoryDirectives(nextTask, agentId, memoryDirectives)
+          this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
+            if (this.isClosed || !this.db.isOpen()) return
+            const notice = this.db.addMessage(nextTask.threadId, 'system', text)
+            this.events?.onTurnFinished?.({
+              threadId: nextTask.threadId,
+              message: notice,
+              task: nextTask,
+            })
+          })
+
+          // 1c2. Uso do computador
+          {
+            const capsNow = effectiveCapabilities(agent, this.db.getSettings())
+            if (capsNow.computerUse) {
+              followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
+            }
+          }
+          void Promise.allSettled(followUpWork).then(() => this.flushFollowUps(nextTask, agentId))
+
+          // 1d. Robô inicia um novo chat (quando a capacidade permite)
+          {
+            const caps = effectiveCapabilities(agent, this.db.getSettings())
+            const newChat = caps.startsNewChats ? parseNewChatDirective(fullForDirectives) : null
+            if (newChat) {
+              const thread = this.db.createThread(agentId, newChat.title)
+              this.db.addMessage(thread.id, 'user', newChat.task)
+              this.enqueue(agentId, thread.id, newChat.task, 1)
+              const notice = this.db.addMessage(
+                nextTask.threadId,
+                'system',
+                `💬 Novo chat iniciado: "${newChat.title}"`,
+              )
+              this.events?.onTurnFinished?.({
+                threadId: nextTask.threadId,
+                message: notice,
+                task: nextTask,
+              })
+            }
+          }
 
           // 2. Marca a tarefa como concluída no banco
           const completedTask = this.db.updateTaskStatus(nextTask.id, 'completed')

@@ -1,20 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { ProviderAdapter } from '../src/backend/providers/types'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ExecutionCallbacks, ProviderAdapter } from '../src/backend/providers/types'
 import { QueueManager } from '../src/backend/queue/queue-manager'
 import { OrchbotDatabase } from '../src/backend/storage/db'
 import type { Agent, ProviderInfo, SupportedProvider } from '../src/shared/types'
+import { testSecretStorage } from './secret-storage-fixture'
 
 // Mock de ProviderRegistry para testes rápidos e isolados
 class MockProviderRegistry {
   public executedPrompts: string[] = []
+  public executedKeys: Array<string | undefined> = []
 
   public getAdapter(_id: SupportedProvider): ProviderAdapter {
     return {
       id: 'codex',
       name: 'Mock Adapter',
       checkAvailability: async (): Promise<ProviderInfo> => ({ available: true }),
-      executeTurn: (prompt, _options, callbacks) => {
+      executeTurn: (prompt, options, callbacks) => {
         this.executedPrompts.push(prompt)
+        this.executedKeys.push(options.providerConfig?.apiKey)
         // Simula execução síncrona/imediata com sucesso
         setTimeout(() => {
           callbacks.onChunk('Chunk 1', 'Chunk 1')
@@ -40,7 +43,7 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
   let threadId: string
 
   beforeEach(() => {
-    db = new OrchbotDatabase(':memory:')
+    db = new OrchbotDatabase(':memory:', testSecretStorage)
     mockRegistry = new MockProviderRegistry()
     queue = new QueueManager(
       db,
@@ -60,7 +63,94 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
 
   afterEach(() => {
     queue.close()
+    if (db.isOpen()) db.close()
+  })
+
+  it('abre a chave apenas para execução do provedor', async () => {
+    db.updateConnection({ providerId: 'codex', apiKey: 'private-test-key' })
+    const task = queue.enqueue(testAgent.id, threadId, 'Usar chave')
+    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'))
+    expect(mockRegistry.executedKeys).toEqual(['private-test-key'])
+    expect(JSON.stringify(db.listMessages(threadId))).not.toContain('private-test-key')
+  })
+
+  it('falha com aviso quando o cofre não abre e permite executar após recuperação', async () => {
+    const keyRead = vi.spyOn(db, 'getConnectionApiKey').mockImplementation(() => {
+      throw new Error('Cofre indisponível')
+    })
+    const task = queue.enqueue(testAgent.id, threadId, 'Falha do cofre')
+    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('failed'))
+    expect(mockRegistry.executedPrompts).toEqual([])
+    keyRead.mockRestore()
+    const next = queue.enqueue(testAgent.id, threadId, 'Recuperado')
+    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'))
+    expect(mockRegistry.executedPrompts).toEqual(['Recuperado'])
+  })
+
+  it('ignora callbacks atrasados depois de fechar a fila e o banco', async () => {
+    let callbacks: ExecutionCallbacks | undefined
+    const adapter = mockRegistry.getAdapter('codex')
+    vi.spyOn(mockRegistry, 'getAdapter').mockReturnValue({
+      ...adapter,
+      executeTurn: (_prompt, _options, handlers) => {
+        callbacks = handlers
+        return { interrupt: () => {} }
+      },
+    })
+    queue.enqueue(testAgent.id, threadId, 'Fechar antes da resposta')
+    await vi.waitFor(() => expect(callbacks).toBeDefined())
+    queue.close()
     db.close()
+    expect(() => callbacks?.onDone('Resposta atrasada')).not.toThrow()
+    expect(() => callbacks?.onError('Erro atrasado')).not.toThrow()
+  })
+
+  it('não executa a tarefa cancelada enquanto o histórico era compactado', async () => {
+    const adapter = mockRegistry.getAdapter('codex')
+    const pending: Array<() => void> = []
+    vi.spyOn(mockRegistry, 'getAdapter').mockReturnValue({
+      ...adapter,
+      executeTurn: (prompt, options, handlers) => {
+        if (!prompt.startsWith('Resuma')) return adapter.executeTurn(prompt, options, handlers)
+        pending.push(() => handlers.onDone('resumo'))
+        return { interrupt: () => {} }
+      },
+    })
+    for (let i = 0; i < 40; i++) db.addMessage(threadId, i % 2 ? 'assistant' : 'user', `m${i}`)
+    await new Promise((r) => setTimeout(r, 5))
+    const first = queue.enqueue(testAgent.id, threadId, 'Cancelada')
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    queue.cancel(first.id)
+    for (const done of pending.splice(0)) done()
+    await new Promise((r) => setTimeout(r, 50))
+    expect(mockRegistry.executedPrompts).not.toContain('Cancelada')
+    expect(db.getTask(first.id)?.status).toBe('cancelled')
+  })
+
+  it('no canal, o resultado do participante volta ao dono sem esgotar a profundidade', async () => {
+    const helper = db.createAgent({
+      name: 'Ajudante',
+      provider: 'codex',
+      model: 'gpt-4o',
+      workspacePath: '/tmp/queue-test',
+    })
+    const ch = queue.collab.createChannel({
+      title: 'C',
+      ownerAgentId: testAgent.id,
+      memberIds: [helper.id],
+    })
+    const ownerThread = ch.members.find((m) => m.agentId === testAgent.id)?.threadId as string
+    const helperThread = ch.members.find((m) => m.agentId === helper.id)?.threadId as string
+    queue.enqueue(helper.id, helperThread, 'faça a etapa 1', 2, {
+      originThreadId: ownerThread,
+      originAgentId: testAgent.id,
+    })
+    await vi.waitFor(() =>
+      expect(db.listTasks(testAgent.id).some((t) => t.threadId === ownerThread)).toBe(true),
+    )
+    const back = db.listTasks(testAgent.id).find((t) => t.threadId === ownerThread)
+    expect(back?.delegationDepth).toBe(2)
+    expect(back?.prompt).toContain('Continue coordenando')
   })
 
   it('deve enfileirar tarefas e manter a ordem FIFO', async () => {
@@ -72,8 +162,7 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
     expect(task2.status).toBe('pending')
     expect(task3.status).toBe('pending')
 
-    // Aguarda o término das execuções encadeadas
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await vi.waitFor(() => expect(db.getTask(task3.id)?.status).toBe('completed'))
 
     expect(mockRegistry.executedPrompts).toEqual(['Tarefa 1', 'Tarefa 2', 'Tarefa 3'])
 
@@ -84,6 +173,14 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
     expect(assistantMsgs[0].text).toContain('Tarefa 1')
     expect(assistantMsgs[1].text).toContain('Tarefa 2')
     expect(assistantMsgs[2].text).toContain('Tarefa 3')
+  })
+
+  it('mantém a pausa após reiniciar o app', () => {
+    queue.pause(testAgent.id)
+    const restarted = new QueueManager(db, mockRegistry as never)
+    expect(restarted.isPaused(testAgent.id)).toBe(true)
+    restarted.resume(testAgent.id)
+    expect(new QueueManager(db, mockRegistry as never).isPaused(testAgent.id)).toBe(false)
   })
 
   it('deve pausar a fila e não processar tarefas subsequentes até retomar', async () => {

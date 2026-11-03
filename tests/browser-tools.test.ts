@@ -5,7 +5,7 @@ import { BrowserManager } from '../src/backend/browser/browser-manager'
 import { BROWSER_TOOLS, executeBrowserTool } from '../src/backend/browser/browser-tools'
 import { MockBrowserDriver } from '../src/backend/browser/driver'
 
-describe('Browser Tools (openbot_browser.*)', () => {
+describe('Browser Tools (orchbot_browser.*)', () => {
   let testDir: string
   let manager: BrowserManager
 
@@ -21,25 +21,25 @@ describe('Browser Tools (openbot_browser.*)', () => {
     }
   })
 
-  it('declara catálogo completo de ferramentas openbot_browser.*', () => {
+  it('declara catálogo completo de ferramentas orchbot_browser.*', () => {
     const names = BROWSER_TOOLS.map((t) => t.name)
-    expect(names).toContain('openbot_browser.open')
-    expect(names).toContain('openbot_browser.inspect')
-    expect(names).toContain('openbot_browser.click')
-    expect(names).toContain('openbot_browser.fill')
-    expect(names).toContain('openbot_browser.screenshot')
-    expect(names).toContain('openbot_browser.close')
+    expect(names).toContain('orchbot_browser.open')
+    expect(names).toContain('orchbot_browser.inspect')
+    expect(names).toContain('orchbot_browser.click')
+    expect(names).toContain('orchbot_browser.fill')
+    expect(names).toContain('orchbot_browser.screenshot')
+    expect(names).toContain('orchbot_browser.close')
   })
 
-  it('executa openbot_browser.open e openbot_browser.inspect', async () => {
-    const openRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.open', {
+  it('executa orchbot_browser.open e orchbot_browser.inspect', async () => {
+    const openRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.open', {
       url: 'https://example.com',
     })) as { id: string; url: string }
 
     expect(openRes.id).toBeDefined()
     expect(openRes.url).toBe('https://example.com/')
 
-    const inspectRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.inspect', {
+    const inspectRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.inspect', {
       tabId: openRes.id,
     })) as { textSummary: string; links: unknown[] }
 
@@ -47,12 +47,12 @@ describe('Browser Tools (openbot_browser.*)', () => {
     expect(inspectRes.links.length).toBeGreaterThan(0)
   })
 
-  it('executa openbot_browser.fill e openbot_browser.click', async () => {
-    const openRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.open', {
+  it('executa orchbot_browser.fill e orchbot_browser.click', async () => {
+    const openRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.open', {
       url: 'https://example.com',
     })) as { id: string }
 
-    const fillRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.fill', {
+    const fillRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.fill', {
       tabId: openRes.id,
       selector: '#search-box',
       value: 'Busca teste',
@@ -60,7 +60,7 @@ describe('Browser Tools (openbot_browser.*)', () => {
 
     expect(fillRes.success).toBe(true)
 
-    const clickRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.click', {
+    const clickRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.click', {
       tabId: openRes.id,
       selector: '#submit-btn',
     })) as { success: boolean }
@@ -68,18 +68,18 @@ describe('Browser Tools (openbot_browser.*)', () => {
     expect(clickRes.success).toBe(true)
   })
 
-  it('executa openbot_browser.screenshot e openbot_browser.close', async () => {
-    const openRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.open', {
+  it('executa orchbot_browser.screenshot e orchbot_browser.close', async () => {
+    const openRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.open', {
       url: 'https://example.com',
     })) as { id: string }
 
-    const shotRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.screenshot', {
+    const shotRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.screenshot', {
       tabId: openRes.id,
     })) as { screenshotAvailable: boolean }
 
     expect(shotRes.screenshotAvailable).toBe(true)
 
-    const closeRes = (await executeBrowserTool(manager, 'agent-1', 'openbot_browser.close', {
+    const closeRes = (await executeBrowserTool(manager, 'agent-1', 'orchbot_browser.close', {
       tabId: openRes.id,
     })) as { success: boolean }
 

@@ -1,13 +1,26 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { describeCron } from '../../backend/cron/cron-parser'
+import { CUSTOM_PROVIDER_PRESETS, isCustomProvider } from '../../shared/custom-providers'
+import { providerStatusLabel } from '../../shared/provider-status'
 import type {
   Agent,
+  AgentDraft,
+  AgentMemory,
+  AgentRole,
+  AppSettings,
   AutonomyLevel,
   BrowserPageContent,
   BrowserTab,
+  ComputerUseStatus,
+  ContextMode,
   Message,
+  ProfileStats,
+  Project,
+  ProviderAccount,
   ProviderConnection,
+  ProviderEffort,
   ProviderInfo,
+  ProviderUpdateInfo,
   ScheduledTask,
   ScheduledTaskType,
   SearchResultGroup,
@@ -18,23 +31,434 @@ import type {
   Thread,
   WorkspaceRulesInfo,
 } from '../../shared/types'
+import { DEFAULT_APP_SETTINGS, effectiveCapabilities } from '../../shared/types'
+import { Channels } from './Channels'
+import {
+  ConsentGate,
+  DistributionSettings,
+  LocalRuntimes,
+  ManagedCliControls,
+  ThemeApplier,
+} from './Distribution'
+import { ProviderAccounts } from './ProviderAccounts'
+import { SkillsPlugins } from './SkillsPlugins'
+
+export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
+  codex: 'gpt-6.1-sol',
+  claude: 'claude-sonnet-5-5',
+  grok: 'grok-4.7',
+  gemini: 'gemini-3.8-flash',
+  muse: 'muse-spark-1.3',
+  antigravity: 'gemini-3.8-flash',
+  opencode: 'opencode-go/muse-spark-1.3-contributor',
+  copilot: 'auto',
+  pi: 'claude-sonnet-5-5',
+  kimi: 'kimi-k2',
+  acp: 'auto',
+}
+
+export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
+  codex: '🟢',
+  claude: '🟣',
+  grok: '⚡',
+  gemini: '🔷',
+  muse: '✨',
+  antigravity: '🪐',
+  opencode: '🧩',
+  copilot: '🐙',
+  pi: '🥧',
+  kimi: '🌙',
+  acp: '🔌',
+}
+
+const LOGO_COLORS = [
+  '#e7a3a8',
+  '#e0a36a',
+  '#e6d36a',
+  '#8fce8a',
+  '#7eb0e8',
+  '#b7a4e8',
+  '#e7a8c4',
+  '#e6d2c4',
+  '#b0b0b6',
+  '#f4f4f5',
+]
+
+const AGENT_COLORS = ['#e0a36a', '#7eb0e8', '#b7a4e8', '#e6d36a', '#e7a8c4', '#8fce8a']
+
+const agentColor = (name: string) => {
+  let hash = 0
+  for (let i = 0; i < name.length; i++)
+    hash = (hash + name.charCodeAt(i) * (i + 1)) % AGENT_COLORS.length
+  return AGENT_COLORS[hash] ?? '#7eb0e8'
+}
+
+type SettingsPaneId = 'geral' | 'agents' | 'perfil' | 'computer' | 'permissoes'
+
+const SETTINGS_PANES: { id: SettingsPaneId; label: string; hint: string }[] = [
+  {
+    id: 'geral',
+    label: 'Geral',
+    hint: 'aparência tema idioma tamanho logotipo conversas atalho etapas links comportamento iniciar conexão segundo plano restaurar',
+  },
+  {
+    id: 'agents',
+    label: 'Agentes',
+    hint: 'scripts chats plano orientar padrões esforço fila',
+  },
+  {
+    id: 'perfil',
+    label: 'Perfil',
+    hint: 'nome e-mail conta tokens mensagens atividade',
+  },
+  {
+    id: 'computer',
+    label: 'Uso do computador',
+    hint: 'screenshot teclado janelas sessão',
+  },
+  {
+    id: 'permissoes',
+    label: 'Permissões',
+    hint: 'análises analytics compartilhar',
+  },
+]
+
+const RailIcon: Component<{
+  name: 'chat' | 'link' | 'channels' | 'skills' | 'sun' | 'moon' | 'gear' | 'close' | 'search'
+}> = (props) => (
+  <svg
+    class="rail-icon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <Show when={props.name === 'chat'}>
+      <path d="M5 6h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z" />
+    </Show>
+    <Show when={props.name === 'skills'}>
+      <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
+      <rect x="7" y="7" width="10" height="10" rx="2" />
+    </Show>
+    <Show when={props.name === 'channels'}>
+      <path d="M9 4 7 20M17 4l-2 16M4.5 9h16M3.5 15h16" />
+    </Show>
+    <Show when={props.name === 'link'}>
+      <path d="M10 13a5 5 0 0 0 7.07.07l1.42-1.42a5 5 0 0 0-7.07-7.07L10.2 5.8" />
+      <path d="M14 11a5 5 0 0 0-7.07-.07L5.5 12.35a5 5 0 0 0 7.07 7.07l1.22-1.22" />
+    </Show>
+    <Show when={props.name === 'sun'}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5" />
+    </Show>
+    <Show when={props.name === 'moon'}>
+      <path d="M16 13.2A6.2 6.2 0 0 1 10.8 5 6.4 6.4 0 1 0 16 13.2z" />
+    </Show>
+    <Show when={props.name === 'gear'}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3.5v2.2M12 18.3V20.5M3.5 12h2.2M18.3 12h2.2M6.1 6.1l1.6 1.6M16.3 16.3l1.6 1.6M17.9 6.1l-1.6 1.6M7.7 16.3l-1.6 1.6" />
+    </Show>
+    <Show when={props.name === 'close'}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </Show>
+    <Show when={props.name === 'search'}>
+      <circle cx="11" cy="11" r="6" />
+      <path d="M20 20l-3.5-3.5" />
+    </Show>
+  </svg>
+)
+
+const SettingsGlyph: Component<{ id: SettingsPaneId }> = (props) => (
+  <svg
+    class="settings-glyph"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.8"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <Show when={props.id === 'geral'}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 4v2M12 18v2M4 12h2M18 12h2M6.3 6.3l1.4 1.4M16.3 16.3l1.4 1.4M17.7 6.3l-1.4 1.4M7.7 16.3l-1.4 1.4" />
+    </Show>
+    <Show when={props.id === 'agents'}>
+      <path d="M8 13a3 3 0 1 0-3-3 3 3 0 0 0 3 3zM16.5 12.5a2.5 2.5 0 1 0-2.5-2.5 2.5 2.5 0 0 0 2.5 2.5z" />
+      <path d="M3.5 19a4.5 4.5 0 0 1 9 0M13 19a4 4 0 0 1 7.5-1.5" />
+    </Show>
+    <Show when={props.id === 'perfil'}>
+      <circle cx="12" cy="8.5" r="3" />
+      <path d="M5.5 19a6.5 6.5 0 0 1 13 0" />
+    </Show>
+    <Show when={props.id === 'computer'}>
+      <rect x="4" y="5" width="16" height="11" rx="1.5" />
+      <path d="M9 19.5h6M12 16v3.5" />
+    </Show>
+    <Show when={props.id === 'permissoes'}>
+      <path d="M12 3.5 6 6v5.2c0 3.6 2.4 6.2 6 7.8 3.6-1.6 6-4.2 6-7.8V6z" />
+    </Show>
+  </svg>
+)
+
+const Switch: Component<{ pressed: boolean; label: string; onChange: () => void }> = (props) => (
+  <button
+    type="button"
+    class="switch"
+    classList={{ on: props.pressed }}
+    role="switch"
+    aria-checked={props.pressed}
+    aria-label={props.label}
+    onClick={() => props.onChange()}
+  >
+    <span class="switch-knob" />
+  </button>
+)
 
 export const App: Component = () => {
   // Seção ativa principal da aplicação: inicia por padrão na tela de conexões/provedores
-  const [activeSection, setActiveSection] = createSignal<'agents' | 'connections'>('connections')
+  const [activeSection, setActiveSection] = createSignal<
+    'agents' | 'connections' | 'settings' | 'profile' | 'channels' | 'skills'
+  >('connections')
+  const [profileStats, setProfileStats] = createSignal<ProfileStats | null>(null)
+  const [providerUpdates, setProviderUpdates] = createSignal<ProviderUpdateInfo[]>([])
+  const [updatingProvider, setUpdatingProvider] = createSignal<string | null>(null)
+  const [updateMessage, setUpdateMessage] = createSignal<Record<string, string>>({})
+
+  const loadProviderUpdates = async () => {
+    try {
+      if (window.orchbot) setProviderUpdates(await window.orchbot.getProviderUpdates())
+    } catch (err) {
+      console.error('Erro ao verificar atualizações:', err)
+    }
+  }
+
+  const [computerStatus, setComputerStatus] = createSignal<ComputerUseStatus | null>(null)
+  const loadComputerStatus = async () => {
+    try {
+      if (window.orchbot) setComputerStatus(await window.orchbot.getComputerUseStatus())
+    } catch {
+      // Status é informativo
+    }
+  }
+
+  const visibleUpdates = () =>
+    providerUpdates().filter(
+      (u) =>
+        u.updateAvailable &&
+        u.latestVersion &&
+        settings().dismissedProviderUpdates[u.providerId] !== u.latestVersion,
+    )
+
+  const handleRunUpdate = async (providerId: SupportedProvider) => {
+    if (!window.orchbot) return
+    setUpdatingProvider(providerId)
+    try {
+      const res = await window.orchbot.runProviderUpdate(providerId)
+      setUpdateMessage((prev) => ({ ...prev, [providerId]: res.message }))
+      await loadConnections()
+      await loadProviderUpdates()
+    } catch (err: unknown) {
+      setUpdateMessage((prev) => ({
+        ...prev,
+        [providerId]: err instanceof Error ? err.message : String(err),
+      }))
+    } finally {
+      setUpdatingProvider(null)
+    }
+  }
+
+  const handleDismissUpdate = (u: ProviderUpdateInfo) => {
+    if (!u.latestVersion) return
+    void updateSettings({
+      dismissedProviderUpdates: {
+        ...settings().dismissedProviderUpdates,
+        [u.providerId]: u.latestVersion,
+      },
+    })
+  }
+
+  const loadProfileStats = async () => {
+    try {
+      if (window.orchbot) setProfileStats(await window.orchbot.getProfileStats())
+    } catch (err) {
+      console.error('Erro ao carregar perfil:', err)
+    }
+  }
+
+  const formatCompact = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2).replace('.', ',')} mi`
+    if (n >= 1_000) return `${(n / 1_000).toFixed(2).replace('.', ',')} mil`
+    return String(n)
+  }
+  const formatDatePt = (iso: string) =>
+    new Date(`${iso.slice(0, 10)}T12:00:00`).toLocaleDateString('pt-BR', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    })
+  const formatShortDate = (iso: string) => {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return ''
+    return date.toLocaleDateString('pt-BR', { day: 'numeric', month: 'short' })
+  }
+  const initialsOf = (name: string) => {
+    const words = name.split(/\s+/).filter(Boolean)
+    if (words.length >= 2) return `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}`.toUpperCase()
+    return (name.trim().slice(0, 2) || 'JO').toUpperCase()
+  }
+
+  // Configurações do app (Configurações ⚙) persistidas no banco
+  const [settings, setSettings] = createSignal<AppSettings>({ ...DEFAULT_APP_SETTINGS })
+  const [sectionBeforeSettings, setSectionBeforeSettings] = createSignal<'agents' | 'connections'>(
+    'agents',
+  )
+  const [settingsPane, setSettingsPane] = createSignal<SettingsPaneId>('geral')
+  const [settingsQuery, setSettingsQuery] = createSignal('')
+  const [listQuery, setListQuery] = createSignal('')
+  const [systemDark, setSystemDark] = createSignal(
+    typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : true,
+  )
+  const effectiveTheme = () =>
+    settings().theme === 'system' ? (systemDark() ? 'dark' : 'light') : settings().theme
+
+  createEffect(() => {
+    document.documentElement.dataset.theme = effectiveTheme()
+    document.documentElement.style.setProperty('--logo-bg', settings().logoColor)
+  })
+
+  const loadSettings = async () => {
+    try {
+      if (window.orchbot) setSettings(await window.orchbot.getSettings())
+    } catch (err) {
+      console.error('Erro ao carregar configurações:', err)
+    }
+  }
+
+  const updateSettings = async (patch: Partial<AppSettings>) => {
+    setSettings((prev) => ({ ...prev, ...patch }))
+    try {
+      if (window.orchbot) setSettings(await window.orchbot.updateSettings(patch))
+    } catch (err) {
+      console.error('Erro ao salvar configurações:', err)
+    }
+  }
+
+  const openSettings = () => {
+    const current = activeSection()
+    if (current === 'agents' || current === 'connections') setSectionBeforeSettings(current)
+    setActiveSection('settings')
+    void loadComputerStatus()
+  }
+
+  const closeSettings = () => {
+    setSettingsQuery('')
+    setActiveSection(sectionBeforeSettings())
+  }
+
+  const settingsQueryNorm = () => settingsQuery().trim().toLowerCase()
+  const visibleSettingsPanes = () => {
+    const query = settingsQueryNorm()
+    if (!query) return SETTINGS_PANES
+    return SETTINGS_PANES.filter(
+      (pane) => pane.label.toLowerCase().includes(query) || pane.hint.includes(query),
+    )
+  }
+  const currentSettingsPane = () =>
+    visibleSettingsPanes().find((pane) => pane.id === settingsPane()) ?? visibleSettingsPanes()[0]
+
+  const selectSettingsPane = (id: SettingsPaneId) => {
+    setSettingsPane(id)
+    if (id === 'perfil') void loadProfileStats()
+    if (id === 'computer') void loadComputerStatus()
+  }
+
+  createEffect(() => {
+    const panes = visibleSettingsPanes()
+    if (panes.length === 0) return
+    if (!panes.some((pane) => pane.id === settingsPane())) {
+      const first = panes[0]
+      if (first) setSettingsPane(first.id)
+    }
+  })
+
+  const visibleMessages = () =>
+    settings().showAgentSteps ? messages() : messages().filter((m) => m.role !== 'system')
 
   // Conexões e Provedores signals
   const [connections, setConnections] = createSignal<ProviderConnection[]>([])
+  const [providerAccounts, setProviderAccounts] = createSignal<Record<string, ProviderAccount[]>>(
+    {},
+  )
+  const [accountsProvider, setAccountsProvider] = createSignal<SupportedProvider | null>(null)
+  const accountsConnection = () =>
+    connections().find((connection) => connection.providerId === accountsProvider())
   const [connectionDrafts, setConnectionDrafts] = createSignal<
     Record<
       string,
       {
+        name?: string
         apiKey?: string
         endpoint?: string
         defaultModel?: string
+        cliPath?: string
+        cliArgs?: string
+        apiKeyEnv?: string
+        effort?: ProviderEffort
       }
     >
   >({})
+  const [showCustomProvider, setShowCustomProvider] = createSignal(false)
+  const [customPreset, setCustomPreset] =
+    createSignal<keyof typeof CUSTOM_PROVIDER_PRESETS>('custom')
+  const [customForm, setCustomForm] = createSignal({
+    ...CUSTOM_PROVIDER_PRESETS.custom,
+    apiKey: '',
+  })
+  const [creatingProvider, setCreatingProvider] = createSignal(false)
+  const [customProviderError, setCustomProviderError] = createSignal('')
+  const closeCustomProvider = () => {
+    setShowCustomProvider(false)
+    setCustomForm({ ...CUSTOM_PROVIDER_PRESETS.custom, apiKey: '' })
+    setCustomPreset('custom')
+    setCustomProviderError('')
+  }
+  const handleCreateCustomProvider = async () => {
+    if (!window.orchbot) return
+    setCreatingProvider(true)
+    setCustomProviderError('')
+    try {
+      await window.orchbot.createCustomProvider(customForm())
+      closeCustomProvider()
+      await loadConnections()
+      await loadProviderStatuses()
+    } catch (error) {
+      setCustomProviderError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCreatingProvider(false)
+    }
+  }
+  const handleDeleteCustomProvider = async (conn: ProviderConnection) => {
+    if (!window.orchbot || !isCustomProvider(conn.providerId)) return
+    if (!confirm(`Remover o provedor "${conn.name}" e sua chave salva?`)) return
+    try {
+      await window.orchbot.deleteCustomProvider(conn.providerId)
+      setConfigProviderId(null)
+      await loadConnections()
+      await loadProviderStatuses()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const [configProviderId, setConfigProviderId] = createSignal<SupportedProvider | null>(null)
+  const [discoveredModels, setDiscoveredModels] = createSignal<Record<string, string[]>>({})
+  const [discoveringProvider, setDiscoveringProvider] = createSignal<string | null>(null)
+  const [discoverMessage, setDiscoverMessage] = createSignal<Record<string, string>>({})
   const [showApiKeys, setShowApiKeys] = createSignal<Record<string, boolean>>({})
   const [testingConnection, setTestingConnection] = createSignal<string | null>(null)
   const [testResults, setTestResults] = createSignal<
@@ -43,6 +467,11 @@ export const App: Component = () => {
   const [savingConnection, setSavingConnection] = createSignal<string | null>(null)
   const [saveMessage, setSaveMessage] = createSignal<Record<string, string>>({})
 
+  const [projects, setProjects] = createSignal<Project[]>([])
+  const [showProjectModal, setShowProjectModal] = createSignal(false)
+  const [projectFormName, setProjectFormName] = createSignal('')
+  const [projectFormDescription, setProjectFormDescription] = createSignal('')
+  const [projectFormPath, setProjectFormPath] = createSignal('')
   const [agents, setAgents] = createSignal<Agent[]>([])
   const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(null)
   const [agentThreads, setAgentThreads] = createSignal<Thread[]>([])
@@ -98,6 +527,25 @@ export const App: Component = () => {
   // Regras do Projeto (ORCHBOT.md / AGENTS.md) e RAG FTS5 signals
   const [workspaceRules, setWorkspaceRules] = createSignal<WorkspaceRulesInfo | null>(null)
   const [showRulesModal, setShowRulesModal] = createSignal(false)
+  const [showMemoryModal, setShowMemoryModal] = createSignal(false)
+  const [memories, setMemories] = createSignal<AgentMemory[]>([])
+  const [newMemory, setNewMemory] = createSignal('')
+  const [contextUsage, setContextUsage] = createSignal<{
+    tokens: number
+    window: number
+    compacted: boolean
+    measured: boolean
+  } | null>(null)
+  const refreshMemories = async (agentId: string) =>
+    setMemories((await window.orchbot?.listMemories(agentId)) ?? [])
+  // Medidor de contexto: atualiza ao trocar de conversa e após cada turno.
+  createEffect(() => {
+    const agentId = selectedAgentId()
+    const thread = activeThread()
+    messages() // dependência: recalcula quando chegam mensagens
+    if (!agentId || !thread || !window.orchbot) return setContextUsage(null)
+    void window.orchbot.getContextUsage(agentId, thread.id).then(setContextUsage)
+  })
   const [showSearchModal, setShowSearchModal] = createSignal(false)
   const [searchQuery, setSearchQuery] = createSignal('')
   const [searchResults, setSearchResults] = createSignal<SearchResultGroup | null>(null)
@@ -121,9 +569,88 @@ export const App: Component = () => {
   // Form signals
   const [name, setName] = createSignal('')
   const [provider, setProvider] = createSignal<SupportedProvider>('codex')
+  const [newAccountId, setNewAccountId] = createSignal('')
+  createEffect(() => {
+    provider()
+    setNewAccountId('')
+  })
   const [model, setModel] = createSignal('gpt-4o')
   const [workspacePath, setWorkspacePath] = createSignal('/home/joao/Documents/Orchbot')
   const [instructions, setInstructions] = createSignal('')
+  const [description, setDescription] = createSignal('')
+  const [agentRole, setAgentRole] = createSignal<AgentRole>('worker')
+  const [newAvatar, setNewAvatar] = createSignal('')
+  const [aiPrompt, setAiPrompt] = createSignal('')
+  const [drafting, setDrafting] = createSignal(false)
+  const [draftNote, setDraftNote] = createSignal('')
+  // Edição por IA: o rascunho fica editável e só grava quando o usuário confirma.
+  const [showAiEdit, setShowAiEdit] = createSignal(false)
+  const [aiEditPrompt, setAiEditPrompt] = createSignal('')
+  const [editDraft, setEditDraft] = createSignal<AgentDraft | null>(null)
+  const [aiEditError, setAiEditError] = createSignal('')
+  const runDraft = async (prompt: string, baseAgentId?: string) => {
+    setDrafting(true)
+    try {
+      return await window.orchbot.draftAgent(prompt, baseAgentId)
+    } finally {
+      setDrafting(false)
+    }
+  }
+  const draftForCreate = async () => {
+    setDraftNote('')
+    try {
+      const draft = await runDraft(aiPrompt())
+      setName(draft.name)
+      setDescription(draft.description)
+      setAgentRole(draft.role)
+      setNewAvatar(draft.avatar)
+      setInstructions(draft.instructions)
+      setDraftNote(
+        draft.source === 'model'
+          ? 'Rascunho gerado. Revise os campos abaixo antes de criar.'
+          : 'Nenhum provedor respondeu: montei um rascunho simples offline. Revise e ajuste.',
+      )
+    } catch (err) {
+      setDraftNote(err instanceof Error ? err.message : String(err))
+    }
+  }
+  const draftForEdit = async (agentId: string) => {
+    setAiEditError('')
+    try {
+      setEditDraft(await runDraft(aiEditPrompt(), agentId))
+    } catch (err) {
+      setAiEditError(err instanceof Error ? err.message : String(err))
+    }
+  }
+  const saveEditDraft = async (agentId: string) => {
+    const draft = editDraft()
+    if (!draft) return
+    try {
+      const updated = await window.orchbot.updateAgent({
+        id: agentId,
+        name: draft.name,
+        description: draft.description,
+        role: draft.role,
+        avatar: draft.avatar,
+        instructions: draft.instructions,
+      })
+      setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      setShowAiEdit(false)
+      setEditDraft(null)
+      setAiEditPrompt('')
+    } catch (err) {
+      setAiEditError(err instanceof Error ? err.message : String(err))
+    }
+  }
+  const [agentProjectId, setAgentProjectId] = createSignal('')
+  const [agentEffort, setAgentEffort] = createSignal<ProviderEffort | ''>('')
+  const [capLocalScripts, setCapLocalScripts] = createSignal('')
+  const [capStartsChats, setCapStartsChats] = createSignal('')
+  const [capShowPlan, setCapShowPlan] = createSignal('')
+  const [capSteer, setCapSteer] = createSignal('')
+  const [capComputer, setCapComputer] = createSignal('')
+  const [agentContextMode, setAgentContextMode] = createSignal<ContextMode>('padrao')
+  const [agentBrowserAccess, setAgentBrowserAccess] = createSignal(true)
   const [autonomyLevel, setAutonomyLevel] = createSignal<AutonomyLevel>('autonomous')
 
   let messagesEndRef: HTMLDivElement | undefined
@@ -152,6 +679,121 @@ export const App: Component = () => {
     }
   }
 
+  const loadProjects = async () => {
+    try {
+      if (window.orchbot) {
+        setProjects(await window.orchbot.getProjects())
+      }
+    } catch (err) {
+      console.error('Erro ao carregar projetos:', err)
+    }
+  }
+
+  const handleCreateProject = async (e: Event) => {
+    e.preventDefault()
+    if (!window.orchbot || !projectFormName().trim()) return
+    try {
+      const project = await window.orchbot.createProject({
+        name: projectFormName().trim(),
+        description: projectFormDescription().trim() || undefined,
+        workspacePath: projectFormPath().trim() || undefined,
+        createFolder: true,
+      })
+      await loadProjects()
+      setAgentProjectId(project.id)
+      if (project.workspacePath) setWorkspacePath(project.workspacePath)
+      setShowProjectModal(false)
+      setProjectFormName('')
+      setProjectFormDescription('')
+      setProjectFormPath('')
+    } catch (err: unknown) {
+      alert(`Erro ao criar projeto: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleDeleteProject = async (project: Project) => {
+    if (!window.orchbot) return
+    if (!confirm(`Remover o projeto "${project.name}"? Os robôs dele ficam sem projeto.`)) return
+    try {
+      await window.orchbot.deleteProject(project.id)
+      await loadProjects()
+      await loadAgents()
+    } catch (err: unknown) {
+      alert(`Erro ao remover projeto: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const projectOf = (agent: Agent) =>
+    agent.projectId ? (projects().find((proj) => proj.id === agent.projectId) ?? null) : null
+
+  const agentMatchesQuery = (agent: Agent) => {
+    const query = listQuery().trim().toLowerCase()
+    if (!query) return true
+    return (
+      agent.name.toLowerCase().includes(query) ||
+      (agent.description ?? '').toLowerCase().includes(query) ||
+      agent.workspacePath.toLowerCase().includes(query) ||
+      agent.provider.toLowerCase().includes(query)
+    )
+  }
+  const agentsOfProject = (projectId: string | null) =>
+    agents().filter((a) => (a.projectId ?? null) === projectId && agentMatchesQuery(a))
+
+  const handleSwitchEffort = async (agentId: string, effort: ProviderEffort | '') => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({
+          id: agentId,
+          effort: effort === '' ? null : effort,
+        })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar esforço: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSwitchRole = async (agentId: string, role: AgentRole) => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({ id: agentId, role })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar tipo: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSwitchContextMode = async (agentId: string, mode: ContextMode) => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({ id: agentId, contextMode: mode })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar contexto: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSwitchBrowserAccess = async (agentId: string, enabled: boolean) => {
+    try {
+      if (window.orchbot) {
+        const updated = await window.orchbot.updateAgent({ id: agentId, browserAccess: enabled })
+        setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
+      }
+    } catch (err: unknown) {
+      alert(`Erro ao trocar navegador: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const teamOf = (agent: Agent) =>
+    agents().filter(
+      (a) =>
+        a.id !== agent.id &&
+        a.role !== 'orchestrator' &&
+        (!agent.projectId || a.projectId === agent.projectId),
+    )
+
   const loadProviderStatuses = async () => {
     try {
       if (window.orchbot) {
@@ -168,15 +810,38 @@ export const App: Component = () => {
       if (window.orchbot) {
         const list = await window.orchbot.getConnections()
         setConnections(list)
+        const accountLists = await Promise.all(
+          list.map(
+            async (connection) =>
+              [
+                connection.providerId,
+                await window.orchbot.getProviderAccounts(connection.providerId),
+              ] as const,
+          ),
+        )
+        setProviderAccounts(Object.fromEntries(accountLists))
         const drafts: Record<
           string,
-          { apiKey?: string; endpoint?: string; defaultModel?: string }
+          {
+            name?: string
+            apiKey?: string
+            endpoint?: string
+            defaultModel?: string
+            cliPath?: string
+            cliArgs?: string
+            apiKeyEnv?: string
+            effort?: ProviderEffort
+          }
         > = {}
         for (const c of list) {
           drafts[c.providerId] = {
-            apiKey: c.apiKey || '',
+            name: c.name,
             endpoint: c.endpoint || '',
             defaultModel: c.defaultModel,
+            cliPath: c.cliPath || '',
+            cliArgs: JSON.stringify(c.cliArgs ?? []),
+            apiKeyEnv: c.apiKeyEnv || '',
+            effort: c.effort,
           }
         }
         setConnectionDrafts(drafts)
@@ -373,7 +1038,61 @@ export const App: Component = () => {
   }
 
   onMount(() => {
-    loadAgents()
+    void loadSettings()
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)')
+    const onMq = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mq?.addEventListener?.('change', onMq)
+    onCleanup(() => mq?.removeEventListener?.('change', onMq))
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || activeSection() !== 'settings') return
+      const target = event.target
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+      ) {
+        return
+      }
+      if (
+        showModal() ||
+        showProjectModal() ||
+        showRulesModal() ||
+        showSearchModal() ||
+        showCronModal() ||
+        showDelegationModal() ||
+        showCustomProvider() ||
+        accountsProvider()
+      ) {
+        return
+      }
+      closeSettings()
+    }
+    window.addEventListener('keydown', onKey)
+    onCleanup(() => window.removeEventListener('keydown', onKey))
+
+    const offLink = window.orchbot?.onDeepLink((link) => {
+      if (link.kind === 'agent') {
+        setActiveSection('agents')
+        setSelectedAgentId(link.id)
+      } else if (link.kind === 'channel') setActiveSection('channels')
+      else if (link.kind === 'section') setActiveSection(link.name)
+      else if (link.kind === 'new-agent') setShowModal(true)
+    })
+    if (offLink) onCleanup(offLink)
+
+    void (async () => {
+      await loadSettings()
+      await loadProfileStats()
+      void loadProviderUpdates()
+      void loadComputerStatus()
+      await loadAgents()
+      // Restaurar o último espaço de trabalho ao iniciar
+      const s = settings()
+      if (s.restoreWorkspace && s.lastAgentId && agents().some((a) => a.id === s.lastAgentId)) {
+        setSelectedAgentId(s.lastAgentId)
+      }
+    })()
+    loadProjects()
     loadConnections()
     loadProviderStatuses()
     loadSystemStatus()
@@ -456,6 +1175,15 @@ export const App: Component = () => {
     })
   })
 
+  createEffect(() => {
+    const id = selectedAgentId()
+    const threadId = activeThread()?.id
+    const current = settings()
+    if (!id || !current.restoreWorkspace) return
+    if (current.lastAgentId === id && current.lastThreadId === threadId) return
+    void updateSettings({ lastAgentId: id, lastThreadId: threadId })
+  })
+
   // Efeito quando troca de agente selecionado
   createEffect(() => {
     const id = selectedAgentId()
@@ -502,11 +1230,7 @@ export const App: Component = () => {
     if (conn) {
       setModel(conn.defaultModel)
     } else {
-      if (p === 'codex') setModel('gpt-6.1-sol')
-      else if (p === 'claude') setModel('claude-sonnet-5-5')
-      else if (p === 'grok') setModel('grok-7')
-      else if (p === 'gemini') setModel('gemini-3.8-flash')
-      else if (p === 'muse') setModel('muse-spark-1.3')
+      setModel(DEFAULT_PROVIDER_MODELS[p] ?? '')
     }
   }
 
@@ -532,10 +1256,15 @@ export const App: Component = () => {
       if (window.orchbot) {
         await window.orchbot.updateConnection({
           providerId: conn.providerId,
+          name: draft.name ?? conn.name,
           enabled: conn.enabled,
-          apiKey: draft.apiKey !== undefined ? draft.apiKey : conn.apiKey,
+          apiKey: draft.apiKey,
           endpoint: draft.endpoint !== undefined ? draft.endpoint : conn.endpoint,
           defaultModel: draft.defaultModel !== undefined ? draft.defaultModel : conn.defaultModel,
+          cliPath: draft.cliPath !== undefined ? draft.cliPath : conn.cliPath,
+          cliArgs: draft.cliArgs !== undefined ? JSON.parse(draft.cliArgs || '[]') : conn.cliArgs,
+          apiKeyEnv: draft.apiKeyEnv !== undefined ? draft.apiKeyEnv : conn.apiKeyEnv,
+          effort: draft.effort !== undefined ? draft.effort : conn.effort,
         })
         await loadConnections()
         await loadProviderStatuses()
@@ -550,9 +1279,12 @@ export const App: Component = () => {
             return next
           })
         }, 3000)
+        return true
       }
+      return false
     } catch (err: unknown) {
       alert(`Erro ao salvar configurações: ${err instanceof Error ? err.message : String(err)}`)
+      return false
     } finally {
       setSavingConnection(null)
     }
@@ -564,7 +1296,12 @@ export const App: Component = () => {
       if (window.orchbot) {
         const res = await window.orchbot.testConnection(providerId)
         setTestResults((prev) => ({ ...prev, [providerId]: res }))
-        await loadProviderStatuses()
+        if (res.status)
+          setConnections((prev) =>
+            prev.map((connection) =>
+              connection.providerId === providerId ? { ...connection, ...res.status } : connection,
+            ),
+          )
       }
     } catch (err: unknown) {
       setTestResults((prev) => ({
@@ -586,9 +1323,45 @@ export const App: Component = () => {
     }))
   }
 
+  const openProviderConfig = (providerId: SupportedProvider) => {
+    setActiveSection('connections')
+    loadConnections()
+    setConfigProviderId(providerId)
+  }
+
+  const handleDiscoverModels = async (providerId: SupportedProvider) => {
+    if (!window.orchbot) return
+    setDiscoveringProvider(providerId)
+    try {
+      const res = await window.orchbot.discoverModels(providerId)
+      setDiscoveredModels((prev) => ({ ...prev, [providerId]: res.models }))
+      setDiscoverMessage((prev) => ({ ...prev, [providerId]: res.message }))
+    } catch (err: unknown) {
+      setDiscoverMessage((prev) => ({
+        ...prev,
+        [providerId]: err instanceof Error ? err.message : String(err),
+      }))
+    } finally {
+      setDiscoveringProvider(null)
+    }
+  }
+
+  const configConnection = () => {
+    const id = configProviderId()
+    return id ? (connections().find((c) => c.providerId === id) ?? null) : null
+  }
+
   const updateDraftField = (
     providerId: string,
-    field: 'apiKey' | 'endpoint' | 'defaultModel',
+    field:
+      | 'name'
+      | 'apiKey'
+      | 'endpoint'
+      | 'defaultModel'
+      | 'cliPath'
+      | 'cliArgs'
+      | 'apiKeyEnv'
+      | 'effort',
     value: string,
   ) => {
     setConnectionDrafts((prev) => ({
@@ -603,17 +1376,7 @@ export const App: Component = () => {
   const handleSwitchProviderMidChat = async (agentId: string, newProvider: SupportedProvider) => {
     try {
       const conn = connections().find((c) => c.providerId === newProvider)
-      const newModel =
-        conn?.defaultModel ||
-        (newProvider === 'codex'
-          ? 'gpt-6.1-sol'
-          : newProvider === 'claude'
-            ? 'claude-sonnet-5-5'
-            : newProvider === 'grok'
-              ? 'grok-7'
-              : newProvider === 'gemini'
-                ? 'gemini-3.8-flash'
-                : 'muse-spark-1.3')
+      const newModel = conn?.defaultModel || DEFAULT_PROVIDER_MODELS[newProvider] || ''
 
       if (window.orchbot) {
         const updated = await window.orchbot.updateAgent({
@@ -625,6 +1388,18 @@ export const App: Component = () => {
       }
     } catch (err: unknown) {
       alert(`Erro ao trocar provedor: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSwitchAccount = async (agentId: string, accountId: string) => {
+    try {
+      const updated = await window.orchbot.updateAgent({
+        id: agentId,
+        accountId: accountId || null,
+      })
+      setAgents((previous) => previous.map((item) => (item.id === agentId ? updated : item)))
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -670,8 +1445,25 @@ export const App: Component = () => {
 
       const newAgent = await window.orchbot.createAgent({
         name: name(),
+        avatar: newAvatar() || undefined,
+        role: agentRole(),
+        description: description().trim() || undefined,
+        projectId: agentProjectId() || undefined,
         provider: provider(),
+        accountId: newAccountId() || undefined,
         model: model(),
+        effort: agentEffort() || undefined,
+        contextMode: agentContextMode(),
+        browserAccess: agentBrowserAccess(),
+        localScripts:
+          capLocalScripts() === 'on' ? true : capLocalScripts() === 'off' ? false : undefined,
+        startsNewChats:
+          capStartsChats() === 'on' ? true : capStartsChats() === 'off' ? false : undefined,
+        showPlanBeforeLongTasks:
+          capShowPlan() === 'on' ? true : capShowPlan() === 'off' ? false : undefined,
+        steerMode:
+          capSteer() === 'imediato' ? 'imediato' : capSteer() === 'fila' ? 'fila' : undefined,
+        computerUse: capComputer() === 'on' ? true : capComputer() === 'off' ? false : undefined,
         workspacePath: workspacePath(),
         instructions: instructions(),
         autonomyLevel: autonomyLevel(),
@@ -683,6 +1475,20 @@ export const App: Component = () => {
 
       // Limpar formulário
       setName('')
+      setNewAvatar('')
+      setAiPrompt('')
+      setDraftNote('')
+      setAgentRole('worker')
+      setDescription('')
+      setAgentProjectId('')
+      setAgentEffort('')
+      setCapLocalScripts('')
+      setCapStartsChats('')
+      setCapShowPlan('')
+      setCapSteer('')
+      setCapComputer('')
+      setAgentContextMode('padrao')
+      setAgentBrowserAccess(true)
       setInstructions('')
       setAutonomyLevel('autonomous')
     } catch (err: unknown) {
@@ -796,6 +1602,23 @@ export const App: Component = () => {
       setDelegationError(err instanceof Error ? err.message : String(err))
     } finally {
       setDelegationLoading(false)
+    }
+  }
+
+  const handleResetCliSession = async () => {
+    const thread = activeThread()
+    if (!thread || !window.orchbot) return
+    if (
+      !confirm(
+        'Iniciar uma nova sessão CLI nesta conversa? As mensagens do Orchbot serão preservadas; a nova sessão receberá um resumo do histórico.',
+      )
+    )
+      return
+    try {
+      await window.orchbot.resetProviderSession(thread.id)
+      setChatError('')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -1080,19 +1903,96 @@ export const App: Component = () => {
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSendMessage(e)
-    }
+    if (e.key !== 'Enter' || e.shiftKey) return
+    if (settings().sendShortcut === 'ctrl-enter' && !(e.ctrlKey || e.metaKey)) return
+    e.preventDefault()
+    handleSendMessage(e)
   }
 
   return (
-    <div class="app-container">
-      {/* Sidebar */}
+    <div
+      class="app-container"
+      classList={{ 'settings-open': activeSection() === 'settings' }}
+      style={{ zoom: settings().uiScale / 100 }}
+    >
+      <ConsentGate />
+      <ThemeApplier
+        customTheme={settings().customTheme}
+        effectiveTheme={effectiveTheme() === 'light' ? 'light' : 'dark'}
+      />
+      <nav class="icon-rail" aria-label="Seções">
+        <div class="rail-logo" style={{ background: settings().logoColor }} aria-hidden="true">
+          O
+        </div>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: activeSection() === 'agents' }}
+          title="Agentes"
+          aria-label="Agentes"
+          onClick={() => setActiveSection('agents')}
+        >
+          <RailIcon name="chat" />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: activeSection() === 'connections' }}
+          title="Conexões"
+          aria-label="Conexões"
+          onClick={() => {
+            setActiveSection('connections')
+            loadConnections()
+            void loadProviderUpdates()
+          }}
+        >
+          <RailIcon name="link" />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: activeSection() === 'channels' }}
+          title="Canais"
+          aria-label="Canais"
+          onClick={() => setActiveSection('channels')}
+        >
+          <RailIcon name="channels" />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: activeSection() === 'skills' }}
+          title="Skills e plugins"
+          aria-label="Skills e plugins"
+          onClick={() => setActiveSection('skills')}
+        >
+          <RailIcon name="skills" />
+        </button>
+        <div class="rail-spacer" />
+        <button
+          type="button"
+          class="rail-btn"
+          onClick={() => updateSettings({ theme: effectiveTheme() === 'dark' ? 'light' : 'dark' })}
+          title={effectiveTheme() === 'dark' ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+          aria-label="Alternar tema"
+        >
+          <RailIcon name={effectiveTheme() === 'dark' ? 'sun' : 'moon'} />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: activeSection() === 'settings' }}
+          title="Configurações"
+          aria-label="Abrir configurações"
+          onClick={openSettings}
+        >
+          <RailIcon name="gear" />
+        </button>
+      </nav>
+
       <aside class="sidebar">
         <div class="sidebar-header">
           <div class="logo-group">
-            <span class="logo-badge">LOCAL-FIRST</span>
             <span class="logo-title">Orchbot</span>
           </div>
           <button
@@ -1105,7 +2005,7 @@ export const App: Component = () => {
                 setModel(enabled[0].defaultModel)
               } else {
                 setProvider('codex')
-                setModel('gpt-4o')
+                setModel(DEFAULT_PROVIDER_MODELS.codex)
               }
               setShowModal(true)
             }}
@@ -1113,35 +2013,32 @@ export const App: Component = () => {
             + Novo
           </button>
         </div>
-
-        {/* Abas de Navegação na Sidebar */}
-        <div class="sidebar-nav">
-          <button
-            type="button"
-            class={`sidebar-nav-btn ${activeSection() === 'agents' ? 'active' : ''}`}
-            onClick={() => setActiveSection('agents')}
-          >
-            <span>🤖 Agentes</span>
-            <span class="nav-badge">{agents().length}</span>
-          </button>
-          <button
-            type="button"
-            class={`sidebar-nav-btn ${activeSection() === 'connections' ? 'active' : ''}`}
-            onClick={() => {
-              setActiveSection('connections')
-              loadConnections()
-            }}
-          >
-            <span>🔌 Conexões</span>
-            <span class="nav-badge">
-              {connections().filter((c) => c.enabled).length}/{connections().length}
-            </span>
-          </button>
-        </div>
+        <label class="list-search">
+          <RailIcon name="search" />
+          <input
+            type="search"
+            placeholder="Buscar"
+            value={listQuery()}
+            onInput={(event) => setListQuery(event.currentTarget.value)}
+            aria-label="Buscar robôs"
+          />
+        </label>
 
         <div class="agent-list">
-          <For
-            each={agents()}
+          <div class="project-list-actions">
+            <span class="project-list-label">Projetos</span>
+            <button
+              type="button"
+              class="btn-outline"
+              style={{ padding: '2px 8px', 'font-size': '11px' }}
+              onClick={() => setShowProjectModal(true)}
+              title="Criar pasta de projeto para organizar robôs"
+            >
+              📁 + Projeto
+            </button>
+          </div>
+          <Show
+            when={agents().length > 0}
             fallback={
               <div
                 style={{
@@ -1151,1485 +2048,2881 @@ export const App: Component = () => {
                   'font-size': '13px',
                 }}
               >
-                Nenhum agente cadastrado ainda.
+                Nenhum robô cadastrado ainda. Crie um projeto e um robô dentro dele.
               </div>
             }
           >
-            {(agent) => (
-              <button
-                type="button"
-                class={`agent-item ${selectedAgentId() === agent.id && activeSection() === 'agents' ? 'active' : ''}`}
-                onClick={() => {
-                  setSelectedAgentId(agent.id)
-                  setActiveSection('agents')
-                }}
-              >
-                <div class="agent-item-top">
-                  <span class="agent-item-name">{agent.name}</span>
-                  <span class={`provider-tag ${agent.provider}`}>{agent.provider}</span>
+            <For each={projects()}>
+              {(project) => (
+                <Show when={!listQuery().trim() || agentsOfProject(project.id).length > 0}>
+                  <div class="project-group">
+                    <div
+                      class="project-group-header"
+                      title={project.description || project.workspacePath || ''}
+                    >
+                      <span class="project-group-name">📁 {project.name}</span>
+                      <span class="nav-badge">{agentsOfProject(project.id).length}</span>
+                      <button
+                        type="button"
+                        class="btn-icon-gear small"
+                        onClick={() => handleDeleteProject(project)}
+                        title={`Remover projeto ${project.name} (robôs ficam sem projeto)`}
+                        aria-label={`Remover projeto ${project.name}`}
+                      >
+                        🗑
+                      </button>
+                    </div>
+                    <For each={agentsOfProject(project.id)}>
+                      {(agent) => (
+                        <button
+                          type="button"
+                          class={`agent-item ${selectedAgentId() === agent.id && activeSection() === 'agents' ? 'active' : ''}`}
+                          onClick={() => {
+                            setSelectedAgentId(agent.id)
+                            setActiveSection('agents')
+                          }}
+                        >
+                          <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
+                            {agent.avatar || initialsOf(agent.name)}
+                          </span>
+                          <span class="agent-item-copy">
+                            <div class="agent-item-top">
+                              <span class="agent-item-name">
+                                {agent.role === 'orchestrator' ? '👑 ' : ''}
+                                {agent.name}
+                              </span>
+                              <span class="agent-item-date">
+                                {formatShortDate(agent.updatedAt)}
+                              </span>
+                            </div>
+                            <div class="agent-item-workspace">
+                              {agent.description || agent.workspacePath}
+                            </div>
+                          </span>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              )}
+            </For>
+            <Show when={agentsOfProject(null).length > 0}>
+              <div class="project-group">
+                <div class="project-group-header">
+                  <span class="project-group-name">🤖 Sem projeto</span>
+                  <span class="nav-badge">{agentsOfProject(null).length}</span>
                 </div>
-                <div class="agent-item-workspace">{agent.workspacePath}</div>
-              </button>
-            )}
-          </For>
+                <For each={agentsOfProject(null)}>
+                  {(agent) => (
+                    <button
+                      type="button"
+                      class={`agent-item ${selectedAgentId() === agent.id && activeSection() === 'agents' ? 'active' : ''}`}
+                      onClick={() => {
+                        setSelectedAgentId(agent.id)
+                        setActiveSection('agents')
+                      }}
+                    >
+                      <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
+                        {agent.avatar || initialsOf(agent.name)}
+                      </span>
+                      <span class="agent-item-copy">
+                        <div class="agent-item-top">
+                          <span class="agent-item-name">
+                            {agent.role === 'orchestrator' ? '👑 ' : ''}
+                            {agent.name}
+                          </span>
+                          <span class="agent-item-date">{formatShortDate(agent.updatedAt)}</span>
+                        </div>
+                        <div class="agent-item-workspace">
+                          {agent.description || agent.workspacePath}
+                        </div>
+                      </span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <Show
+              when={
+                !!listQuery().trim() &&
+                projects().every((project) => agentsOfProject(project.id).length === 0) &&
+                agentsOfProject(null).length === 0
+              }
+            >
+              <div class="list-empty">Nenhum robô encontrado.</div>
+            </Show>
+          </Show>
         </div>
 
         <div class="sidebar-footer">
-          <div
-            style={{
-              display: 'flex',
-              'justify-content': 'space-between',
-              'align-items': 'center',
-              'margin-bottom': '2px',
+          <button
+            type="button"
+            class="footer-link"
+            onClick={() => {
+              setActiveSection('connections')
+              loadConnections()
             }}
+            title={systemStatus()?.dbPath ? `SQLite: ${systemStatus()?.dbPath}` : 'Abrir conexões'}
           >
-            <span style={{ 'font-weight': '600' }}>Provedores de IA:</span>
-            <button
-              type="button"
-              class="btn-outline"
-              style={{ padding: '2px 6px', 'font-size': '10px' }}
-              onClick={() => {
-                setActiveSection('connections')
-                loadConnections()
-              }}
-              title="Abrir tela de conexões"
-            >
-              ⚙️ Conexões
-            </button>
-          </div>
-          <div class="provider-status-list">
-            <div
-              class="provider-status-item"
-              title={providerStatuses()?.codex.version || providerStatuses()?.codex.error || ''}
-            >
-              <span class={`status-dot ${providerStatuses()?.codex.available ? 'online' : ''}`} />
-              <span>
-                Codex:{' '}
-                {providerStatuses()?.codex.available
-                  ? providerStatuses()?.codex.version || 'Pronto'
-                  : 'Ausente'}
-              </span>
-            </div>
-            <div
-              class="provider-status-item"
-              title={providerStatuses()?.claude.version || providerStatuses()?.claude.error || ''}
-            >
-              <span class={`status-dot ${providerStatuses()?.claude.available ? 'online' : ''}`} />
-              <span>
-                Claude:{' '}
-                {providerStatuses()?.claude.available
-                  ? providerStatuses()?.claude.version || 'Pronto'
-                  : 'Ausente'}
-              </span>
-            </div>
-            <div
-              class="provider-status-item"
-              title={providerStatuses()?.grok.version || providerStatuses()?.grok.error || ''}
-            >
-              <span class={`status-dot ${providerStatuses()?.grok.available ? 'online' : ''}`} />
-              <span>
-                Grok:{' '}
-                {providerStatuses()?.grok.available
-                  ? providerStatuses()?.grok.version || 'Pronto'
-                  : 'Ausente'}
-              </span>
-            </div>
-            <div
-              class="provider-status-item"
-              title={providerStatuses()?.gemini.version || providerStatuses()?.gemini.error || ''}
-            >
-              <span class={`status-dot ${providerStatuses()?.gemini.available ? 'online' : ''}`} />
-              <span>
-                Gemini:{' '}
-                {providerStatuses()?.gemini.available
-                  ? providerStatuses()?.gemini.version || 'Pronto'
-                  : 'Ausente'}
-              </span>
-            </div>
-            <div
-              class="provider-status-item"
-              title={providerStatuses()?.muse.version || providerStatuses()?.muse.error || ''}
-            >
-              <span class={`status-dot ${providerStatuses()?.muse.available ? 'online' : ''}`} />
-              <span>
-                Muse:{' '}
-                {providerStatuses()?.muse.available
-                  ? providerStatuses()?.muse.version || 'Pronto'
-                  : 'Ausente'}
-              </span>
-            </div>
-          </div>
-          <Show when={systemStatus()}>
-            {(status) => (
-              <div
-                style={{
-                  'font-size': '9.5px',
-                  opacity: 0.6,
-                  'margin-top': '4px',
-                  'word-break': 'break-all',
-                }}
-              >
-                SQLite: {status().dbPath}
-              </div>
-            )}
-          </Show>
+            <span
+              class={`status-dot ${connections().some((c) => c.readiness === 'ready' && c.enabled) ? 'online' : ''}`}
+            />
+            <span>
+              {connections().filter((c) => c.enabled && c.readiness === 'ready').length} de{' '}
+              {connections().length} provedores prontos
+            </span>
+          </button>
         </div>
       </aside>
 
       {/* Main Workspace */}
       <main class="main-content">
-        <Show
-          when={activeSection() === 'connections'}
-          fallback={
-            <Show
-              when={currentAgent()}
-              fallback={
-                <div class="welcome-view">
-                  <div class="welcome-icon">🤖</div>
-                  <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
-                  <p class="welcome-desc">
-                    Crie múltiplos agentes com seus próprios workspaces locais. Envie arquivos
-                    anexados, organize tarefas em fila durável e faça seus agentes colaborarem e
-                    delegarem tarefas entre si.
-                  </p>
-                  <div
-                    style={{
-                      display: 'flex',
-                      gap: '10px',
-                      'justify-content': 'center',
-                      'margin-top': '16px',
-                    }}
-                  >
+        <Show when={activeSection() === 'settings'}>
+          <div class="settings-shell">
+            <aside class="settings-nav">
+              <div class="settings-nav-head">
+                <h1>Configurações</h1>
+              </div>
+              <label class="list-search">
+                <RailIcon name="search" />
+                <input
+                  type="search"
+                  placeholder="Pesquisar configurações..."
+                  value={settingsQuery()}
+                  onInput={(event) => setSettingsQuery(event.currentTarget.value)}
+                  aria-label="Pesquisar configurações"
+                />
+              </label>
+              <nav class="settings-nav-list" aria-label="Seções de configuração">
+                <For
+                  each={visibleSettingsPanes()}
+                  fallback={<p class="settings-nav-empty">Nenhuma configuração encontrada.</p>}
+                >
+                  {(pane) => (
                     <button
                       type="button"
-                      class="btn-primary"
-                      onClick={() => setActiveSection('connections')}
+                      class="settings-nav-btn"
+                      classList={{ active: currentSettingsPane()?.id === pane.id }}
+                      onClick={() => selectSettingsPane(pane.id)}
                     >
-                      🔌 Selecionar e Configurar Conexões
+                      <SettingsGlyph id={pane.id} />
+                      {pane.label}
                     </button>
-                    <button
-                      type="button"
-                      class="btn-outline"
-                      onClick={() => {
-                        const enabled = connections().filter((c) => c.enabled)
-                        if (enabled.length > 0) {
-                          setProvider(enabled[0].providerId)
-                          setModel(enabled[0].defaultModel)
-                        } else {
-                          setProvider('codex')
-                          setModel('gpt-4o')
-                        }
-                        setShowModal(true)
-                      }}
-                    >
-                      + Criar Primeiro Agente
-                    </button>
-                  </div>
-                </div>
-              }
-            >
-              {(agent) => (
-                <div class="chat-workspace">
-                  {/* Header do Agente */}
-                  <header class="agent-detail-header">
-                    <div class="agent-info">
-                      <div class="agent-title-row">
-                        <h2>{agent().name}</h2>
-
-                        {/* Seletor dinâmico de Provedor durante a conversa */}
-                        <div
-                          class="midchat-switcher-group"
-                          title="Trocar provedor de IA a qualquer momento na conversa"
-                        >
-                          <div class="midchat-field">
-                            <span class="midchat-label">Provedor:</span>
-                            <select
-                              class={`chat-provider-select ${agent().provider}`}
-                              value={agent().provider}
-                              onChange={(e) =>
-                                handleSwitchProviderMidChat(
-                                  agent().id,
-                                  e.currentTarget.value as SupportedProvider,
-                                )
-                              }
-                            >
-                              <For each={connections().filter((c) => c.enabled)}>
-                                {(c) => (
-                                  <option value={c.providerId}>
-                                    {c.providerId === 'codex'
-                                      ? '🟢 Codex'
-                                      : c.providerId === 'claude'
-                                        ? '🟣 Claude'
-                                        : c.providerId === 'grok'
-                                          ? '⚡ Grok'
-                                          : c.providerId === 'gemini'
-                                            ? '🔷 Gemini'
-                                            : c.providerId === 'muse'
-                                              ? '✨ Muse'
-                                              : c.name}
-                                  </option>
-                                )}
-                              </For>
-                            </select>
+                  )}
+                </For>
+              </nav>
+            </aside>
+            <div class="settings-stage">
+              <div class="settings-page-head">
+                <h1>{currentSettingsPane()?.label ?? 'Configurações'}</h1>
+                <button
+                  type="button"
+                  class="settings-close"
+                  onClick={closeSettings}
+                  aria-label="Fechar configurações"
+                  title="Fechar configurações (Esc)"
+                >
+                  <RailIcon name="close" />
+                  Fechar
+                </button>
+              </div>
+              <Show
+                when={currentSettingsPane()?.id === 'perfil'}
+                fallback={
+                  <div class="settings-view">
+                    <Show when={currentSettingsPane()?.id === 'geral'}>
+                      <section class="settings-section">
+                        <h2>Aparência</h2>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Tema</div>
+                            <div class="settings-row-desc">
+                              Cores claras ou escuras. “Sistema” segue o ajuste do seu dispositivo.
+                            </div>
                           </div>
-
-                          <div class="midchat-field">
-                            <span class="midchat-label">Modelo:</span>
-                            <input
-                              list={`midchat-models-${agent().id}`}
-                              class="chat-model-select"
-                              value={agent().model}
-                              onChange={(e) =>
-                                handleSwitchModelMidChat(agent().id, e.currentTarget.value)
-                              }
-                              placeholder="Modelo..."
-                              style={{ width: '160px', padding: '4px 8px', 'font-size': '12px' }}
-                              title="Selecione na lista ou digite qualquer modelo (ex: gpt-6.1-astra, gpt-6.1-terra, grok-7)"
-                            />
-                            <datalist id={`midchat-models-${agent().id}`}>
-                              <For
-                                each={
-                                  connections().find((c) => c.providerId === agent().provider)
-                                    ?.models || [agent().model]
-                                }
-                              >
-                                {(m) => <option value={m} />}
-                              </For>
-                            </datalist>
+                          <select
+                            class="settings-select"
+                            value={settings().theme}
+                            onChange={(e) =>
+                              updateSettings({
+                                theme: e.currentTarget.value as AppSettings['theme'],
+                              })
+                            }
+                          >
+                            <option value="dark">Escuro</option>
+                            <option value="light">Claro</option>
+                            <option value="system">Sistema</option>
+                          </select>
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Idioma</div>
+                            <div class="settings-row-desc">
+                              O Orchbot mostra menus, botões e mensagens neste idioma.
+                            </div>
                           </div>
-
-                          <div class="midchat-field">
-                            <span class="midchat-label">Autonomia:</span>
-                            <select
-                              class={`chat-autonomy-select ${agent().autonomyLevel || 'autonomous'}`}
-                              value={agent().autonomyLevel || 'autonomous'}
-                              onChange={(e) =>
-                                handleSwitchAutonomyLevel(
-                                  agent().id,
-                                  e.currentTarget.value as AutonomyLevel,
-                                )
-                              }
-                              title="Nível de autonomia do agente (Modo Cauteloso pergunta antes de ações de browser/terminal)"
-                            >
-                              <option value="autonomous">⚡ Autônomo</option>
-                              <option value="cautious">🛡️ Cauteloso</option>
-                            </select>
+                          <select
+                            class="settings-select"
+                            value={settings().language}
+                            onChange={(e) => updateSettings({ language: e.currentTarget.value })}
+                          >
+                            <option value="pt-BR">Português (Brasil)</option>
+                          </select>
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Tamanho da interface</div>
+                            <div class="settings-row-desc">
+                              O tamanho do texto e dos controles no Orchbot.
+                            </div>
+                          </div>
+                          <select
+                            class="settings-select"
+                            value={settings().uiScale}
+                            onChange={(e) =>
+                              updateSettings({ uiScale: Number(e.currentTarget.value) })
+                            }
+                          >
+                            <option value={75}>75%</option>
+                            <option value={90}>90%</option>
+                            <option value={100}>100%</option>
+                            <option value={110}>110%</option>
+                            <option value={125}>125%</option>
+                          </select>
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Cor do logotipo</div>
+                            <div class="settings-row-desc">
+                              Aparece no topo do app, na barra de tarefas e no ícone.
+                            </div>
+                          </div>
+                          <div class="logo-color-swatches">
+                            <For each={LOGO_COLORS}>
+                              {(color) => (
+                                <button
+                                  type="button"
+                                  class={`logo-swatch ${settings().logoColor === color ? 'active' : ''}`}
+                                  style={{ background: color }}
+                                  onClick={() => updateSettings({ logoColor: color })}
+                                  aria-label={`Cor do logotipo ${color}`}
+                                />
+                              )}
+                            </For>
                           </div>
                         </div>
-                      </div>
+                      </section>
 
-                      <div class="agent-meta">
-                        <span>
-                          Workspace: <strong>{agent().workspacePath}</strong>
-                        </span>
-                        <Show when={workspaceRules()?.exists}>
+                      <section class="settings-section">
+                        <h2>Conversas</h2>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Atalho de envio</div>
+                            <div class="settings-row-desc">
+                              Escolha as teclas que enviam uma mensagem neste dispositivo e
+                              navegador.
+                            </div>
+                          </div>
+                          <select
+                            class="settings-select"
+                            value={settings().sendShortcut}
+                            onChange={(e) =>
+                              updateSettings({
+                                sendShortcut: e.currentTarget.value as AppSettings['sendShortcut'],
+                              })
+                            }
+                          >
+                            <option value="enter">Enter para enviar</option>
+                            <option value="ctrl-enter">Ctrl+Enter para enviar</option>
+                          </select>
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Mostrar etapas do agente</div>
+                            <div class="settings-row-desc">
+                              Abre por padrão o raciocínio, as etapas de ferramentas e as mudanças
+                              de memória de cada turno neste dispositivo e navegador.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().showAgentSteps}
+                            label="Mostrar etapas do agente"
+                            onChange={() =>
+                              updateSettings({ showAgentSteps: !settings().showAgentSteps })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Abrir links externos em</div>
+                            <div class="settings-row-desc">
+                              Links de chats, páginas de login e páginas de cobrança abrem aqui.
+                            </div>
+                          </div>
+                          <select
+                            class="settings-select"
+                            value={settings().externalLinks}
+                            onChange={(e) =>
+                              updateSettings({
+                                externalLinks: e.currentTarget
+                                  .value as AppSettings['externalLinks'],
+                              })
+                            }
+                          >
+                            <option value="default-browser">Navegador padrão</option>
+                            <option value="embedded">Navegador embutido</option>
+                          </select>
+                        </div>
+                      </section>
+
+                      <DistributionSettings
+                        settings={settings()}
+                        update={updateSettings}
+                        Switch={Switch}
+                      />
+                      <section class="settings-section">
+                        <h2>Comportamento do app</h2>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Iniciar o Orchbot ao entrar</div>
+                            <div class="settings-row-desc">
+                              Abra o app quando você entrar neste computador.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().startAtLogin}
+                            label="Iniciar o Orchbot ao entrar"
+                            onChange={() =>
+                              updateSettings({ startAtLogin: !settings().startAtLogin })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Contexto Git no turno</div>
+                            <div class="settings-row-desc">
+                              Envia ao agente a branch, os arquivos alterados e os commits recentes
+                              do workspace (e o diff no modo de contexto completo). Só leitura.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().gitContext}
+                            label="Contexto Git no turno"
+                            onChange={() => updateSettings({ gitContext: !settings().gitContext })}
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Conexão rápida a servidores</div>
+                            <div class="settings-row-desc">
+                              Mantenha o status dos provedores em cache entre as inicializações. O
+                              Orchbot inicia cerca de um segundo mais rápido.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().quickConnection}
+                            label="Conexão rápida a servidores"
+                            onChange={() =>
+                              updateSettings({ quickConnection: !settings().quickConnection })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">
+                              Manter o Orchbot em execução em segundo plano
+                            </div>
+                            <div class="settings-row-desc">
+                              Mantenha as tarefas ativas em execução após fechar a janela. Reabra
+                              pela barra de tarefas/Dock.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().keepRunningInBackground}
+                            label="Manter o Orchbot em execução em segundo plano"
+                            onChange={() =>
+                              updateSettings({
+                                keepRunningInBackground: !settings().keepRunningInBackground,
+                              })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">
+                              Restaurar o último espaço de trabalho ao iniciar
+                            </div>
+                            <div class="settings-row-desc">
+                              Abra o espaço de trabalho e as tarefas da sessão anterior.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().restoreWorkspace}
+                            label="Restaurar o último espaço de trabalho ao iniciar"
+                            onChange={() =>
+                              updateSettings({ restoreWorkspace: !settings().restoreWorkspace })
+                            }
+                          />
+                        </div>
+                      </section>
+                    </Show>
+
+                    <Show when={currentSettingsPane()?.id === 'agents'}>
+                      <section class="settings-section">
+                        <h2>Padrões</h2>
+                        <p class="settings-section-desc">
+                          O que os agentes deste computador podem fazer quando você não define isso
+                          em um agente.
+                        </p>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Scripts locais</div>
+                            <div class="settings-row-desc">
+                              Padrão: {settings().defaultLocalScripts ? 'ligado' : 'desligado'} •{' '}
+                              {
+                                agents().filter(
+                                  (a) => effectiveCapabilities(a, settings()).localScripts,
+                                ).length
+                              }{' '}
+                              de {agents().length} ativos
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().defaultLocalScripts}
+                            label="Scripts locais"
+                            onChange={() =>
+                              updateSettings({
+                                defaultLocalScripts: !settings().defaultLocalScripts,
+                              })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">O agente inicia novos chats</div>
+                            <div class="settings-row-desc">
+                              Padrão: {settings().defaultStartsNewChats ? 'ligado' : 'desligado'} •{' '}
+                              {
+                                agents().filter(
+                                  (a) => effectiveCapabilities(a, settings()).startsNewChats,
+                                ).length
+                              }{' '}
+                              de {agents().length} ativos
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().defaultStartsNewChats}
+                            label="O agente inicia novos chats"
+                            onChange={() =>
+                              updateSettings({
+                                defaultStartsNewChats: !settings().defaultStartsNewChats,
+                              })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">
+                              Mostrar o plano antes de tarefas longas
+                            </div>
+                            <div class="settings-row-desc">
+                              Padrão:{' '}
+                              {settings().defaultShowPlanBeforeLongTasks ? 'ligado' : 'desligado'} •{' '}
+                              {
+                                agents().filter(
+                                  (a) =>
+                                    effectiveCapabilities(a, settings()).showPlanBeforeLongTasks,
+                                ).length
+                              }{' '}
+                              de {agents().length} ativos
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().defaultShowPlanBeforeLongTasks}
+                            label="Mostrar o plano antes de tarefas longas"
+                            onChange={() =>
+                              updateSettings({
+                                defaultShowPlanBeforeLongTasks:
+                                  !settings().defaultShowPlanBeforeLongTasks,
+                              })
+                            }
+                          />
+                        </div>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">
+                              Orientar agentes enquanto trabalham
+                            </div>
+                            <div class="settings-row-desc">
+                              Padrão:{' '}
+                              {settings().defaultSteerMode === 'imediato' ? 'imediato' : 'fila'} •{' '}
+                              {
+                                agents().filter(
+                                  (a) =>
+                                    effectiveCapabilities(a, settings()).steerMode === 'imediato',
+                                ).length
+                              }{' '}
+                              de {agents().length} em imediato
+                            </div>
+                          </div>
+                          <select
+                            class="settings-select"
+                            value={settings().defaultSteerMode}
+                            onChange={(e) =>
+                              updateSettings({
+                                defaultSteerMode: e.currentTarget
+                                  .value as AppSettings['defaultSteerMode'],
+                              })
+                            }
+                          >
+                            <option value="fila">Fila</option>
+                            <option value="imediato">Imediato (interrompe)</option>
+                          </select>
+                        </div>
+                      </section>
+                    </Show>
+
+                    <Show when={currentSettingsPane()?.id === 'computer'}>
+                      <section class="settings-section">
+                        <h2>Uso do computador</h2>
+                        <p class="settings-section-desc">
+                          Permita que os agentes do Orchbot deste computador vejam e usem os apps
+                          dele. Agentes de outro servidor usam o computador desse servidor.
+                        </p>
+                        <Show
+                          when={computerStatus()}
+                          fallback={
+                            <p class="settings-section-desc">Verificando este computador…</p>
+                          }
+                        >
+                          {(st) => (
+                            <div class={`computer-status ${st().ready ? 'ready' : 'warn'}`}>
+                              <strong>
+                                {st().ready
+                                  ? '✓ O Uso do computador está pronto'
+                                  : '⚠ O Uso do computador não está pronto'}
+                              </strong>
+                              <span>{st().message}</span>
+                              <span class="computer-tools">
+                                Screenshot: {st().screenshotTool ?? '—'} • Janelas:{' '}
+                                {st().windowTool ?? '—'} • Teclado: {st().inputTool ?? '—'} •
+                                Sessão: {st().sessionType}
+                              </span>
+                            </div>
+                          )}
+                        </Show>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Permitir por padrão</div>
+                            <div class="settings-row-desc">
+                              Padrão: {settings().computerUseEnabled ? 'ligado' : 'desligado'} •{' '}
+                              {
+                                agents().filter(
+                                  (a) => effectiveCapabilities(a, settings()).computerUse,
+                                ).length
+                              }{' '}
+                              de {agents().length} ativos. Cada robô pode mudar o seu na criação.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().computerUseEnabled}
+                            label="Permitir uso do computador por padrão"
+                            onChange={() =>
+                              updateSettings({ computerUseEnabled: !settings().computerUseEnabled })
+                            }
+                          />
+                        </div>
+                      </section>
+                    </Show>
+
+                    <Show when={currentSettingsPane()?.id === 'permissoes'}>
+                      <section class="settings-section">
+                        <h2>Permissões</h2>
+                        <div class="settings-row">
+                          <div>
+                            <div class="settings-row-title">Compartilhar análises do produto</div>
+                            <div class="settings-row-desc">
+                              Envie metadados de uso e confiabilidade com o ID e o e-mail da sua
+                              conta para o serviço de análise hospedado pelo próprio Orchbot.
+                            </div>
+                          </div>
+                          <Switch
+                            pressed={settings().shareAnalytics}
+                            label="Compartilhar análises do produto"
+                            onChange={() =>
+                              updateSettings({ shareAnalytics: !settings().shareAnalytics })
+                            }
+                          />
+                        </div>
+                      </section>
+                    </Show>
+                  </div>
+                }
+              >
+                <div class="profile-view">
+                  <div class="profile-head">
+                    <div class="profile-avatar">{initialsOf(settings().profileName)}</div>
+                    <div>
+                      <h1 class="connections-title">{settings().profileName}</h1>
+                      <p class="connections-desc">Gerencie como você aparece no Orchbot.</p>
+                    </div>
+                  </div>
+
+                  <Show
+                    when={profileStats()}
+                    fallback={<p class="connections-desc">Carregando uso deste computador…</p>}
+                  >
+                    {(stats) => (
+                      <>
+                        <div class="profile-cards">
+                          <div class="profile-card">
+                            <div class="profile-card-label">Tokens</div>
+                            <div class="profile-card-value">
+                              {formatCompact(stats().totalTokens)}
+                            </div>
+                            <div class="profile-card-sub">
+                              Último ano ·{' '}
+                              {stats().totalTokens > 0
+                                ? `${Math.round((stats().measuredTokens / stats().totalTokens) * 100)}% medido pelas CLIs, o resto estimado`
+                                : 'sem uso ainda'}
+                            </div>
+                            <div class="profile-card-row">
+                              <span>Dia recorde</span>
+                              <strong>
+                                <Show when={stats().recordDay} fallback="Sem atividade">
+                                  {(rec) =>
+                                    `${formatCompact(rec().tokens)} • ${formatDatePt(rec().date)}`
+                                  }
+                                </Show>
+                              </strong>
+                            </div>
+                          </div>
+                          <div class="profile-card">
+                            <div class="profile-card-label">Mensagens</div>
+                            <div class="profile-card-value">{stats().totalMessages}</div>
+                            <div class="profile-card-sub">Último ano</div>
+                            <div class="profile-card-row">
+                              <span>Sequência atual</span>
+                              <strong>
+                                {stats().currentStreakDays} dia
+                                {stats().currentStreakDays === 1 ? '' : 's'}
+                                {stats().currentStreakDays === 0 ? ' • Sem atividade' : ''}
+                              </strong>
+                            </div>
+                            <div class="profile-card-row">
+                              <span>Maior sequência</span>
+                              <strong>
+                                <Show when={stats().longestStreak} fallback="Sem atividade">
+                                  {(s) =>
+                                    `${s().days} dia${s().days === 1 ? '' : 's'} • ${formatDatePt(s().endDate)}`
+                                  }
+                                </Show>
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+
+                        <section class="settings-section">
+                          <h2>Atividade neste computador</h2>
+                          <p class="settings-section-desc">
+                            {stats().activeDaysLastYear} dia
+                            {stats().activeDaysLastYear === 1 ? '' : 's'} ativo
+                            {stats().activeDaysLastYear === 1 ? '' : 's'} no último ano
+                          </p>
+                          {(() => {
+                            const max = Math.max(1, ...stats().daily.map((d) => d.tokens))
+                            const months = [
+                              'jan.',
+                              'fev.',
+                              'mar.',
+                              'abr.',
+                              'mai.',
+                              'jun.',
+                              'jul.',
+                              'ago.',
+                              'set.',
+                              'out.',
+                              'nov.',
+                              'dez.',
+                            ]
+                            const firstMonth = new Date(
+                              `${stats().daily[0]?.date}T12:00:00`,
+                            ).getMonth()
+                            const labels = Array.from(
+                              { length: 13 },
+                              (_, i) => months[(firstMonth + i) % 12],
+                            )
+                            return (
+                              <>
+                                <div class="heatmap-months">
+                                  <For each={labels}>{(m) => <span>{m}</span>}</For>
+                                </div>
+                                <div
+                                  class="heatmap"
+                                  role="img"
+                                  aria-label="Mapa de atividade do último ano"
+                                >
+                                  <For each={stats().daily}>
+                                    {(d) => {
+                                      const level =
+                                        d.tokens === 0
+                                          ? 0
+                                          : d.tokens / max <= 0.25
+                                            ? 1
+                                            : d.tokens / max <= 0.5
+                                              ? 2
+                                              : d.tokens / max <= 0.75
+                                                ? 3
+                                                : 4
+                                      return (
+                                        <span
+                                          class={`heat-cell l${level}`}
+                                          title={`${formatDatePt(d.date)}: ${d.messages} mensagens, ~${d.tokens} tokens`}
+                                        />
+                                      )
+                                    }}
+                                  </For>
+                                </div>
+                                <div class="heatmap-legend">
+                                  <span>Menos</span>
+                                  <span class="heat-cell l0" />
+                                  <span class="heat-cell l1" />
+                                  <span class="heat-cell l2" />
+                                  <span class="heat-cell l3" />
+                                  <span class="heat-cell l4" />
+                                  <span>Mais</span>
+                                </div>
+                              </>
+                            )
+                          })()}
+                        </section>
+
+                        <section class="settings-section">
+                          <h2>Destaques</h2>
+                          <div class="settings-row">
+                            <div class="settings-row-title">Provedor mais usado</div>
+                            <strong>
+                              {stats().topProvider
+                                ? `${stats().topProvider?.name} · ${stats().topProvider?.percent}%`
+                                : 'Sem dados'}
+                            </strong>
+                          </div>
+                          <div class="settings-row">
+                            <div class="settings-row-title">Modelo principal</div>
+                            <strong>{stats().topModel?.model ?? 'Sem dados'}</strong>
+                          </div>
+                          <div class="settings-row">
+                            <div class="settings-row-title">Dia mais ativo</div>
+                            <strong>{stats().topWeekday ?? 'Sem dados'}</strong>
+                          </div>
+                          <div class="settings-row">
+                            <div class="settings-row-title">Custo estimado</div>
+                            <strong>
+                              US$ {stats().estimatedCostUsd.toFixed(2).replace('.', ',')}
+                            </strong>
+                          </div>
+                        </section>
+
+                        <section class="settings-section">
+                          <h2>Colegas mais ativos</h2>
+                          <Show
+                            when={stats().topAgents.length > 0}
+                            fallback={
+                              <p class="settings-section-desc">Nenhum robô com atividade ainda.</p>
+                            }
+                          >
+                            <For each={stats().topAgents}>
+                              {(a) => (
+                                <div class="settings-row">
+                                  <div class="settings-row-title">🤖 {a.name}</div>
+                                  <strong>{formatCompact(a.tokens)}</strong>
+                                </div>
+                              )}
+                            </For>
+                          </Show>
+                        </section>
+
+                        <section class="settings-section">
+                          <h2>Uso de modelos</h2>
+                          <Show
+                            when={stats().modelUsage.length > 0}
+                            fallback={
+                              <p class="settings-section-desc">Sem uso de modelos ainda.</p>
+                            }
+                          >
+                            <For each={stats().modelUsage}>
+                              {(m) => (
+                                <div class="model-usage-row">
+                                  <span>{m.model}</span>
+                                  <div class="model-usage-bar">
+                                    <span style={{ width: `${Math.max(3, m.percent)}%` }} />
+                                  </div>
+                                  <strong>{m.percent}%</strong>
+                                </div>
+                              )}
+                            </For>
+                          </Show>
+                        </section>
+                      </>
+                    )}
+                  </Show>
+
+                  <section class="settings-section">
+                    <h2>Conta</h2>
+                    <div class="form-group">
+                      <label for="profile-name">Nome</label>
+                      <input
+                        id="profile-name"
+                        type="text"
+                        value={settings().profileName}
+                        onInput={(e) => updateSettings({ profileName: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label for="profile-email">E-mail</label>
+                      <input
+                        id="profile-email"
+                        type="email"
+                        value={settings().profileEmail}
+                        onInput={(e) => updateSettings({ profileEmail: e.currentTarget.value })}
+                      />
+                      <span class="settings-section-desc">Usado para entrar no Orchbot.</span>
+                    </div>
+                    <div class="settings-row">
+                      <div>
+                        <div class="settings-row-title">Sessões da conta</div>
+                        <div class="settings-row-desc">
+                          Este computador • {systemStatus()?.platform ?? 'local'} • v
+                          {systemStatus()?.appVersion ?? ''} (sessão atual)
+                        </div>
+                      </div>
+                      <span class="connection-status-pill online">● Ativa agora</span>
+                    </div>
+                  </section>
+                </div>
+              </Show>
+            </div>
+          </div>
+        </Show>
+        <Show when={activeSection() === 'channels'}>
+          <Channels agents={agents()} />
+        </Show>
+        <Show when={activeSection() === 'skills'}>
+          <SkillsPlugins agents={agents()} />
+        </Show>
+        <Show
+          when={
+            activeSection() !== 'settings' &&
+            activeSection() !== 'channels' &&
+            activeSection() !== 'skills'
+          }
+        >
+          <Show
+            when={activeSection() === 'connections'}
+            fallback={
+              <Show
+                when={currentAgent()}
+                fallback={
+                  <div class="welcome-view">
+                    <div class="welcome-icon">🤖</div>
+                    <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
+                    <p class="welcome-desc">
+                      Crie múltiplos agentes com seus próprios workspaces locais. Envie arquivos
+                      anexados, organize tarefas em fila durável e faça seus agentes colaborarem e
+                      delegarem tarefas entre si.
+                    </p>
+                    <h2 class="welcome-subtitle">Quais provedores você vai usar?</h2>
+                    <div class="provider-picker">
+                      <For each={connections()}>
+                        {(conn) => (
                           <button
                             type="button"
-                            class="rules-badge"
-                            onClick={() => setShowRulesModal(true)}
-                            title={`Diretrizes do projeto carregadas de ${workspaceRules()?.filename}`}
+                            class={`provider-card ${conn.enabled ? 'selected' : ''} ${conn.available ? '' : 'missing'}`}
+                            onClick={() => handleToggleConnection(conn, !conn.enabled)}
                           >
-                            📜 {workspaceRules()?.filename} (Regras Ativas)
+                            <span class="provider-card-icon">
+                              {PROVIDER_ICONS[conn.providerId] ?? '🔌'}
+                            </span>
+                            <span class="provider-card-name">{conn.name}</span>
+                            <span class="provider-card-meta">
+                              {conn.available
+                                ? `Instalado${conn.version ? ` · ${conn.version}` : ''}`
+                                : 'Não instalado'}
+                            </span>
+                            <span class="provider-card-check">{conn.enabled ? '✓' : '+'}</span>
                           </button>
-                        </Show>
-                        <button
-                          type="button"
-                          class="cron-badge"
-                          onClick={() => setShowCronModal(true)}
-                          title="Gerenciar rotinas e tarefas em background agendadas via Cron"
-                        >
-                          ⏰ Agendamentos (Cron)
-                          {scheduledTasks().length > 0
-                            ? ` (${scheduledTasks().filter((t) => t.enabled).length}/${scheduledTasks().length})`
-                            : ''}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Alternador de Modo: Conversa vs Navegador */}
-                    <div class="mode-switcher">
-                      <button
-                        type="button"
-                        class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
-                        onClick={() => setMainViewMode('chat')}
-                      >
-                        💬 Conversa
-                      </button>
-                      <button
-                        type="button"
-                        class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
-                        onClick={() => {
-                          setMainViewMode('browser')
-                          const a = currentAgent()
-                          if (a) loadBrowserTabs(a.id)
-                        }}
-                      >
-                        🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
-                      </button>
-                    </div>
-
-                    <div class="header-actions">
-                      {/* Botão Buscar Memória & RAG Full-Text */}
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        onClick={() => setShowSearchModal(true)}
-                        title="Busca ultrarrápida em conversas e arquivos do projeto via SQLite FTS5"
-                      >
-                        🔍 Buscar / RAG
-                      </button>
-
-                      {/* Botão Delegar para outro agente */}
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        onClick={handleOpenDelegationModal}
-                        title="Delegar uma subtarefa para outro agente disponível"
-                      >
-                        🤝 Delegar
-                      </button>
-
-                      {/* Botão Pausar / Retomar Fila */}
-                      <button
-                        type="button"
-                        class={`btn-outline ${isQueuePaused() ? 'active' : ''}`}
-                        onClick={togglePauseQueue}
-                        title="Pausa ou retoma a fila de execução de tarefas deste agente"
-                      >
-                        {isQueuePaused() ? '▶ Retomar Fila' : '⏸ Pausar Fila'}
-                      </button>
-
-                      {/* Botão Painel da Fila */}
-                      <button
-                        type="button"
-                        class={`btn-outline ${showQueuePanel() ? 'active' : ''}`}
-                        onClick={() => setShowQueuePanel(!showQueuePanel())}
-                      >
-                        📋 Fila ({pendingTasksCount()})
-                      </button>
-
-                      <button
-                        type="button"
-                        class="btn-danger"
-                        onClick={() => handleDeleteAgent(agent().id)}
-                      >
-                        Remover Agente
-                      </button>
-                    </div>
-                  </header>
-
-                  {/* Drawer da Fila de Tarefas (Fase 3) */}
-                  <Show when={showQueuePanel()}>
-                    <div class="queue-panel">
-                      <div class="queue-panel-header">
-                        <span>Fila Durável do Agente (FIFO)</span>
-                        <span>{isQueuePaused() ? 'Status: PAUSADA' : 'Status: ATIVA'}</span>
-                      </div>
-
-                      <For
-                        each={tasks()}
-                        fallback={
-                          <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
-                            Nenhuma tarefa recente na fila deste agente.
-                          </div>
-                        }
-                      >
-                        {(task) => (
-                          <div class="queue-item">
-                            <div class="queue-item-left">
-                              <span class={`task-tag ${task.status}`}>{task.status}</span>
-                              <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
-                              <Show when={task.error}>
-                                <span style={{ color: '#f87171', 'font-size': '11px' }}>
-                                  ({task.error})
-                                </span>
-                              </Show>
-                            </div>
-                            <div style={{ display: 'flex', gap: '6px' }}>
-                              <Show when={task.status === 'pending' || task.status === 'running'}>
-                                <button
-                                  type="button"
-                                  class="queue-btn-action"
-                                  onClick={() => handleCancelTask(task.id)}
-                                >
-                                  Cancelar
-                                </button>
-                              </Show>
-                              <Show
-                                when={
-                                  task.status === 'failed' ||
-                                  task.status === 'interrupted' ||
-                                  task.status === 'cancelled'
-                                }
-                              >
-                                <button
-                                  type="button"
-                                  class="queue-btn-action"
-                                  onClick={() => handleRetryTask(task.id)}
-                                >
-                                  Repetir
-                                </button>
-                              </Show>
-                            </div>
-                          </div>
                         )}
                       </For>
                     </div>
-                  </Show>
-
-                  {/* Modo Chat (Conversa) */}
-                  <Show when={mainViewMode() === 'chat'}>
-                    {/* Barra de Múltiplas Conversas (Threads) */}
-                    <div class="threads-bar">
-                      <div class="threads-bar-header">
-                        <span class="threads-bar-label">Conversas:</span>
-                        <div class="threads-list">
-                          <For each={agentThreads()}>
-                            {(thread) => (
-                              <div
-                                class={`thread-chip ${activeThread()?.id === thread.id ? 'active' : ''}`}
-                              >
-                                <button
-                                  type="button"
-                                  class="thread-chip-select"
-                                  onClick={() => handleSelectThread(thread)}
-                                  title={`Tópico: ${thread.title}`}
-                                >
-                                  <span class="thread-chip-icon">💬</span>
-                                  <span class="thread-chip-title">{thread.title}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  class="thread-chip-action"
-                                  title="Renomear tópico da conversa"
-                                  onClick={(e) => handleRenameThread(thread, e)}
-                                >
-                                  ✏️
-                                </button>
-                                <Show when={agentThreads().length > 1}>
-                                  <button
-                                    type="button"
-                                    class="thread-chip-action delete"
-                                    title="Excluir tópico da conversa"
-                                    onClick={(e) => handleDeleteThread(thread, e)}
-                                  >
-                                    ✕
-                                  </button>
-                                </Show>
-                              </div>
-                            )}
-                          </For>
-                        </div>
-                      </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '10px',
+                        'justify-content': 'center',
+                        'margin-top': '16px',
+                      }}
+                    >
                       <button
                         type="button"
-                        class="btn-new-thread"
-                        onClick={() => handleCreateThread()}
-                        title="Criar novo tópico/sessão de conversa (ex: Refatorar Banco, Debug, Pesquisa)"
+                        class="btn-primary"
+                        onClick={() => setActiveSection('connections')}
                       >
-                        <span>+</span> Novo Tópico
+                        🔌 Selecionar e Configurar Conexões
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={() => {
+                          const enabled = connections().filter((c) => c.enabled)
+                          if (enabled.length > 0) {
+                            setProvider(enabled[0].providerId)
+                            setModel(enabled[0].defaultModel)
+                          } else {
+                            setProvider('codex')
+                            setModel(DEFAULT_PROVIDER_MODELS.codex)
+                          }
+                          setShowModal(true)
+                        }}
+                      >
+                        + Criar Primeiro Agente
                       </button>
                     </div>
+                  </div>
+                }
+              >
+                {(agent) => (
+                  <div class="chat-workspace">
+                    {/* Header do Agente */}
+                    <header class="agent-detail-header">
+                      <div class="agent-info">
+                        <div class="agent-title-row">
+                          <h2>{agent().name}</h2>
 
-                    {/* Lista de Mensagens / Conversa */}
-                    <div class="chat-messages">
-                      <Show when={agent().instructions}>
-                        <div
-                          class="card"
-                          style={{
-                            'margin-bottom': '12px',
-                            padding: '10px 14px',
-                            'font-size': '12px',
-                          }}
-                        >
+                          {/* Seletor dinâmico de Provedor durante a conversa */}
                           <div
-                            class="card-title"
-                            style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                            class="midchat-switcher-group"
+                            title="Trocar provedor de IA a qualquer momento na conversa"
                           >
-                            Instruções do Agente
-                          </div>
-                          <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
-                        </div>
-                      </Show>
+                            <div class="midchat-field">
+                              <span class="midchat-label">Provedor:</span>
+                              <select
+                                class={`chat-provider-select ${agent().provider}`}
+                                value={agent().provider}
+                                onChange={(e) =>
+                                  handleSwitchProviderMidChat(
+                                    agent().id,
+                                    e.currentTarget.value as SupportedProvider,
+                                  )
+                                }
+                              >
+                                <For each={connections().filter((c) => c.enabled)}>
+                                  {(c) => (
+                                    <option value={c.providerId}>
+                                      {PROVIDER_ICONS[c.providerId] || '🔗'} {c.name}
+                                    </option>
+                                  )}
+                                </For>
+                              </select>
+                            </div>
 
-                      <Show
-                        when={messages().length > 0 || isStreaming()}
-                        fallback={
-                          <div class="chat-empty">
-                            <div>
-                              👋 Olá! Você está no tópico{' '}
-                              <strong>"{activeThread()?.title || 'Conversa'}"</strong> do agente{' '}
-                              <strong>{agent().name}</strong> operando via{' '}
-                              <strong>{agent().provider.toUpperCase()}</strong>.
-                            </div>
-                            <div style={{ 'margin-top': '8px' }}>
-                              Esta sessão é 100% isolada no workspace{' '}
-                              <code>{agent().workspacePath}</code>. Envie tarefas ou anexe arquivos
-                              abaixo sem misturar com outros tópicos.
-                            </div>
-                            <Show when={agentThreads().length <= 1}>
-                              <div class="quick-topics-row">
-                                <span class="quick-topics-label">
-                                  Sugestões de tópicos para criar:
-                                </span>
-                                <div class="quick-topics-buttons">
-                                  <button
-                                    type="button"
-                                    class="quick-topic-btn"
-                                    onClick={() => handleCreateThread('Refatorar Banco de Dados')}
-                                  >
-                                    + Refatorar Banco de Dados
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="quick-topic-btn"
-                                    onClick={() => handleCreateThread('Debug de Performance')}
-                                  >
-                                    + Debug de Performance
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="quick-topic-btn"
-                                    onClick={() => handleCreateThread('Pesquisa no Navegador')}
-                                  >
-                                    + Pesquisa no Navegador
-                                  </button>
-                                </div>
+                            <Show when={(providerAccounts()[agent().provider]?.length ?? 0) > 1}>
+                              <div class="midchat-field">
+                                <label class="midchat-label" for="robot-account">
+                                  Conta:
+                                </label>
+                                <select
+                                  id="robot-account"
+                                  class="chat-provider-select"
+                                  value={agent().accountId ?? ''}
+                                  disabled={tasks().some((task) => task.status === 'running')}
+                                  onChange={(event) =>
+                                    handleSwitchAccount(agent().id, event.currentTarget.value)
+                                  }
+                                >
+                                  <option value="">Automática (Padrão → habilitadas)</option>
+                                  <For each={providerAccounts()[agent().provider] ?? []}>
+                                    {(account) => (
+                                      <option value={account.id} disabled={!account.enabled}>
+                                        {account.label}
+                                        {!account.enabled ? ' (desativada)' : ''}
+                                      </option>
+                                    )}
+                                  </For>
+                                </select>
                               </div>
                             </Show>
+
+                            <div class="midchat-field">
+                              <span class="midchat-label">Modelo:</span>
+                              <input
+                                list={`midchat-models-${agent().id}`}
+                                class="chat-model-select"
+                                value={agent().model}
+                                onChange={(e) =>
+                                  handleSwitchModelMidChat(agent().id, e.currentTarget.value)
+                                }
+                                placeholder="Modelo..."
+                                style={{ width: '160px', padding: '4px 8px', 'font-size': '12px' }}
+                                title="Selecione na lista ou digite qualquer modelo (ex: gpt-6-astra, gpt-6.1-terra, grok-4.7)"
+                              />
+                              <datalist id={`midchat-models-${agent().id}`}>
+                                <For
+                                  each={
+                                    connections().find((c) => c.providerId === agent().provider)
+                                      ?.models || [agent().model]
+                                  }
+                                >
+                                  {(m) => <option value={m} />}
+                                </For>
+                              </datalist>
+                            </div>
+
+                            <div class="midchat-field">
+                              <span class="midchat-label">Tipo:</span>
+                              <select
+                                class="chat-autonomy-select"
+                                value={agent().role ?? 'worker'}
+                                onChange={(e) =>
+                                  handleSwitchRole(agent().id, e.currentTarget.value as AgentRole)
+                                }
+                                title="Especialista executa; orquestrador delega e resume"
+                              >
+                                <option value="worker">🛠️ Especialista</option>
+                                <option value="orchestrator">👑 Orquestrador</option>
+                              </select>
+                            </div>
+
+                            <div class="midchat-field">
+                              <span class="midchat-label">Esforço:</span>
+                              <select
+                                class="chat-autonomy-select"
+                                value={agent().effort ?? ''}
+                                onChange={(e) =>
+                                  handleSwitchEffort(
+                                    agent().id,
+                                    e.currentTarget.value as ProviderEffort | '',
+                                  )
+                                }
+                                title="Esforço de raciocínio deste robô (vale só para ele)"
+                              >
+                                <option value="">Padrão do provedor</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="xhigh">XHigh</option>
+                                <option value="max">Max</option>
+                              </select>
+                            </div>
+
+                            <div class="midchat-field">
+                              <span class="midchat-label">Autonomia:</span>
+                              <select
+                                class={`chat-autonomy-select ${agent().autonomyLevel || 'autonomous'}`}
+                                value={agent().autonomyLevel || 'autonomous'}
+                                onChange={(e) =>
+                                  handleSwitchAutonomyLevel(
+                                    agent().id,
+                                    e.currentTarget.value as AutonomyLevel,
+                                  )
+                                }
+                                title="Nível de autonomia do agente (Modo Cauteloso pergunta antes de ações de browser/terminal)"
+                              >
+                                <option value="autonomous">⚡ Autônomo</option>
+                                <option value="cautious">🛡️ Cauteloso</option>
+                              </select>
+                            </div>
                           </div>
-                        }
-                      >
-                        <For each={messages()}>
-                          {(msg) => (
-                            <div class={`message-row ${msg.role}`}>
-                              <div class="message-author">
-                                <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
-                                <span style={{ 'font-size': '10px', opacity: 0.6 }}>
-                                  {new Date(msg.createdAt).toLocaleTimeString([], {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })}
-                                </span>
+                        </div>
+
+                        <div class="agent-meta">
+                          <Show when={projectOf(agent())}>
+                            {(proj) => <span>📁 {proj().name}</span>}
+                          </Show>
+                          <Show when={agent().description}>
+                            <span>{agent().description}</span>
+                          </Show>
+                          <span>
+                            Workspace: <strong>{agent().workspacePath}</strong>
+                          </span>
+                          <Show when={agent().role === 'orchestrator'}>
+                            <span
+                              class="orchestrator-team"
+                              title="Especialistas que este orquestrador pode delegar"
+                            >
+                              👑 Equipe:{' '}
+                              {teamOf(agent())
+                                .map((a) => a.name)
+                                .join(', ') || 'nenhum especialista no projeto'}
+                            </span>
+                          </Show>
+                          <span
+                            class="context-switcher"
+                            title="Quanto de histórico vai em cada turno"
+                          >
+                            Contexto:
+                            <select
+                              class="chat-autonomy-select"
+                              value={agent().contextMode ?? 'padrao'}
+                              onChange={(e) =>
+                                handleSwitchContextMode(
+                                  agent().id,
+                                  e.currentTarget.value as ContextMode,
+                                )
+                              }
+                            >
+                              <option value="economico">💰 Econômico</option>
+                              <option value="padrao">Padrão</option>
+                              <option value="completo">Completo</option>
+                            </select>
+                          </span>
+                          <button
+                            type="button"
+                            class={`cron-badge ${agent().browserAccess === false ? 'off' : ''}`}
+                            onClick={() =>
+                              handleSwitchBrowserAccess(agent().id, agent().browserAccess === false)
+                            }
+                            title="Liga/desliga o navegador deste robô (abrir/inspecionar painéis web)"
+                          >
+                            🌐 Navegador: {agent().browserAccess === false ? 'off' : 'on'}
+                          </button>
+                          <button
+                            type="button"
+                            class="cron-badge"
+                            onClick={() => setShowAiEdit(true)}
+                            title="Descreva a mudança e revise o rascunho antes de salvar"
+                          >
+                            ✨ Editar com IA
+                          </button>
+                          <button
+                            type="button"
+                            class="cron-badge"
+                            onClick={() => {
+                              void refreshMemories(agent().id)
+                              setShowMemoryModal(true)
+                            }}
+                            title="Memórias que este robô guardou (somente neste computador)"
+                          >
+                            🧠 Memórias
+                          </button>
+                          <Show when={contextUsage()?.window}>
+                            <span
+                              class="cron-badge"
+                              title={`${contextUsage()?.measured ? 'Medido pela CLI' : 'Estimado'}: ${contextUsage()?.tokens} de ${contextUsage()?.window} tokens${contextUsage()?.compacted ? ' · histórico já compactado' : ''}`}
+                            >
+                              📏 Contexto{contextUsage()?.measured ? ' ' : ' ~'}
+                              {Math.round(
+                                ((contextUsage()?.tokens ?? 0) / (contextUsage()?.window ?? 1)) *
+                                  100,
+                              )}
+                              %{contextUsage()?.compacted ? ' 🗜️' : ''}
+                            </span>
+                          </Show>
+                          <Show when={workspaceRules()?.exists}>
+                            <button
+                              type="button"
+                              class="rules-badge"
+                              onClick={() => setShowRulesModal(true)}
+                              title={`Diretrizes do projeto carregadas de ${workspaceRules()?.filename}`}
+                            >
+                              📜 {workspaceRules()?.filename} (Regras Ativas)
+                            </button>
+                          </Show>
+                          <button
+                            type="button"
+                            class="cron-badge"
+                            onClick={() => setShowCronModal(true)}
+                            title="Gerenciar rotinas e tarefas em background agendadas via Cron"
+                          >
+                            ⏰ Agendamentos (Cron)
+                            {scheduledTasks().length > 0
+                              ? ` (${scheduledTasks().filter((t) => t.enabled).length}/${scheduledTasks().length})`
+                              : ''}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Alternador de Modo: Conversa vs Navegador */}
+                      <div class="mode-switcher">
+                        <button
+                          type="button"
+                          class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
+                          onClick={() => setMainViewMode('chat')}
+                        >
+                          💬 Conversa
+                        </button>
+                        <button
+                          type="button"
+                          class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
+                          onClick={() => {
+                            setMainViewMode('browser')
+                            const a = currentAgent()
+                            if (a) loadBrowserTabs(a.id)
+                          }}
+                        >
+                          🌐 Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
+                        </button>
+                      </div>
+
+                      <div class="header-actions">
+                        {/* Botão Buscar Memória & RAG Full-Text */}
+                        <button
+                          type="button"
+                          class="btn-outline"
+                          onClick={() => setShowSearchModal(true)}
+                          title="Busca ultrarrápida em conversas e arquivos do projeto via SQLite FTS5"
+                        >
+                          🔍 Buscar / RAG
+                        </button>
+
+                        <Show when={agent().provider === 'codex' || agent().provider === 'claude'}>
+                          <button
+                            type="button"
+                            class="btn-outline"
+                            onClick={handleResetCliSession}
+                            disabled={
+                              !activeThread() ||
+                              isStreaming() ||
+                              tasks().some(
+                                (task) =>
+                                  task.threadId === activeThread()?.id && task.status === 'running',
+                              )
+                            }
+                            title="Reinicia a sessão nativa preservando as mensagens desta conversa"
+                          >
+                            Reiniciar sessão CLI
+                          </button>
+                        </Show>
+
+                        {/* Botão Delegar para outro agente */}
+                        <button
+                          type="button"
+                          class="btn-outline"
+                          onClick={handleOpenDelegationModal}
+                          title="Delegar uma subtarefa para outro agente disponível"
+                        >
+                          🤝 Delegar
+                        </button>
+
+                        {/* Botão Pausar / Retomar Fila */}
+                        <button
+                          type="button"
+                          class={`btn-outline ${isQueuePaused() ? 'active' : ''}`}
+                          onClick={togglePauseQueue}
+                          title="Pausa ou retoma a fila de execução de tarefas deste agente"
+                        >
+                          {isQueuePaused() ? '▶ Retomar Fila' : '⏸ Pausar Fila'}
+                        </button>
+
+                        {/* Botão Painel da Fila */}
+                        <button
+                          type="button"
+                          class={`btn-outline ${showQueuePanel() ? 'active' : ''}`}
+                          onClick={() => setShowQueuePanel(!showQueuePanel())}
+                        >
+                          📋 Fila ({pendingTasksCount()})
+                        </button>
+
+                        <button
+                          type="button"
+                          class="btn-danger"
+                          onClick={() => handleDeleteAgent(agent().id)}
+                        >
+                          Remover Agente
+                        </button>
+                      </div>
+                    </header>
+
+                    {/* Drawer da Fila de Tarefas (Fase 3) */}
+                    <Show when={showQueuePanel()}>
+                      <div class="queue-panel">
+                        <div class="queue-panel-header">
+                          <span>Fila Durável do Agente (FIFO)</span>
+                          <span>{isQueuePaused() ? 'Status: PAUSADA' : 'Status: ATIVA'}</span>
+                        </div>
+
+                        <For
+                          each={tasks()}
+                          fallback={
+                            <div style={{ color: 'var(--text-muted)', 'font-size': '12px' }}>
+                              Nenhuma tarefa recente na fila deste agente.
+                            </div>
+                          }
+                        >
+                          {(task) => (
+                            <div class="queue-item">
+                              <div class="queue-item-left">
+                                <span class={`task-tag ${task.status}`}>{task.status}</span>
+                                <span style={{ 'font-weight': '500' }}>{task.prompt}</span>
+                                <Show when={task.error}>
+                                  <span style={{ color: '#f87171', 'font-size': '11px' }}>
+                                    ({task.error})
+                                  </span>
+                                </Show>
                               </div>
-
-                              {/* Badge de Delegação se a mensagem veio de outro agente */}
-                              <Show when={msg.senderAgentId}>
-                                <span class="delegation-badge">🤝 Mensagem Delegada</span>
-                              </Show>
-
-                              <div class={`message-bubble ${msg.role}`}>
-                                {msg.text}
-
-                                {/* Lista de Anexos anexados na mensagem */}
-                                <Show when={msg.attachments && msg.attachments.length > 0}>
-                                  <div class="message-attachments-list">
-                                    <For each={msg.attachments}>
-                                      {(att) => (
-                                        <button
-                                          type="button"
-                                          class="attachment-card"
-                                          onClick={() => handleOpenFile(att.filePath)}
-                                          title="Clique para abrir o arquivo no aplicativo padrão"
-                                        >
-                                          <span class="attachment-icon">📎</span>
-                                          <div class="attachment-info">
-                                            <span class="attachment-name">{att.fileName}</span>
-                                            <span class="attachment-size">
-                                              {formatFileSize(att.fileSize)} • {att.mimeType}
-                                            </span>
-                                          </div>
-                                        </button>
-                                      )}
-                                    </For>
-                                  </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <Show when={task.status === 'pending' || task.status === 'running'}>
+                                  <button
+                                    type="button"
+                                    class="queue-btn-action"
+                                    onClick={() => handleCancelTask(task.id)}
+                                  >
+                                    Cancelar
+                                  </button>
+                                </Show>
+                                <Show
+                                  when={
+                                    task.status === 'failed' ||
+                                    task.status === 'interrupted' ||
+                                    task.status === 'cancelled'
+                                  }
+                                >
+                                  <button
+                                    type="button"
+                                    class="queue-btn-action"
+                                    onClick={() => handleRetryTask(task.id)}
+                                  >
+                                    Repetir
+                                  </button>
                                 </Show>
                               </div>
                             </div>
                           )}
                         </For>
-
-                        {/* Resposta em streaming em tempo real */}
-                        <Show when={isStreaming()}>
-                          <div class="message-row assistant">
-                            <div class="message-author">
-                              <span>{agent().name}</span>
-                              <span class={`provider-tag ${agent().provider}`}>
-                                {agent().provider} streaming
-                              </span>
-                            </div>
-                            <div class="message-bubble assistant streaming">
-                              {streamingText() || 'Processando resposta...'}
-                              <div class="streaming-indicator">
-                                <span class="pulse-dot" />
-                                <span>{agent().provider.toUpperCase()} executando...</span>
-                              </div>
-                            </div>
-                          </div>
-                        </Show>
-                      </Show>
-
-                      <div ref={messagesEndRef} />
-                    </div>
-
-                    {/* Alerta de erro se houver */}
-                    <Show when={chatError()}>
-                      <div class="error-banner">
-                        <span>⚠️ Erro na execução: {chatError()}</span>
-                        <button
-                          type="button"
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'inherit',
-                            cursor: 'pointer',
-                          }}
-                          onClick={() => setChatError(null)}
-                        >
-                          ✕
-                        </button>
                       </div>
                     </Show>
 
-                    {/* Barra de input do chat */}
-                    <div class="chat-input-container">
-                      <form class="chat-input-form" onSubmit={handleSendMessage}>
-                        {/* Arquivos staged antes do envio */}
-                        <Show when={stagedFiles().length > 0}>
-                          <div class="attachments-preview-bar">
-                            <For each={stagedFiles()}>
-                              {(file, index) => (
-                                <div class="attachment-chip">
-                                  <span>
-                                    📎 {file.fileName} ({formatFileSize(file.fileSize)})
-                                  </span>
+                    {/* Modo Chat (Conversa) */}
+                    <Show when={mainViewMode() === 'chat'}>
+                      {/* Barra de Múltiplas Conversas (Threads) */}
+                      <div class="threads-bar">
+                        <div class="threads-bar-header">
+                          <span class="threads-bar-label">Conversas:</span>
+                          <div class="threads-list">
+                            <For each={agentThreads()}>
+                              {(thread) => (
+                                <div
+                                  class={`thread-chip ${activeThread()?.id === thread.id ? 'active' : ''}`}
+                                >
                                   <button
                                     type="button"
-                                    class="attachment-chip-remove"
-                                    onClick={() => removeStagedFile(index())}
+                                    class="thread-chip-select"
+                                    onClick={() => handleSelectThread(thread)}
+                                    title={`Tópico: ${thread.title}`}
                                   >
-                                    ✕
+                                    <span class="thread-chip-icon">💬</span>
+                                    <span class="thread-chip-title">{thread.title}</span>
                                   </button>
+                                  <button
+                                    type="button"
+                                    class="thread-chip-action"
+                                    title="Renomear tópico da conversa"
+                                    onClick={(e) => handleRenameThread(thread, e)}
+                                  >
+                                    ✏️
+                                  </button>
+                                  <Show when={agentThreads().length > 1}>
+                                    <button
+                                      type="button"
+                                      class="thread-chip-action delete"
+                                      title="Excluir tópico da conversa"
+                                      onClick={(e) => handleDeleteThread(thread, e)}
+                                    >
+                                      ✕
+                                    </button>
+                                  </Show>
                                 </div>
                               )}
                             </For>
                           </div>
+                        </div>
+                        <button
+                          type="button"
+                          class="btn-new-thread"
+                          onClick={() => handleCreateThread()}
+                          title="Criar novo tópico/sessão de conversa (ex: Refatorar Banco, Debug, Pesquisa)"
+                        >
+                          <span>+</span> Novo Tópico
+                        </button>
+                      </div>
+
+                      {/* Lista de Mensagens / Conversa */}
+                      <div class="chat-messages">
+                        <Show when={agent().instructions}>
+                          <div
+                            class="card"
+                            style={{
+                              'margin-bottom': '12px',
+                              padding: '10px 14px',
+                              'font-size': '12px',
+                            }}
+                          >
+                            <div
+                              class="card-title"
+                              style={{ 'font-size': '11px', 'margin-bottom': '4px' }}
+                            >
+                              Instruções do Agente
+                            </div>
+                            <div style={{ color: 'var(--text-muted)' }}>{agent().instructions}</div>
+                          </div>
                         </Show>
 
-                        <textarea
-                          class="chat-textarea"
-                          placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
-                          value={inputText()}
-                          onInput={(e) => setInputText(e.currentTarget.value)}
-                          onKeyDown={handleKeyDown}
-                        />
-                        <div class="chat-actions-bar">
-                          <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
-                            <button
-                              type="button"
-                              class="btn-outline"
-                              style={{ padding: '4px 8px', 'font-size': '11px' }}
-                              onClick={handleSelectFiles}
-                              title="Anexar arquivos gerenciados"
-                            >
-                              📎 Anexar
-                            </button>
-                            <span
-                              class={`provider-tag ${agent().provider}`}
-                              title="Provedor e modelo ativos para esta mensagem"
-                            >
-                              {agent().provider} • {agent().model}
-                            </span>
-                            <span>
-                              {isQueuePaused()
-                                ? '⏸ Fila Pausada'
-                                : `${pendingTasksCount()} na fila`}
-                            </span>
-                          </div>
-
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <Show when={isStreaming()}>
-                              <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
-                                ⏹ Interromper
-                              </button>
-                            </Show>
-                            <button
-                              type="submit"
-                              class="btn-primary"
-                              disabled={!inputText().trim() && stagedFiles().length === 0}
-                            >
-                              Enviar
-                            </button>
-                          </div>
-                        </div>
-                      </form>
-                    </div>
-                  </Show>
-
-                  {/* Modo Navegador Embarcado (Fase 5) */}
-                  <Show when={mainViewMode() === 'browser'}>
-                    <div class="browser-workspace">
-                      {/* Strip de Abas */}
-                      <div class="browser-tabs-strip">
-                        <For
-                          each={browserTabs()}
+                        <Show
+                          when={messages().length > 0 || isStreaming()}
                           fallback={
-                            <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
-                              Nenhuma aba aberta
-                            </span>
+                            <div class="chat-empty">
+                              <div>
+                                👋 Olá! Você está no tópico{' '}
+                                <strong>"{activeThread()?.title || 'Conversa'}"</strong> do agente{' '}
+                                <strong>{agent().name}</strong> operando via{' '}
+                                <strong>{agent().provider.toUpperCase()}</strong>.
+                              </div>
+                              <div style={{ 'margin-top': '8px' }}>
+                                Esta sessão é 100% isolada no workspace{' '}
+                                <code>{agent().workspacePath}</code>. Envie tarefas ou anexe
+                                arquivos abaixo sem misturar com outros tópicos.
+                              </div>
+                              <Show when={agentThreads().length <= 1}>
+                                <div class="quick-topics-row">
+                                  <span class="quick-topics-label">
+                                    Sugestões de tópicos para criar:
+                                  </span>
+                                  <div class="quick-topics-buttons">
+                                    <button
+                                      type="button"
+                                      class="quick-topic-btn"
+                                      onClick={() => handleCreateThread('Refatorar Banco de Dados')}
+                                    >
+                                      + Refatorar Banco de Dados
+                                    </button>
+                                    <button
+                                      type="button"
+                                      class="quick-topic-btn"
+                                      onClick={() => handleCreateThread('Debug de Performance')}
+                                    >
+                                      + Debug de Performance
+                                    </button>
+                                    <button
+                                      type="button"
+                                      class="quick-topic-btn"
+                                      onClick={() => handleCreateThread('Pesquisa no Navegador')}
+                                    >
+                                      + Pesquisa no Navegador
+                                    </button>
+                                  </div>
+                                </div>
+                              </Show>
+                            </div>
                           }
                         >
-                          {(tab) => (
-                            <div
-                              role="tab"
-                              tabIndex={0}
-                              class={`browser-tab-chip ${activeTabId() === tab.id ? 'active' : ''}`}
-                              onClick={() => {
-                                setActiveTabId(tab.id)
-                                setBrowserUrlInput(tab.url)
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  setActiveTabId(tab.id)
-                                  setBrowserUrlInput(tab.url)
-                                }
-                              }}
-                            >
-                              <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
-                                {tab.isLoading ? '⏳ ' : '🌐 '}
-                                {tab.title || tab.url}
-                              </span>
-                              <button
-                                type="button"
-                                class="browser-tab-close"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  handleCloseBrowserTab(tab.id)
-                                }}
-                                title="Fechar aba"
-                              >
-                                ✕
-                              </button>
+                          <For each={visibleMessages()}>
+                            {(msg) => (
+                              <div class={`message-row ${msg.role}`}>
+                                <div class="message-author">
+                                  <span>{msg.role === 'user' ? 'Você' : agent().name}</span>
+                                  <span style={{ 'font-size': '10px', opacity: 0.6 }}>
+                                    {new Date(msg.createdAt).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                </div>
+
+                                {/* Badge de Delegação se a mensagem veio de outro agente */}
+                                <Show when={msg.senderAgentId}>
+                                  <span class="delegation-badge">🤝 Mensagem Delegada</span>
+                                </Show>
+
+                                <div class={`message-bubble ${msg.role}`}>
+                                  {msg.text}
+
+                                  {/* Lista de Anexos anexados na mensagem */}
+                                  <Show when={msg.attachments && msg.attachments.length > 0}>
+                                    <div class="message-attachments-list">
+                                      <For each={msg.attachments}>
+                                        {(att) => (
+                                          <button
+                                            type="button"
+                                            class="attachment-card"
+                                            onClick={() => handleOpenFile(att.filePath)}
+                                            title="Clique para abrir o arquivo no aplicativo padrão"
+                                          >
+                                            <span class="attachment-icon">📎</span>
+                                            <div class="attachment-info">
+                                              <span class="attachment-name">{att.fileName}</span>
+                                              <span class="attachment-size">
+                                                {formatFileSize(att.fileSize)} • {att.mimeType}
+                                              </span>
+                                            </div>
+                                          </button>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </Show>
+                                </div>
+                              </div>
+                            )}
+                          </For>
+
+                          {/* Resposta em streaming em tempo real */}
+                          <Show when={isStreaming()}>
+                            <div class="message-row assistant">
+                              <div class="message-author">
+                                <span>{agent().name}</span>
+                                <span class={`provider-tag ${agent().provider}`}>
+                                  {agent().provider} streaming
+                                </span>
+                              </div>
+                              <div class="message-bubble assistant streaming">
+                                {streamingText() || 'Processando resposta...'}
+                                <div class="streaming-indicator">
+                                  <span class="pulse-dot" />
+                                  <span>{agent().provider.toUpperCase()} executando...</span>
+                                </div>
+                              </div>
                             </div>
-                          )}
-                        </For>
-                        <button
-                          type="button"
-                          class="btn-new-tab"
-                          onClick={() => handleOpenBrowserTab('https://github.com')}
-                          title="Abrir nova aba"
-                        >
-                          + Nova Aba
-                        </button>
+                          </Show>
+                        </Show>
+
+                        <div ref={messagesEndRef} />
                       </div>
 
-                      {/* Barra de Navegação */}
-                      <div class="browser-navbar">
-                        <button
-                          type="button"
-                          class="browser-nav-btn"
-                          onClick={() => handleBrowserNavigate('back')}
-                          title="Voltar"
-                          disabled={!activeTabId()}
-                        >
-                          ⬅️
-                        </button>
-                        <button
-                          type="button"
-                          class="browser-nav-btn"
-                          onClick={() => handleBrowserNavigate('forward')}
-                          title="Avançar"
-                          disabled={!activeTabId()}
-                        >
-                          ➡️
-                        </button>
-                        <button
-                          type="button"
-                          class="browser-nav-btn"
-                          onClick={() => handleBrowserNavigate('reload')}
-                          title="Recarregar"
-                          disabled={!activeTabId()}
-                        >
-                          🔄
-                        </button>
-
-                        <input
-                          type="text"
-                          class="browser-url-input"
-                          placeholder="Digite uma URL (ex: https://github.com)..."
-                          value={browserUrlInput()}
-                          onInput={(e) => setBrowserUrlInput(e.currentTarget.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              handleOpenBrowserTab(browserUrlInput())
-                            }
-                          }}
-                        />
-
-                        <button
-                          type="button"
-                          class="btn-primary"
-                          disabled={browserLoading() || !browserUrlInput().trim()}
-                          onClick={() => handleOpenBrowserTab(browserUrlInput())}
-                        >
-                          {browserLoading() ? 'Carregando...' : 'Ir'}
-                        </button>
-                      </div>
-
-                      {/* Barra de Supervisão e Ações */}
-                      <div class="browser-actions-bar">
-                        <div class="browser-actions-group">
+                      {/* Alerta de erro se houver */}
+                      <Show when={chatError()}>
+                        <div class="error-banner">
+                          <span>⚠️ Erro na execução: {chatError()}</span>
                           <button
                             type="button"
-                            class="btn-outline"
-                            style={{ padding: '4px 8px', 'font-size': '11.5px' }}
-                            onClick={handleBrowserScreenshot}
-                            disabled={!activeTabId()}
-                            title="Capturar imagem atual da página"
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'inherit',
+                              cursor: 'pointer',
+                            }}
+                            onClick={() => setChatError(null)}
                           >
-                            📸 Capturar Tela
+                            ✕
                           </button>
-                          <button
-                            type="button"
-                            class="btn-outline"
-                            style={{ padding: '4px 8px', 'font-size': '11.5px' }}
-                            onClick={handleBrowserInspect}
-                            disabled={!activeTabId()}
-                            title="Inspecionar estrutura DOM e links sanitizados"
-                          >
-                            🔍 Inspecionar DOM
-                          </button>
-                        </div>
-
-                        <div class="browser-actions-group">
-                          <span
-                            class="supervision-badge"
-                            title="Sessão particionada exclusiva do agente com bloqueio de popups e downloads arbitrários"
-                          >
-                            🛡️ persist:agent-{agent().id.slice(0, 8)}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Banner de status / mensagem de ação do navegador */}
-                      <Show when={browserStatusMsg()}>
-                        <div
-                          class="error-banner"
-                          style={{
-                            background: 'rgba(16, 185, 129, 0.15)',
-                            'border-color': 'rgba(16, 185, 129, 0.4)',
-                            color: '#34d399',
-                            margin: '10px 16px 0 16px',
-                          }}
-                        >
-                          <span>✅ {browserStatusMsg()}</span>
                         </div>
                       </Show>
 
-                      {/* Layout Viewport + Inspector */}
-                      <div class="browser-viewport-layout">
-                        <div class="browser-main-view">
-                          <Show
-                            when={currentActiveTab()}
-                            fallback={
-                              <div class="browser-empty-state">
-                                <div class="browser-empty-icon">🌐</div>
-                                <h3
-                                  style={{
-                                    'font-size': '15px',
-                                    'margin-bottom': '8px',
-                                    color: 'var(--text-main)',
-                                  }}
+                      {/* Barra de input do chat */}
+                      <div class="chat-input-container">
+                        <form class="chat-input-form" onSubmit={handleSendMessage}>
+                          {/* Arquivos staged antes do envio */}
+                          <Show when={stagedFiles().length > 0}>
+                            <div class="attachments-preview-bar">
+                              <For each={stagedFiles()}>
+                                {(file, index) => (
+                                  <div class="attachment-chip">
+                                    <span>
+                                      📎 {file.fileName} ({formatFileSize(file.fileSize)})
+                                    </span>
+                                    <button
+                                      type="button"
+                                      class="attachment-chip-remove"
+                                      onClick={() => removeStagedFile(index())}
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                )}
+                              </For>
+                            </div>
+                          </Show>
+
+                          <textarea
+                            class="chat-textarea"
+                            placeholder={`Enviar tarefa para ${agent().name} (${agent().provider})... (Enter envia, Shift+Enter pula linha)`}
+                            value={inputText()}
+                            onInput={(e) => setInputText(e.currentTarget.value)}
+                            onKeyDown={handleKeyDown}
+                          />
+                          <div class="chat-actions-bar">
+                            <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
+                              <button
+                                type="button"
+                                class="btn-outline"
+                                style={{ padding: '4px 8px', 'font-size': '11px' }}
+                                onClick={handleSelectFiles}
+                                title="Anexar arquivos gerenciados"
+                              >
+                                📎 Anexar
+                              </button>
+                              <span
+                                class={`provider-tag ${agent().provider}`}
+                                title="Provedor e modelo ativos para esta mensagem"
+                              >
+                                {agent().provider} • {agent().model}
+                              </span>
+                              <span>
+                                {isQueuePaused()
+                                  ? '⏸ Fila Pausada'
+                                  : `${pendingTasksCount()} na fila`}
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <Show when={isStreaming()}>
+                                <button
+                                  type="button"
+                                  class="btn-interrupt"
+                                  onClick={handleInterrupt}
                                 >
-                                  Navegador Isolado do Agente
-                                </h3>
-                                <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
-                                  Abra páginas web com segurança em uma partição isolada com cookies
-                                  e cache próprios deste agente. O agente pode extrair dados,
-                                  inspecionar links e interagir com supervisão.
-                                </p>
-                                <div class="browser-shortcut-chips">
-                                  <button
-                                    type="button"
-                                    class="shortcut-chip"
-                                    onClick={() => handleOpenBrowserTab('https://github.com')}
-                                  >
-                                    GitHub
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="shortcut-chip"
-                                    onClick={() =>
-                                      handleOpenBrowserTab('https://news.ycombinator.com')
-                                    }
-                                  >
-                                    Hacker News
-                                  </button>
-                                  <button
-                                    type="button"
-                                    class="shortcut-chip"
-                                    onClick={() => handleOpenBrowserTab('https://wikipedia.org')}
-                                  >
-                                    Wikipédia
-                                  </button>
-                                </div>
-                              </div>
+                                  ⏹ Interromper
+                                </button>
+                              </Show>
+                              <button
+                                type="submit"
+                                class="btn-primary"
+                                disabled={!inputText().trim() && stagedFiles().length === 0}
+                              >
+                                Enviar
+                              </button>
+                            </div>
+                          </div>
+                        </form>
+                      </div>
+                    </Show>
+
+                    {/* Modo Navegador Embarcado (Fase 5) */}
+                    <Show when={mainViewMode() === 'browser'}>
+                      <div class="browser-workspace">
+                        {/* Strip de Abas */}
+                        <div class="browser-tabs-strip">
+                          <For
+                            each={browserTabs()}
+                            fallback={
+                              <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                                Nenhuma aba aberta
+                              </span>
                             }
                           >
                             {(tab) => (
-                              <>
-                                <div class="browser-card">
-                                  <div class="browser-card-title">
-                                    <span>{tab().title}</span>
-                                    <span
-                                      style={{
-                                        'font-size': '11px',
-                                        color: 'var(--text-muted)',
-                                        'font-weight': 'normal',
-                                      }}
-                                    >
-                                      ID: {tab().id}
-                                    </span>
-                                  </div>
-                                  <div
-                                    style={{
-                                      'font-size': '12px',
-                                      color: '#60a5fa',
-                                      'word-break': 'break-all',
-                                    }}
-                                  >
-                                    {tab().url}
-                                  </div>
-                                </div>
-
-                                {/* Visualizador de Screenshot */}
-                                <div class="browser-card">
-                                  <div class="browser-card-title">
-                                    <span>Visualização em Tempo Real</span>
-                                    <button
-                                      type="button"
-                                      class="btn-outline"
-                                      style={{ padding: '2px 6px', 'font-size': '10.5px' }}
-                                      onClick={handleBrowserScreenshot}
-                                    >
-                                      Atualizar Visão
-                                    </button>
-                                  </div>
-                                  <Show
-                                    when={browserScreenshotUrl()}
-                                    fallback={
-                                      <div
-                                        style={{
-                                          padding: '30px',
-                                          'text-align': 'center',
-                                          color: 'var(--text-muted)',
-                                          'font-size': '12px',
-                                        }}
-                                      >
-                                        📸 Clique em "Capturar Tela" para renderizar o snapshot da
-                                        página.
-                                      </div>
-                                    }
-                                  >
-                                    <img
-                                      src={browserScreenshotUrl() || ''}
-                                      alt="Screenshot da página"
-                                      class="browser-screenshot-img"
-                                    />
-                                  </Show>
-                                </div>
-
-                                {/* Ações Rápidas de Interação Supervisionada */}
-                                <div class="browser-card">
-                                  <div class="browser-card-title">
-                                    <span>Interação Supervisionada (Clique & Preenchimento)</span>
-                                  </div>
-                                  <div class="quick-interact-bar">
-                                    <div class="quick-interact-form">
-                                      <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
-                                        Clicar Elemento
-                                      </span>
-                                      <input
-                                        type="text"
-                                        class="quick-interact-input"
-                                        placeholder="Seletor CSS (ex: #btn, .submit)"
-                                        value={browserClickSelector()}
-                                        onInput={(e) =>
-                                          setBrowserClickSelector(e.currentTarget.value)
-                                        }
-                                      />
-                                      <button
-                                        type="button"
-                                        class="btn-outline"
-                                        style={{ 'font-size': '11px', padding: '4px' }}
-                                        onClick={() => handleBrowserClick(browserClickSelector())}
-                                        disabled={!browserClickSelector().trim()}
-                                      >
-                                        👆 Executar Clique
-                                      </button>
-                                    </div>
-
-                                    <div class="quick-interact-form">
-                                      <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
-                                        Preencher Formulário
-                                      </span>
-                                      <input
-                                        type="text"
-                                        class="quick-interact-input"
-                                        placeholder="Seletor CSS (ex: #search-box)"
-                                        value={browserFillSelector()}
-                                        onInput={(e) =>
-                                          setBrowserFillSelector(e.currentTarget.value)
-                                        }
-                                      />
-                                      <input
-                                        type="text"
-                                        class="quick-interact-input"
-                                        placeholder="Valor a digitar..."
-                                        value={browserFillValue()}
-                                        onInput={(e) => setBrowserFillValue(e.currentTarget.value)}
-                                      />
-                                      <button
-                                        type="button"
-                                        class="btn-outline"
-                                        style={{ 'font-size': '11px', padding: '4px' }}
-                                        onClick={() =>
-                                          handleBrowserFill(
-                                            browserFillSelector(),
-                                            browserFillValue(),
-                                          )
-                                        }
-                                        disabled={!browserFillSelector().trim()}
-                                      >
-                                        ✏️ Preencher Campo
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              </>
+                              <div
+                                role="tab"
+                                tabIndex={0}
+                                class={`browser-tab-chip ${activeTabId() === tab.id ? 'active' : ''}`}
+                                onClick={() => {
+                                  setActiveTabId(tab.id)
+                                  setBrowserUrlInput(tab.url)
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    setActiveTabId(tab.id)
+                                    setBrowserUrlInput(tab.url)
+                                  }
+                                }}
+                              >
+                                <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis' }}>
+                                  {tab.isLoading ? '⏳ ' : '🌐 '}
+                                  {tab.title || tab.url}
+                                </span>
+                                <button
+                                  type="button"
+                                  class="browser-tab-close"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleCloseBrowserTab(tab.id)
+                                  }}
+                                  title="Fechar aba"
+                                >
+                                  ✕
+                                </button>
+                              </div>
                             )}
-                          </Show>
+                          </For>
+                          <button
+                            type="button"
+                            class="btn-new-tab"
+                            onClick={() => handleOpenBrowserTab('https://github.com')}
+                            title="Abrir nova aba"
+                          >
+                            + Nova Aba
+                          </button>
                         </div>
 
-                        {/* Painel Lateral: Inspetor DOM Sanitizado */}
-                        <div class="browser-inspect-pane">
+                        {/* Barra de Navegação */}
+                        <div class="browser-navbar">
+                          <button
+                            type="button"
+                            class="browser-nav-btn"
+                            onClick={() => handleBrowserNavigate('back')}
+                            title="Voltar"
+                            disabled={!activeTabId()}
+                          >
+                            ⬅️
+                          </button>
+                          <button
+                            type="button"
+                            class="browser-nav-btn"
+                            onClick={() => handleBrowserNavigate('forward')}
+                            title="Avançar"
+                            disabled={!activeTabId()}
+                          >
+                            ➡️
+                          </button>
+                          <button
+                            type="button"
+                            class="browser-nav-btn"
+                            onClick={() => handleBrowserNavigate('reload')}
+                            title="Recarregar"
+                            disabled={!activeTabId()}
+                          >
+                            🔄
+                          </button>
+
+                          <input
+                            type="text"
+                            class="browser-url-input"
+                            placeholder="Digite uma URL (ex: https://github.com)..."
+                            value={browserUrlInput()}
+                            onInput={(e) => setBrowserUrlInput(e.currentTarget.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                handleOpenBrowserTab(browserUrlInput())
+                              }
+                            }}
+                          />
+
+                          <button
+                            type="button"
+                            class="btn-primary"
+                            disabled={browserLoading() || !browserUrlInput().trim()}
+                            onClick={() => handleOpenBrowserTab(browserUrlInput())}
+                          >
+                            {browserLoading() ? 'Carregando...' : 'Ir'}
+                          </button>
+                        </div>
+
+                        {/* Barra de Supervisão e Ações */}
+                        <div class="browser-actions-bar">
+                          <div class="browser-actions-group">
+                            <button
+                              type="button"
+                              class="btn-outline"
+                              style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                              onClick={handleBrowserScreenshot}
+                              disabled={!activeTabId()}
+                              title="Capturar imagem atual da página"
+                            >
+                              📸 Capturar Tela
+                            </button>
+                            <button
+                              type="button"
+                              class="btn-outline"
+                              style={{ padding: '4px 8px', 'font-size': '11.5px' }}
+                              onClick={handleBrowserInspect}
+                              disabled={!activeTabId()}
+                              title="Inspecionar estrutura DOM e links sanitizados"
+                            >
+                              🔍 Inspecionar DOM
+                            </button>
+                          </div>
+
+                          <div class="browser-actions-group">
+                            <span
+                              class="supervision-badge"
+                              title="Sessão particionada exclusiva do agente com bloqueio de popups e downloads arbitrários"
+                            >
+                              🛡️ persist:agent-{agent().id.slice(0, 8)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Banner de status / mensagem de ação do navegador */}
+                        <Show when={browserStatusMsg()}>
                           <div
+                            class="error-banner"
                             style={{
-                              'font-weight': '700',
-                              'font-size': '13px',
-                              display: 'flex',
-                              'align-items': 'center',
-                              'justify-content': 'space-between',
+                              background: 'rgba(16, 185, 129, 0.15)',
+                              'border-color': 'rgba(16, 185, 129, 0.4)',
+                              color: '#34d399',
+                              margin: '10px 16px 0 16px',
                             }}
                           >
-                            <span>Inspeção DOM Sanitizada</span>
-                            <Show when={browserInspectData()}>
-                              <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
-                                {browserInspectData()?.links.length || 0} links •{' '}
-                                {browserInspectData()?.inputs.length || 0} campos
-                              </span>
+                            <span>✅ {browserStatusMsg()}</span>
+                          </div>
+                        </Show>
+
+                        {/* Layout Viewport + Inspector */}
+                        <div class="browser-viewport-layout">
+                          <div class="browser-main-view">
+                            <Show
+                              when={currentActiveTab()}
+                              fallback={
+                                <div class="browser-empty-state">
+                                  <div class="browser-empty-icon">🌐</div>
+                                  <h3
+                                    style={{
+                                      'font-size': '15px',
+                                      'margin-bottom': '8px',
+                                      color: 'var(--text-main)',
+                                    }}
+                                  >
+                                    Navegador Isolado do Agente
+                                  </h3>
+                                  <p style={{ 'font-size': '12.5px', 'line-height': '1.5' }}>
+                                    Abra páginas web com segurança em uma partição isolada com
+                                    cookies e cache próprios deste agente. O agente pode extrair
+                                    dados, inspecionar links e interagir com supervisão.
+                                  </p>
+                                  <div class="browser-shortcut-chips">
+                                    <button
+                                      type="button"
+                                      class="shortcut-chip"
+                                      onClick={() => handleOpenBrowserTab('https://github.com')}
+                                    >
+                                      GitHub
+                                    </button>
+                                    <button
+                                      type="button"
+                                      class="shortcut-chip"
+                                      onClick={() =>
+                                        handleOpenBrowserTab('https://news.ycombinator.com')
+                                      }
+                                    >
+                                      Hacker News
+                                    </button>
+                                    <button
+                                      type="button"
+                                      class="shortcut-chip"
+                                      onClick={() => handleOpenBrowserTab('https://wikipedia.org')}
+                                    >
+                                      Wikipédia
+                                    </button>
+                                  </div>
+                                </div>
+                              }
+                            >
+                              {(tab) => (
+                                <>
+                                  <div class="browser-card">
+                                    <div class="browser-card-title">
+                                      <span>{tab().title}</span>
+                                      <span
+                                        style={{
+                                          'font-size': '11px',
+                                          color: 'var(--text-muted)',
+                                          'font-weight': 'normal',
+                                        }}
+                                      >
+                                        ID: {tab().id}
+                                      </span>
+                                    </div>
+                                    <div
+                                      style={{
+                                        'font-size': '12px',
+                                        color: '#60a5fa',
+                                        'word-break': 'break-all',
+                                      }}
+                                    >
+                                      {tab().url}
+                                    </div>
+                                  </div>
+
+                                  {/* Visualizador de Screenshot */}
+                                  <div class="browser-card">
+                                    <div class="browser-card-title">
+                                      <span>Visualização em Tempo Real</span>
+                                      <button
+                                        type="button"
+                                        class="btn-outline"
+                                        style={{ padding: '2px 6px', 'font-size': '10.5px' }}
+                                        onClick={handleBrowserScreenshot}
+                                      >
+                                        Atualizar Visão
+                                      </button>
+                                    </div>
+                                    <Show
+                                      when={browserScreenshotUrl()}
+                                      fallback={
+                                        <div
+                                          style={{
+                                            padding: '30px',
+                                            'text-align': 'center',
+                                            color: 'var(--text-muted)',
+                                            'font-size': '12px',
+                                          }}
+                                        >
+                                          📸 Clique em "Capturar Tela" para renderizar o snapshot da
+                                          página.
+                                        </div>
+                                      }
+                                    >
+                                      <img
+                                        src={browserScreenshotUrl() || ''}
+                                        alt="Screenshot da página"
+                                        class="browser-screenshot-img"
+                                      />
+                                    </Show>
+                                  </div>
+
+                                  {/* Ações Rápidas de Interação Supervisionada */}
+                                  <div class="browser-card">
+                                    <div class="browser-card-title">
+                                      <span>Interação Supervisionada (Clique & Preenchimento)</span>
+                                    </div>
+                                    <div class="quick-interact-bar">
+                                      <div class="quick-interact-form">
+                                        <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                          Clicar Elemento
+                                        </span>
+                                        <input
+                                          type="text"
+                                          class="quick-interact-input"
+                                          placeholder="Seletor CSS (ex: #btn, .submit)"
+                                          value={browserClickSelector()}
+                                          onInput={(e) =>
+                                            setBrowserClickSelector(e.currentTarget.value)
+                                          }
+                                        />
+                                        <button
+                                          type="button"
+                                          class="btn-outline"
+                                          style={{ 'font-size': '11px', padding: '4px' }}
+                                          onClick={() => handleBrowserClick(browserClickSelector())}
+                                          disabled={!browserClickSelector().trim()}
+                                        >
+                                          👆 Executar Clique
+                                        </button>
+                                      </div>
+
+                                      <div class="quick-interact-form">
+                                        <span style={{ 'font-size': '11px', 'font-weight': '600' }}>
+                                          Preencher Formulário
+                                        </span>
+                                        <input
+                                          type="text"
+                                          class="quick-interact-input"
+                                          placeholder="Seletor CSS (ex: #search-box)"
+                                          value={browserFillSelector()}
+                                          onInput={(e) =>
+                                            setBrowserFillSelector(e.currentTarget.value)
+                                          }
+                                        />
+                                        <input
+                                          type="text"
+                                          class="quick-interact-input"
+                                          placeholder="Valor a digitar..."
+                                          value={browserFillValue()}
+                                          onInput={(e) =>
+                                            setBrowserFillValue(e.currentTarget.value)
+                                          }
+                                        />
+                                        <button
+                                          type="button"
+                                          class="btn-outline"
+                                          style={{ 'font-size': '11px', padding: '4px' }}
+                                          onClick={() =>
+                                            handleBrowserFill(
+                                              browserFillSelector(),
+                                              browserFillValue(),
+                                            )
+                                          }
+                                          disabled={!browserFillSelector().trim()}
+                                        >
+                                          ✏️ Preencher Campo
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
                             </Show>
                           </div>
 
-                          <Show
-                            when={browserInspectData()}
-                            fallback={
-                              <div
-                                style={{
-                                  color: 'var(--text-muted)',
-                                  'font-size': '12px',
-                                  'line-height': '1.5',
-                                  margin: 'auto',
-                                  'text-align': 'center',
-                                  padding: '20px',
-                                }}
-                              >
-                                🔍 Clique em <strong>"Inspecionar DOM"</strong> para extrair a
-                                estrutura de links, campos e resumo textual sanitizado da página sem
-                                risco de scripts adversários.
-                              </div>
-                            }
-                          >
-                            {(data) => (
-                              <>
-                                <div>
-                                  <div
-                                    style={{
-                                      'font-weight': '600',
-                                      'font-size': '11.5px',
-                                      'margin-bottom': '4px',
-                                    }}
-                                  >
-                                    Resumo Textual
-                                  </div>
-                                  <div class="inspect-summary-box">
-                                    {data().textSummary ||
-                                      'Nenhum texto detectado no corpo da página.'}
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <div
-                                    style={{
-                                      'font-weight': '600',
-                                      'font-size': '11.5px',
-                                      'margin-bottom': '4px',
-                                    }}
-                                  >
-                                    Links Detectados ({data().links.length})
-                                  </div>
-                                  <div class="inspect-links-list">
-                                    <For
-                                      each={data().links}
-                                      fallback={
-                                        <span
-                                          style={{
-                                            'font-size': '11px',
-                                            color: 'var(--text-muted)',
-                                          }}
-                                        >
-                                          Nenhum link
-                                        </span>
-                                      }
-                                    >
-                                      {(link) => (
-                                        <button
-                                          type="button"
-                                          class="inspect-link-btn"
-                                          onClick={() => handleOpenBrowserTab(link.href)}
-                                          title={`Abrir ${link.href}`}
-                                        >
-                                          🔗 {link.text || link.href}
-                                        </button>
-                                      )}
-                                    </For>
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <div
-                                    style={{
-                                      'font-weight': '600',
-                                      'font-size': '11.5px',
-                                      'margin-bottom': '4px',
-                                    }}
-                                  >
-                                    Campos de Formulário ({data().inputs.length})
-                                  </div>
-                                  <div class="inspect-inputs-list">
-                                    <For
-                                      each={data().inputs}
-                                      fallback={
-                                        <span
-                                          style={{
-                                            'font-size': '11px',
-                                            color: 'var(--text-muted)',
-                                          }}
-                                        >
-                                          Nenhum campo
-                                        </span>
-                                      }
-                                    >
-                                      {(input) => (
-                                        <div class="inspect-input-row">
-                                          <div>
-                                            <span style={{ 'font-weight': '600' }}>
-                                              {input.name || input.id || input.selector}
-                                            </span>
-                                            <span
-                                              style={{
-                                                color: 'var(--text-muted)',
-                                                'margin-left': '4px',
-                                              }}
-                                            >
-                                              ({input.type})
-                                            </span>
-                                          </div>
-                                          <button
-                                            type="button"
-                                            class="queue-btn-action"
-                                            onClick={() => {
-                                              setBrowserFillSelector(input.selector)
-                                            }}
-                                            title="Selecionar para preenchimento"
-                                          >
-                                            Selecionar
-                                          </button>
-                                        </div>
-                                      )}
-                                    </For>
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          </Show>
-                        </div>
-                      </div>
-                    </div>
-                  </Show>
-                </div>
-              )}
-            </Show>
-          }
-        >
-          {/* Tela de Seleção e Gerenciamento de Conexões */}
-          <div class="connections-view">
-            <div class="connections-header">
-              <div class="connections-header-left">
-                <h1 class="connections-title">
-                  <span>🔌 Conexões & Provedores de IA</span>
-                </h1>
-                <p class="connections-desc">
-                  Selecione e habilite quais conexões você deseja disponibilizar no Orchbot (Codex,
-                  Claude, Grok, Muse). Configure credenciais, endpoints e modelos padrão com testes
-                  de conectividade em tempo real.
-                </p>
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <button
-                  type="button"
-                  class="btn-primary"
-                  onClick={() => {
-                    const enabled = connections().filter((c) => c.enabled)
-                    if (enabled.length > 0) {
-                      setProvider(enabled[0].providerId)
-                      setModel(enabled[0].defaultModel)
-                    } else {
-                      setProvider('codex')
-                      setModel('gpt-4o')
-                    }
-                    setShowModal(true)
-                  }}
-                  title="Criar novo agente com os provedores configurados"
-                >
-                  + Novo Agente
-                </button>
-                <button
-                  type="button"
-                  class="btn-outline"
-                  onClick={() => {
-                    loadConnections()
-                    loadProviderStatuses()
-                  }}
-                  title="Atualizar status de todas as conexões"
-                >
-                  🔄 Atualizar Status
-                </button>
-              </div>
-            </div>
-
-            <div class="connections-grid">
-              <For each={connections()}>
-                {(conn) => {
-                  const draft = () => connectionDrafts()[conn.providerId] || {}
-                  const isTesting = () => testingConnection() === conn.providerId
-                  const isSaving = () => savingConnection() === conn.providerId
-                  const testResult = () => testResults()[conn.providerId]
-                  const savedMsg = () => saveMessage()[conn.providerId]
-                  const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
-
-                  const getIcon = () => {
-                    switch (conn.providerId) {
-                      case 'codex':
-                        return '🟢'
-                      case 'claude':
-                        return '🟣'
-                      case 'grok':
-                        return '⚡'
-                      case 'gemini':
-                        return '🔷'
-                      case 'muse':
-                        return '✨'
-                      default:
-                        return '🤖'
-                    }
-                  }
-
-                  return (
-                    <div
-                      class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
-                    >
-                      <div class="connection-box-top">
-                        <div class="connection-brand">
-                          <span class="connection-icon-badge">{getIcon()}</span>
-                          <div>
-                            <div class="connection-name">{conn.name}</div>
-                            <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
-                              ID: <code>{conn.providerId}</code>
-                              <Show when={conn.version}>
-                                {' • '}
-                                <span style={{ color: 'var(--text-main)' }}>{conn.version}</span>
+                          {/* Painel Lateral: Inspetor DOM Sanitizado */}
+                          <div class="browser-inspect-pane">
+                            <div
+                              style={{
+                                'font-weight': '700',
+                                'font-size': '13px',
+                                display: 'flex',
+                                'align-items': 'center',
+                                'justify-content': 'space-between',
+                              }}
+                            >
+                              <span>Inspeção DOM Sanitizada</span>
+                              <Show when={browserInspectData()}>
+                                <span style={{ 'font-size': '10.5px', color: 'var(--text-muted)' }}>
+                                  {browserInspectData()?.links.length || 0} links •{' '}
+                                  {browserInspectData()?.inputs.length || 0} campos
+                                </span>
                               </Show>
                             </div>
+
+                            <Show
+                              when={browserInspectData()}
+                              fallback={
+                                <div
+                                  style={{
+                                    color: 'var(--text-muted)',
+                                    'font-size': '12px',
+                                    'line-height': '1.5',
+                                    margin: 'auto',
+                                    'text-align': 'center',
+                                    padding: '20px',
+                                  }}
+                                >
+                                  🔍 Clique em <strong>"Inspecionar DOM"</strong> para extrair a
+                                  estrutura de links, campos e resumo textual sanitizado da página
+                                  sem risco de scripts adversários.
+                                </div>
+                              }
+                            >
+                              {(data) => (
+                                <>
+                                  <div>
+                                    <div
+                                      style={{
+                                        'font-weight': '600',
+                                        'font-size': '11.5px',
+                                        'margin-bottom': '4px',
+                                      }}
+                                    >
+                                      Resumo Textual
+                                    </div>
+                                    <div class="inspect-summary-box">
+                                      {data().textSummary ||
+                                        'Nenhum texto detectado no corpo da página.'}
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div
+                                      style={{
+                                        'font-weight': '600',
+                                        'font-size': '11.5px',
+                                        'margin-bottom': '4px',
+                                      }}
+                                    >
+                                      Links Detectados ({data().links.length})
+                                    </div>
+                                    <div class="inspect-links-list">
+                                      <For
+                                        each={data().links}
+                                        fallback={
+                                          <span
+                                            style={{
+                                              'font-size': '11px',
+                                              color: 'var(--text-muted)',
+                                            }}
+                                          >
+                                            Nenhum link
+                                          </span>
+                                        }
+                                      >
+                                        {(link) => (
+                                          <button
+                                            type="button"
+                                            class="inspect-link-btn"
+                                            onClick={() => handleOpenBrowserTab(link.href)}
+                                            title={`Abrir ${link.href}`}
+                                          >
+                                            🔗 {link.text || link.href}
+                                          </button>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <div
+                                      style={{
+                                        'font-weight': '600',
+                                        'font-size': '11.5px',
+                                        'margin-bottom': '4px',
+                                      }}
+                                    >
+                                      Campos de Formulário ({data().inputs.length})
+                                    </div>
+                                    <div class="inspect-inputs-list">
+                                      <For
+                                        each={data().inputs}
+                                        fallback={
+                                          <span
+                                            style={{
+                                              'font-size': '11px',
+                                              color: 'var(--text-muted)',
+                                            }}
+                                          >
+                                            Nenhum campo
+                                          </span>
+                                        }
+                                      >
+                                        {(input) => (
+                                          <div class="inspect-input-row">
+                                            <div>
+                                              <span style={{ 'font-weight': '600' }}>
+                                                {input.name || input.id || input.selector}
+                                              </span>
+                                              <span
+                                                style={{
+                                                  color: 'var(--text-muted)',
+                                                  'margin-left': '4px',
+                                                }}
+                                              >
+                                                ({input.type})
+                                              </span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              class="queue-btn-action"
+                                              onClick={() => {
+                                                setBrowserFillSelector(input.selector)
+                                              }}
+                                              title="Selecionar para preenchimento"
+                                            >
+                                              Selecionar
+                                            </button>
+                                          </div>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </Show>
                           </div>
                         </div>
+                      </div>
+                    </Show>
+                  </div>
+                )}
+              </Show>
+            }
+          >
+            {/* Tela de Seleção e Gerenciamento de Conexões */}
+            <div class="connections-view">
+              <LocalRuntimes onAdded={loadConnections} />
+              <Show when={visibleUpdates().length > 0}>
+                <div class="updates-banner">
+                  <span>
+                    ⬆ {visibleUpdates().length} atualização(ões) de provedor disponível(is):{' '}
+                    {visibleUpdates()
+                      .map((u) => `${u.providerId} v${u.installedVersion} → v${u.latestVersion}`)
+                      .join(' · ')}
+                  </span>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={() => visibleUpdates().forEach(handleDismissUpdate)}
+                  >
+                    Depois
+                  </button>
+                </div>
+              </Show>
+              <div class="connections-header">
+                <div class="connections-header-left">
+                  <h1 class="connections-title">
+                    <span>🔌 Conexões & Provedores de IA</span>
+                  </h1>
+                  <p class="connections-desc">
+                    Selecione e habilite quais conexões você deseja disponibilizar no Orchbot
+                    (Codex, Claude, Grok, Muse). Configure credenciais, endpoints e modelos padrão
+                    com testes de conectividade em tempo real.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    class="btn-primary"
+                    onClick={() => {
+                      const enabled = connections().filter((c) => c.enabled)
+                      if (enabled.length > 0) {
+                        setProvider(enabled[0].providerId)
+                        setModel(enabled[0].defaultModel)
+                      } else {
+                        setProvider('codex')
+                        setModel(DEFAULT_PROVIDER_MODELS.codex)
+                      }
+                      setShowModal(true)
+                    }}
+                    title="Criar novo agente com os provedores configurados"
+                  >
+                    + Novo Agente
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={() => setShowCustomProvider(true)}
+                  >
+                    + Provedor personalizado
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={() => {
+                      loadConnections()
+                      loadProviderStatuses()
+                    }}
+                    title="Atualizar status de todas as conexões"
+                  >
+                    🔄 Atualizar Status
+                  </button>
+                </div>
+              </div>
 
-                        <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
-                          <Show
-                            when={conn.enabled}
-                            fallback={
-                              <span class="connection-status-pill disabled">○ Desativado</span>
-                            }
-                          >
+              <div class="connections-grid">
+                <For each={connections()}>
+                  {(conn) => {
+                    const draft = () => connectionDrafts()[conn.providerId] || {}
+                    const isTesting = () => testingConnection() === conn.providerId
+                    const isSaving = () => savingConnection() === conn.providerId
+                    const testResult = () => testResults()[conn.providerId]
+                    const savedMsg = () => saveMessage()[conn.providerId]
+                    const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
+
+                    const getIcon = () => PROVIDER_ICONS[conn.providerId] || '🤖'
+
+                    return (
+                      <div
+                        class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
+                      >
+                        <div class="connection-box-top">
+                          <div class="connection-brand">
+                            <span class="connection-icon-badge">{getIcon()}</span>
+                            <div>
+                              <div class="connection-name">{conn.name}</div>
+                              <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                                ID: <code>{conn.providerId}</code>
+                                <Show when={conn.version}>
+                                  {' • '}
+                                  <span style={{ color: 'var(--text-main)' }}>{conn.version}</span>
+                                </Show>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
                             <Show
-                              when={conn.available}
+                              when={conn.enabled}
                               fallback={
-                                <span
-                                  class="connection-status-pill warning"
-                                  title={conn.error || 'CLI ou API não detectada'}
-                                >
-                                  ⚠ Requer Configuração
-                                </span>
+                                <span class="connection-status-pill disabled">○ Desativado</span>
                               }
                             >
                               <span
-                                class="connection-status-pill online"
-                                title={conn.version || 'CLI operacional'}
+                                class={`connection-status-pill ${conn.readiness === 'ready' ? 'online' : 'warning'}`}
+                                title={conn.error || conn.version || ''}
                               >
-                                ● Conectado
+                                {conn.readiness === 'ready' ? '●' : '⚠'} {providerStatusLabel(conn)}
                               </span>
                             </Show>
-                          </Show>
 
-                          <label
-                            class="toggle-switch-wrapper"
-                            title={conn.enabled ? 'Desativar conexão' : 'Ativar conexão'}
-                          >
-                            <div class="toggle-switch">
-                              <input
-                                type="checkbox"
-                                checked={conn.enabled}
-                                onChange={(e) =>
-                                  handleToggleConnection(conn, e.currentTarget.checked)
-                                }
-                              />
-                              <span class="toggle-slider" />
-                            </div>
-                          </label>
-                        </div>
-                      </div>
-
-                      <div class="connection-fields">
-                        <div class="connection-field">
-                          <label
-                            class="connection-field-label"
-                            for={`conn-model-${conn.providerId}`}
-                          >
-                            Modelo Padrão
-                          </label>
-                          <input
-                            id={`conn-model-${conn.providerId}`}
-                            list={`conn-models-${conn.providerId}`}
-                            class="connection-input"
-                            value={draft().defaultModel ?? conn.defaultModel}
-                            onInput={(e) =>
-                              updateDraftField(
-                                conn.providerId,
-                                'defaultModel',
-                                e.currentTarget.value,
-                              )
-                            }
-                            placeholder="Selecione na lista ou digite qualquer modelo..."
-                            disabled={!conn.enabled}
-                          />
-                          <datalist id={`conn-models-${conn.providerId}`}>
-                            <For each={conn.models}>{(m) => <option value={m} />}</For>
-                          </datalist>
+                            <label
+                              class="toggle-switch-wrapper"
+                              title={conn.enabled ? 'Desativar conexão' : 'Ativar conexão'}
+                            >
+                              <div class="toggle-switch">
+                                <input
+                                  type="checkbox"
+                                  checked={conn.enabled}
+                                  onChange={(e) =>
+                                    handleToggleConnection(conn, e.currentTarget.checked)
+                                  }
+                                />
+                                <span class="toggle-slider" />
+                              </div>
+                            </label>
+                          </div>
                         </div>
 
-                        <div class="connection-field">
-                          <label class="connection-field-label" for={`conn-key-${conn.providerId}`}>
-                            Chave de Acesso / API Key
-                          </label>
-                          <div class="api-key-group">
+                        <div class="connection-fields">
+                          <div class="connection-field">
+                            <label
+                              class="connection-field-label"
+                              for={`conn-model-${conn.providerId}`}
+                            >
+                              Modelo Padrão
+                            </label>
                             <input
-                              id={`conn-key-${conn.providerId}`}
-                              type={isKeyVisible() ? 'text' : 'password'}
+                              id={`conn-model-${conn.providerId}`}
+                              list={`conn-models-${conn.providerId}`}
                               class="connection-input"
-                              placeholder="CLI local / variável de ambiente / chave personalizada..."
-                              value={draft().apiKey ?? (conn.apiKey || '')}
+                              value={draft().defaultModel ?? conn.defaultModel}
                               onInput={(e) =>
-                                updateDraftField(conn.providerId, 'apiKey', e.currentTarget.value)
+                                updateDraftField(
+                                  conn.providerId,
+                                  'defaultModel',
+                                  e.currentTarget.value,
+                                )
                               }
+                              placeholder="Selecione na lista ou digite qualquer modelo..."
                               disabled={!conn.enabled}
                             />
+                            <datalist id={`conn-models-${conn.providerId}`}>
+                              <For each={conn.models}>{(m) => <option value={m} />}</For>
+                            </datalist>
+                          </div>
+
+                          <div class="connection-field">
+                            <label
+                              class="connection-field-label"
+                              for={`conn-key-${conn.providerId}`}
+                            >
+                              Chave de Acesso / API Key
+                            </label>
+                            <div class="api-key-group">
+                              <input
+                                id={`conn-key-${conn.providerId}`}
+                                type={isKeyVisible() ? 'text' : 'password'}
+                                class="connection-input"
+                                placeholder={
+                                  conn.hasApiKey
+                                    ? 'Chave cadastrada; digite para substituir'
+                                    : 'CLI local / variável de ambiente / chave personalizada...'
+                                }
+                                value={draft().apiKey ?? ''}
+                                onInput={(e) =>
+                                  updateDraftField(conn.providerId, 'apiKey', e.currentTarget.value)
+                                }
+                                disabled={!conn.enabled}
+                              />
+                              <button
+                                type="button"
+                                class="btn-icon-eye"
+                                onClick={() => toggleShowApiKey(conn.providerId)}
+                                title={isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'}
+                                disabled={!conn.enabled}
+                              >
+                                {isKeyVisible() ? '🙈' : '👁️'}
+                              </button>
+                            </div>
+                            <Show when={conn.keyStorageError}>
+                              <output>{conn.keyStorageError}</output>
+                            </Show>
+                            <Show when={conn.hasApiKey}>
+                              <button
+                                type="button"
+                                disabled={!conn.enabled}
+                                onClick={() => updateDraftField(conn.providerId, 'apiKey', '')}
+                              >
+                                Remover chave ao salvar
+                              </button>
+                              <Show when={draft().apiKey === ''}>
+                                <output>A chave será removida ao salvar.</output>
+                              </Show>
+                            </Show>
+                          </div>
+
+                          <Show when={conn.providerId !== 'acp'}>
+                            <div class="connection-field">
+                              <label
+                                class="connection-field-label"
+                                for={`conn-endpoint-${conn.providerId}`}
+                              >
+                                {isCustomProvider(conn.providerId)
+                                  ? 'URL base da API'
+                                  : 'Endpoint Customizado (Opcional)'}
+                              </label>
+                              <input
+                                id={`conn-endpoint-${conn.providerId}`}
+                                type="text"
+                                class="connection-input"
+                                placeholder="Ex: https://api.x.ai/v1 ou proxy local..."
+                                value={draft().endpoint ?? (conn.endpoint || '')}
+                                onInput={(e) =>
+                                  updateDraftField(
+                                    conn.providerId,
+                                    'endpoint',
+                                    e.currentTarget.value,
+                                  )
+                                }
+                                disabled={!conn.enabled}
+                              />
+                            </div>
+                          </Show>
+                        </div>
+
+                        <Show when={testResult()}>
+                          {(res) => (
+                            <div
+                              class={`connection-result-msg ${res().success ? 'success' : 'error'}`}
+                            >
+                              <strong>{res().success ? '✓ Sucesso: ' : '✗ Erro: '}</strong>
+                              {res().message}
+                            </div>
+                          )}
+                        </Show>
+
+                        <Show when={savedMsg()}>
+                          {(msg) => <div class="connection-save-feedback">✓ {msg()}</div>}
+                        </Show>
+
+                        <div class="connection-card-actions">
+                          <div style={{ display: 'flex', gap: '6px', 'align-items': 'center' }}>
                             <button
                               type="button"
-                              class="btn-icon-eye"
-                              onClick={() => toggleShowApiKey(conn.providerId)}
-                              title={isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'}
-                              disabled={!conn.enabled}
+                              class="btn-outline"
+                              onClick={() => setAccountsProvider(conn.providerId)}
                             >
-                              {isKeyVisible() ? '🙈' : '👁️'}
+                              Contas ({providerAccounts()[conn.providerId]?.length ?? 1})
+                            </button>
+                            <button
+                              type="button"
+                              class="btn-icon-gear"
+                              onClick={() => setConfigProviderId(conn.providerId)}
+                              title={`Configurar ${conn.name} (CLI, esforço, modelos)`}
+                              aria-label={`Configurar ${conn.name}`}
+                            >
+                              ⚙
+                            </button>
+                            <button
+                              type="button"
+                              class="btn-outline"
+                              onClick={() => handleTestConnection(conn.providerId)}
+                              disabled={!conn.enabled || isTesting()}
+                              title="Testar comunicação com a CLI ou API do provedor"
+                            >
+                              {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
                             </button>
                           </div>
-                        </div>
 
-                        <div class="connection-field">
-                          <label
-                            class="connection-field-label"
-                            for={`conn-endpoint-${conn.providerId}`}
+                          <button
+                            type="button"
+                            class="btn-primary"
+                            onClick={() => handleSaveConnection(conn)}
+                            disabled={!conn.enabled || isSaving()}
                           >
-                            Endpoint Customizado (Opcional)
-                          </label>
-                          <input
-                            id={`conn-endpoint-${conn.providerId}`}
-                            type="text"
-                            class="connection-input"
-                            placeholder="Ex: https://api.x.ai/v1 ou proxy local..."
-                            value={draft().endpoint ?? (conn.endpoint || '')}
-                            onInput={(e) =>
-                              updateDraftField(conn.providerId, 'endpoint', e.currentTarget.value)
-                            }
-                            disabled={!conn.enabled}
-                          />
+                            {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
+                          </button>
                         </div>
                       </div>
-
-                      <Show when={testResult()}>
-                        {(res) => (
-                          <div
-                            class={`connection-result-msg ${res().success ? 'success' : 'error'}`}
-                          >
-                            <strong>{res().success ? '✓ Sucesso: ' : '✗ Erro: '}</strong>
-                            {res().message}
-                          </div>
-                        )}
-                      </Show>
-
-                      <Show when={savedMsg()}>
-                        {(msg) => <div class="connection-save-feedback">✓ {msg()}</div>}
-                      </Show>
-
-                      <div class="connection-card-actions">
-                        <button
-                          type="button"
-                          class="btn-outline"
-                          onClick={() => handleTestConnection(conn.providerId)}
-                          disabled={!conn.enabled || isTesting()}
-                          title="Testar comunicação com a CLI ou API do provedor"
-                        >
-                          {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
-                        </button>
-
-                        <button
-                          type="button"
-                          class="btn-primary"
-                          onClick={() => handleSaveConnection(conn)}
-                          disabled={!conn.enabled || isSaving()}
-                        >
-                          {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                }}
-              </For>
+                    )
+                  }}
+                </For>
+              </div>
             </div>
-          </div>
+          </Show>
         </Show>
       </main>
+
+      <Show when={accountsConnection()}>
+        {(connection) => (
+          <ProviderAccounts
+            connection={connection()}
+            onClose={() => setAccountsProvider(null)}
+            onChange={loadConnections}
+          />
+        )}
+      </Show>
+
+      <Show when={showCustomProvider()}>
+        <dialog
+          class="modal-overlay"
+          aria-labelledby="custom-provider-title"
+          open
+          onClick={() => !creatingProvider() && closeCustomProvider()}
+          onKeyDown={(e) => e.key === 'Escape' && !creatingProvider() && closeCustomProvider()}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Escape' && !creatingProvider()) closeCustomProvider()
+            }}
+          >
+            <div class="modal-header">
+              <h2 id="custom-provider-title">Adicionar provedor</h2>
+            </div>
+            <form
+              class="modal-form"
+              onSubmit={(e) => {
+                e.preventDefault()
+                void handleCreateCustomProvider()
+              }}
+            >
+              <div class="form-group">
+                <label for="custom-preset">Tipo</label>
+                <select
+                  id="custom-preset"
+                  value={customPreset()}
+                  disabled={creatingProvider()}
+                  onChange={(e) => {
+                    const preset = e.currentTarget.value as keyof typeof CUSTOM_PROVIDER_PRESETS
+                    setCustomPreset(preset)
+                    setCustomForm({ ...CUSTOM_PROVIDER_PRESETS[preset], apiKey: '' })
+                  }}
+                >
+                  <option value="custom">OpenAI-compatible</option>
+                  <option value="ollama">Ollama local</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="custom-name">Nome</label>
+                <input
+                  id="custom-name"
+                  required
+                  maxLength={100}
+                  value={customForm().name}
+                  disabled={creatingProvider()}
+                  onInput={(e) => setCustomForm({ ...customForm(), name: e.currentTarget.value })}
+                />
+              </div>
+              <div class="form-group">
+                <label for="custom-endpoint">URL base da API</label>
+                <input
+                  id="custom-endpoint"
+                  type="url"
+                  required
+                  value={customForm().endpoint}
+                  disabled={creatingProvider()}
+                  placeholder="http://localhost:11434/v1"
+                  onInput={(e) =>
+                    setCustomForm({ ...customForm(), endpoint: e.currentTarget.value })
+                  }
+                />
+                <small>
+                  Informe a URL base, sem /chat/completions. O contexto das conversas será enviado a
+                  esse endpoint.
+                </small>
+              </div>
+              <div class="form-group">
+                <label for="custom-model">Modelo padrão</label>
+                <input
+                  id="custom-model"
+                  required
+                  maxLength={200}
+                  value={customForm().defaultModel}
+                  disabled={creatingProvider()}
+                  placeholder="ID exato do modelo disponível no provedor"
+                  onInput={(e) =>
+                    setCustomForm({ ...customForm(), defaultModel: e.currentTarget.value })
+                  }
+                />
+              </div>
+              <div class="form-group">
+                <label for="custom-key">API key (opcional para APIs locais)</label>
+                <input
+                  id="custom-key"
+                  type="password"
+                  autocomplete="new-password"
+                  value={customForm().apiKey}
+                  disabled={creatingProvider()}
+                  onInput={(e) => setCustomForm({ ...customForm(), apiKey: e.currentTarget.value })}
+                />
+              </div>
+              <Show when={customProviderError()}>
+                <div class="connection-result-msg error" role="alert">
+                  {customProviderError()}
+                </div>
+              </Show>
+              <div class="modal-actions">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  disabled={creatingProvider()}
+                  onClick={closeCustomProvider}
+                >
+                  Cancelar
+                </button>
+                <button type="submit" class="btn-primary" disabled={creatingProvider()}>
+                  {creatingProvider() ? 'Salvando...' : 'Adicionar provedor'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </dialog>
+      </Show>
+
+      {/* Modal de Configuração do Provedor (ícone ⚙) */}
+      <Show when={configConnection()}>
+        {(conn) => {
+          const draft = () => connectionDrafts()[conn().providerId] || {}
+          const models = () =>
+            discoveredModels()[conn().providerId] || conn().discoveredModels || conn().models
+          return (
+            <dialog
+              class="modal-overlay"
+              open
+              onClick={() => setConfigProviderId(null)}
+              onKeyDown={(e) => e.key === 'Escape' && setConfigProviderId(null)}
+            >
+              <div
+                class="modal-content provider-config-modal"
+                role="document"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <div class="modal-header">
+                  <span class="modal-title">
+                    {PROVIDER_ICONS[conn().providerId] || '🔗'} Configurar {conn().name}
+                  </span>
+                  <button
+                    type="button"
+                    class="modal-close"
+                    onClick={() => setConfigProviderId(null)}
+                    aria-label="Fechar"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <div class="modal-form">
+                  <div class="provider-config-status">
+                    <span
+                      class={`connection-status-pill ${!conn().enabled ? 'disabled' : conn().readiness === 'ready' ? 'online' : 'warning'}`}
+                    >
+                      {!conn().enabled ? '○ Desativado' : providerStatusLabel(conn())}
+                    </span>
+                    <Show when={conn().version}>
+                      <span>{conn().version}</span>
+                    </Show>
+                  </div>
+                  <Show when={conn().path || conn().cliCommand}>
+                    <div class="provider-config-meta">
+                      CLI: <code>{draft().cliPath || conn().path || conn().cliCommand}</code>
+                      <Show when={conn().installHint}>
+                        {' • '}Instalação: <code>{conn().installHint}</code>
+                      </Show>
+                    </div>
+                  </Show>
+                  <ManagedCliControls
+                    providerId={conn().providerId}
+                    onChange={() => {
+                      void loadConnections()
+                      void loadProviderUpdates()
+                    }}
+                  />
+                  <Show when={conn().loginHint && conn().readiness !== 'ready'}>
+                    <div class="provider-config-meta">
+                      Para entrar: <code>{conn().loginHint}</code>
+                    </div>
+                  </Show>
+                  <Show when={conn().error}>
+                    <div class="connection-result-msg error">{conn().error}</div>
+                  </Show>
+
+                  <Show when={isCustomProvider(conn().providerId)}>
+                    <div class="form-group">
+                      <label for="cfg-provider-name">Nome do provedor</label>
+                      <input
+                        id="cfg-provider-name"
+                        value={draft().name ?? conn().name}
+                        onInput={(e) =>
+                          updateDraftField(conn().providerId, 'name', e.currentTarget.value)
+                        }
+                      />
+                    </div>
+                  </Show>
+                  <Show when={!isCustomProvider(conn().providerId)}>
+                    <div class="form-group">
+                      <label for="cfg-cli-path">Caminho da CLI (opcional)</label>
+                      <input
+                        id="cfg-cli-path"
+                        type="text"
+                        value={draft().cliPath ?? conn().cliPath ?? ''}
+                        onInput={(e) =>
+                          updateDraftField(conn().providerId, 'cliPath', e.currentTarget.value)
+                        }
+                        placeholder={`Padrão: ${conn().cliCommand || conn().providerId} (PATH)`}
+                      />
+                    </div>
+                  </Show>
+
+                  <Show when={conn().providerId === 'acp'}>
+                    <div class="form-group">
+                      <label for="cfg-cli-args">Argumentos ACP (lista JSON)</label>
+                      <input
+                        id="cfg-cli-args"
+                        value={draft().cliArgs ?? JSON.stringify(conn().cliArgs ?? [])}
+                        onInput={(e) =>
+                          updateDraftField(conn().providerId, 'cliArgs', e.currentTarget.value)
+                        }
+                        placeholder={'["--acp"]'}
+                      />
+                      <small>
+                        Informe o executável acima e os argumentos separados aqui. Sem shell. Faça
+                        login na CLI antes de conectar.
+                      </small>
+                    </div>
+                    <div class="form-group">
+                      <label for="cfg-api-key-env">
+                        Variável de ambiente da API key (opcional)
+                      </label>
+                      <input
+                        id="cfg-api-key-env"
+                        value={draft().apiKeyEnv ?? conn().apiKeyEnv ?? ''}
+                        onInput={(e) =>
+                          updateDraftField(conn().providerId, 'apiKeyEnv', e.currentTarget.value)
+                        }
+                        placeholder="Ex.: ANTHROPIC_API_KEY"
+                      />
+                      <small>
+                        Se usar a chave salva abaixo, informe a variável esperada pelo agente. Sem
+                        chave salva, o agente usa o login e o ambiente locais.
+                      </small>
+                    </div>
+                  </Show>
+
+                  <div class="form-group">
+                    <label for="cfg-model">Modelo padrão</label>
+                    <input
+                      id="cfg-model"
+                      list="cfg-models-list"
+                      value={draft().defaultModel ?? conn().defaultModel}
+                      onInput={(e) =>
+                        updateDraftField(conn().providerId, 'defaultModel', e.currentTarget.value)
+                      }
+                      placeholder="Selecione ou digite um modelo..."
+                    />
+                    <datalist id="cfg-models-list">
+                      <For each={models()}>{(m) => <option value={m} />}</For>
+                    </datalist>
+                    <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={() => handleDiscoverModels(conn().providerId)}
+                        disabled={discoveringProvider() === conn().providerId}
+                      >
+                        {discoveringProvider() === conn().providerId
+                          ? 'Descobrindo...'
+                          : '↻ Descobrir modelos via CLI'}
+                      </button>
+                      <Show when={discoverMessage()[conn().providerId]}>
+                        <span style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                          {discoverMessage()[conn().providerId]}
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+
+                  <Show when={conn().supportsEffort}>
+                    <div class="form-group">
+                      <label for="cfg-effort">Esforço de raciocínio</label>
+                      <select
+                        id="cfg-effort"
+                        value={draft().effort ?? conn().effort ?? 'medium'}
+                        onChange={(e) =>
+                          updateDraftField(
+                            conn().providerId,
+                            'effort',
+                            e.currentTarget.value as ProviderEffort,
+                          )
+                        }
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="xhigh">XHigh</option>
+                        <option value="max">Max</option>
+                      </select>
+                    </div>
+                  </Show>
+
+                  <div class="form-group">
+                    <label for="cfg-api-key">Chave de acesso / API Key</label>
+                    <input
+                      id="cfg-api-key"
+                      type="password"
+                      value={draft().apiKey ?? ''}
+                      onInput={(e) =>
+                        updateDraftField(conn().providerId, 'apiKey', e.currentTarget.value)
+                      }
+                      placeholder={
+                        conn().hasApiKey
+                          ? 'Chave cadastrada; digite para substituir'
+                          : isCustomProvider(conn().providerId)
+                            ? 'Opcional para APIs locais sem autenticação'
+                            : 'Vazio = login da CLI / variável de ambiente'
+                      }
+                    />
+                    <Show when={conn().keyStorageError}>
+                      <output>{conn().keyStorageError}</output>
+                    </Show>
+                    <Show when={conn().hasApiKey}>
+                      <button
+                        type="button"
+                        onClick={() => updateDraftField(conn().providerId, 'apiKey', '')}
+                      >
+                        Remover chave ao salvar
+                      </button>
+                      <Show when={draft().apiKey === ''}>
+                        <output>A chave será removida ao salvar.</output>
+                      </Show>
+                    </Show>
+                  </div>
+
+                  <Show when={conn().providerId !== 'acp'}>
+                    <div class="form-group">
+                      <label for="cfg-endpoint">
+                        {isCustomProvider(conn().providerId)
+                          ? 'URL base da API'
+                          : 'Endpoint customizado (opcional)'}
+                      </label>
+                      <input
+                        id="cfg-endpoint"
+                        type="text"
+                        value={draft().endpoint ?? conn().endpoint ?? ''}
+                        onInput={(e) =>
+                          updateDraftField(conn().providerId, 'endpoint', e.currentTarget.value)
+                        }
+                        placeholder="Ex: https://api.x.ai/v1, http://localhost:11434/v1 (Ollama)..."
+                      />
+                    </div>
+                  </Show>
+
+                  <Show when={testResults()[conn().providerId]}>
+                    {(res) => (
+                      <div class={`connection-result-msg ${res().success ? 'success' : 'error'}`}>
+                        <strong>{res().success ? '✓ Sucesso: ' : '✗ Erro: '}</strong>
+                        {res().message}
+                      </div>
+                    )}
+                  </Show>
+                  <Show when={saveMessage()[conn().providerId]}>
+                    {(msg) => <div class="connection-save-feedback">✓ {msg()}</div>}
+                  </Show>
+
+                  <div class="modal-actions">
+                    <Show when={isCustomProvider(conn().providerId)}>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        onClick={() => handleDeleteCustomProvider(conn())}
+                      >
+                        Remover provedor
+                      </button>
+                    </Show>
+                    <button
+                      type="button"
+                      class="btn-outline"
+                      onClick={() => handleTestConnection(conn().providerId)}
+                      disabled={testingConnection() === conn().providerId}
+                    >
+                      {testingConnection() === conn().providerId
+                        ? 'Testando...'
+                        : '🧪 Testar conexão'}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-secondary"
+                      onClick={() => setConfigProviderId(null)}
+                    >
+                      Fechar
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-primary"
+                      onClick={async () => {
+                        if (await handleSaveConnection(conn())) setConfigProviderId(null)
+                      }}
+                      disabled={savingConnection() === conn().providerId}
+                    >
+                      {savingConnection() === conn().providerId ? 'Salvando...' : 'Salvar'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </dialog>
+          )
+        }}
+      </Show>
 
       {/* Modal Delegar Tarefa para Outro Agente (Fase 4) */}
       <Show when={showDelegationModal()}>
@@ -2724,6 +5017,75 @@ export const App: Component = () => {
       </Show>
 
       {/* Modal Criar Agente com Escolha de Provedor (Codex ou Claude) */}
+      {/* Modal Novo Projeto (pasta de robôs) */}
+      <Show when={showProjectModal()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowProjectModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowProjectModal(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <span class="modal-title">📁 Novo Projeto</span>
+              <button type="button" class="modal-close" onClick={() => setShowProjectModal(false)}>
+                ✕
+              </button>
+            </div>
+            <form class="modal-form" onSubmit={handleCreateProject}>
+              <div class="form-group">
+                <label for="project-name">Nome do projeto</label>
+                <input
+                  id="project-name"
+                  type="text"
+                  placeholder="Ex: Cliente X, Meu SaaS, Estudos..."
+                  value={projectFormName()}
+                  onInput={(e) => setProjectFormName(e.currentTarget.value)}
+                  required
+                />
+              </div>
+              <div class="form-group">
+                <label for="project-desc">Descrição (opcional)</label>
+                <input
+                  id="project-desc"
+                  type="text"
+                  placeholder="O que os robôs deste projeto fazem juntos"
+                  value={projectFormDescription()}
+                  onInput={(e) => setProjectFormDescription(e.currentTarget.value)}
+                />
+              </div>
+              <div class="form-group">
+                <label for="project-path">Pasta do projeto (cria no disco)</label>
+                <input
+                  id="project-path"
+                  type="text"
+                  placeholder="Ex: /home/joao/Projetos/cliente-x"
+                  value={projectFormPath()}
+                  onInput={(e) => setProjectFormPath(e.currentTarget.value)}
+                />
+              </div>
+              <div class="modal-actions">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  onClick={() => setShowProjectModal(false)}
+                >
+                  Cancelar
+                </button>
+                <button type="submit" class="btn-primary" disabled={!projectFormName().trim()}>
+                  Criar Projeto
+                </button>
+              </div>
+            </form>
+          </div>
+        </dialog>
+      </Show>
+
       <Show when={showModal()}>
         <dialog
           class="modal-overlay"
@@ -2749,16 +5111,229 @@ export const App: Component = () => {
                 <div style={{ color: 'var(--danger)', 'font-size': '12px' }}>{errorMessage()}</div>
               </Show>
 
+              <div class="form-group ai-draft-box">
+                <label for="agent-ai-prompt">✨ Descreva o agente e deixe a IA montar</label>
+                <textarea
+                  id="agent-ai-prompt"
+                  rows={2}
+                  placeholder="Ex: um revisor de código rigoroso que aponta riscos de segurança e sugere testes"
+                  value={aiPrompt()}
+                  onInput={(e) => setAiPrompt(e.currentTarget.value)}
+                />
+                <button
+                  type="button"
+                  class="btn-outline"
+                  disabled={drafting() || !aiPrompt().trim()}
+                  onClick={draftForCreate}
+                >
+                  {drafting() ? 'Gerando…' : 'Gerar rascunho'}
+                </button>
+                <Show when={draftNote()}>
+                  <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                    {draftNote()}
+                  </div>
+                </Show>
+              </div>
+
               <div class="form-group">
-                <label for="agent-name">Nome do Agente</label>
+                <label for="agent-avatar">Avatar (emoji)</label>
+                <input
+                  id="agent-avatar"
+                  type="text"
+                  maxLength={8}
+                  style={{ width: '90px' }}
+                  placeholder="🤖"
+                  value={newAvatar()}
+                  onInput={(e) => setNewAvatar(e.currentTarget.value)}
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="agent-name">Nome do Robô</label>
                 <input
                   id="agent-name"
                   type="text"
-                  placeholder="Ex: Codex Engineer ou Claude Reviewer"
+                  placeholder="Ex: Revisor de PRs, Pesquisador, Engenheiro..."
                   value={name()}
                   onInput={(e) => setName(e.currentTarget.value)}
                   required
                 />
+              </div>
+
+              <div class="form-group">
+                <label for="agent-description">Descrição — o que este robô faz</label>
+                <input
+                  id="agent-description"
+                  type="text"
+                  placeholder="Ex: Revisa pull requests e aponta riscos de regressão"
+                  value={description()}
+                  onInput={(e) => setDescription(e.currentTarget.value)}
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="agent-role">Tipo do robô</label>
+                <select
+                  id="agent-role"
+                  value={agentRole()}
+                  onChange={(e) => setAgentRole(e.currentTarget.value as AgentRole)}
+                >
+                  <option value="worker">🛠️ Especialista — executa tarefas</option>
+                  <option value="orchestrator">
+                    👑 Orquestrador — recebe você e delega aos especialistas
+                  </option>
+                </select>
+                <Show when={agentRole() === 'orchestrator'}>
+                  <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                    Você fala só com ele: ele distribui subtarefas aos especialistas do mesmo
+                    projeto e resume os resultados aqui.
+                  </div>
+                </Show>
+              </div>
+
+              <div class="form-group">
+                <label for="agent-project">Projeto (pasta)</label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <select
+                    id="agent-project"
+                    style={{ flex: 1 }}
+                    value={agentProjectId()}
+                    onChange={(e) => {
+                      const id = e.currentTarget.value
+                      setAgentProjectId(id)
+                      const proj = projects().find((x) => x.id === id)
+                      if (proj?.workspacePath) setWorkspacePath(proj.workspacePath)
+                    }}
+                  >
+                    <option value="">Sem projeto</option>
+                    <For each={projects()}>
+                      {(proj) => <option value={proj.id}>📁 {proj.name}</option>}
+                    </For>
+                  </select>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={() => setShowProjectModal(true)}
+                    title="Criar novo projeto"
+                  >
+                    📁 + Projeto
+                  </button>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="agent-context-mode">Contexto por turno (economia de tokens)</label>
+                <select
+                  id="agent-context-mode"
+                  value={agentContextMode()}
+                  onChange={(e) => setAgentContextMode(e.currentTarget.value as ContextMode)}
+                >
+                  <option value="economico">💰 Econômico — resumo + últimas 4 mensagens</option>
+                  <option value="padrao">Padrão — resumo + últimas 10 mensagens</option>
+                  <option value="completo">Completo — histórico amplo (mais tokens)</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label
+                  style={{
+                    display: 'flex',
+                    gap: '8px',
+                    'align-items': 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={agentBrowserAccess()}
+                    onChange={(e) => setAgentBrowserAccess(e.currentTarget.checked)}
+                  />
+                  🌐 Pode abrir o navegador (Meta Ads, Google Ads, painéis web)
+                </label>
+              </div>
+
+              <div class="form-group">
+                <span class="form-label-title">
+                  Capacidades deste robô (vazio = padrão do computador)
+                </span>
+                <div style={{ display: 'grid', 'grid-template-columns': '1fr 1fr', gap: '8px' }}>
+                  <label style={{ 'font-size': '12px' }}>
+                    Scripts locais
+                    <select
+                      value={capLocalScripts()}
+                      onChange={(e) => setCapLocalScripts(e.currentTarget.value)}
+                      style={{ width: '100%' }}
+                    >
+                      <option value="">Padrão</option>
+                      <option value="on">Ligado</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                  <label style={{ 'font-size': '12px' }}>
+                    Inicia novos chats
+                    <select
+                      value={capStartsChats()}
+                      onChange={(e) => setCapStartsChats(e.currentTarget.value)}
+                      style={{ width: '100%' }}
+                    >
+                      <option value="">Padrão</option>
+                      <option value="on">Ligado</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                  <label style={{ 'font-size': '12px' }}>
+                    Plano antes de tarefas longas
+                    <select
+                      value={capShowPlan()}
+                      onChange={(e) => setCapShowPlan(e.currentTarget.value)}
+                      style={{ width: '100%' }}
+                    >
+                      <option value="">Padrão</option>
+                      <option value="on">Ligado</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                  <label style={{ 'font-size': '12px' }}>
+                    Uso do computador
+                    <select
+                      value={capComputer()}
+                      onChange={(e) => setCapComputer(e.currentTarget.value)}
+                      style={{ width: '100%' }}
+                    >
+                      <option value="">Padrão</option>
+                      <option value="on">Ligado</option>
+                      <option value="off">Desligado</option>
+                    </select>
+                  </label>
+                  <label style={{ 'font-size': '12px' }}>
+                    Orientar enquanto trabalha
+                    <select
+                      value={capSteer()}
+                      onChange={(e) => setCapSteer(e.currentTarget.value)}
+                      style={{ width: '100%' }}
+                    >
+                      <option value="">Padrão</option>
+                      <option value="fila">Fila</option>
+                      <option value="imediato">Imediato</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label for="agent-effort">Esforço de raciocínio deste robô</label>
+                <select
+                  id="agent-effort"
+                  value={agentEffort()}
+                  onChange={(e) => setAgentEffort(e.currentTarget.value as ProviderEffort | '')}
+                >
+                  <option value="">Padrão do provedor</option>
+                  <option value="low">Low — rápido e barato</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">XHigh</option>
+                  <option value="max">Max — máximo raciocínio</option>
+                </select>
               </div>
 
               {/* Seleção Interativa do Provedor (Codex, Claude, Grok, Muse) */}
@@ -2813,14 +5388,12 @@ export const App: Component = () => {
                           >
                             <div class="provider-card-title">
                               <span>{conn.name}</span>
-                              <span class={`status-dot ${conn.available ? 'online' : ''}`} />
+                              <span
+                                class={`status-dot ${conn.readiness === 'ready' ? 'online' : ''}`}
+                              />
                             </div>
                             <div class="provider-card-sub">
-                              {isEnabled()
-                                ? conn.available
-                                  ? 'Conexão Pronta'
-                                  : 'Requer Configuração'
-                                : 'Desativado'}
+                              {isEnabled() ? providerStatusLabel(conn) : 'Desativado'}
                             </div>
                           </button>
                         )
@@ -2877,6 +5450,27 @@ export const App: Component = () => {
                   required
                 />
               </div>
+
+              <Show when={(providerAccounts()[provider()]?.length ?? 0) > 1}>
+                <div class="form-group">
+                  <label for="new-agent-account">Conta do provedor</label>
+                  <select
+                    id="new-agent-account"
+                    value={newAccountId()}
+                    onChange={(event) => setNewAccountId(event.currentTarget.value)}
+                  >
+                    <option value="">Automática (Padrão → habilitadas)</option>
+                    <For each={providerAccounts()[provider()] ?? []}>
+                      {(account) => (
+                        <option value={account.id} disabled={!account.enabled}>
+                          {account.label}
+                          {!account.enabled ? ' (desativada)' : ''}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </div>
+              </Show>
 
               <div class="form-group">
                 <label for="agent-autonomy">Nível de Autonomia</label>
@@ -3339,6 +5933,215 @@ export const App: Component = () => {
       </Show>
 
       {/* Modal de Diretrizes do Projeto (ORCHBOT.md / AGENTS.md) */}
+      <Show when={showAiEdit() && currentAgent()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowAiEdit(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowAiEdit(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            style={{ width: '640px', 'max-height': '85vh' }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <span class="modal-title">✨ Editar {currentAgent()?.name} com IA</span>
+              <button type="button" class="modal-close" onClick={() => setShowAiEdit(false)}>
+                ✕
+              </button>
+            </div>
+            <div class="modal-form" style={{ 'overflow-y': 'auto' }}>
+              <Show when={aiEditError()}>
+                <div style={{ color: 'var(--danger)', 'font-size': '12px' }}>{aiEditError()}</div>
+              </Show>
+              <div class="form-group">
+                <label for="ai-edit-prompt">O que mudar?</label>
+                <textarea
+                  id="ai-edit-prompt"
+                  rows={3}
+                  placeholder="Ex: deixe mais direto, responda sempre em tópicos e foque em performance"
+                  value={aiEditPrompt()}
+                  onInput={(e) => setAiEditPrompt(e.currentTarget.value)}
+                />
+                <button
+                  type="button"
+                  class="btn-outline"
+                  disabled={drafting() || !aiEditPrompt().trim()}
+                  onClick={() => currentAgent() && draftForEdit(currentAgent()?.id as string)}
+                >
+                  {drafting() ? 'Gerando…' : 'Gerar rascunho'}
+                </button>
+              </div>
+              <Show when={editDraft()}>
+                {(draft) => (
+                  <>
+                    <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                      {draft().source === 'model'
+                        ? 'Revise e edite o rascunho. Nada foi salvo ainda.'
+                        : 'Nenhum provedor respondeu: rascunho offline simples. Nada foi salvo ainda.'}
+                    </div>
+                    <div class="form-group">
+                      <label for="ai-edit-avatar">Avatar</label>
+                      <input
+                        id="ai-edit-avatar"
+                        type="text"
+                        maxLength={8}
+                        style={{ width: '90px' }}
+                        value={draft().avatar}
+                        onInput={(e) => setEditDraft({ ...draft(), avatar: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label for="ai-edit-name">Nome</label>
+                      <input
+                        id="ai-edit-name"
+                        type="text"
+                        value={draft().name}
+                        onInput={(e) => setEditDraft({ ...draft(), name: e.currentTarget.value })}
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label for="ai-edit-desc">Descrição</label>
+                      <input
+                        id="ai-edit-desc"
+                        type="text"
+                        value={draft().description}
+                        onInput={(e) =>
+                          setEditDraft({ ...draft(), description: e.currentTarget.value })
+                        }
+                      />
+                    </div>
+                    <div class="form-group">
+                      <label for="ai-edit-role">Tipo</label>
+                      <select
+                        id="ai-edit-role"
+                        value={draft().role}
+                        onChange={(e) =>
+                          setEditDraft({ ...draft(), role: e.currentTarget.value as AgentRole })
+                        }
+                      >
+                        <option value="worker">🛠️ Especialista</option>
+                        <option value="orchestrator">👑 Orquestrador</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="ai-edit-instr">Instruções</label>
+                      <textarea
+                        id="ai-edit-instr"
+                        rows={9}
+                        value={draft().instructions}
+                        onInput={(e) =>
+                          setEditDraft({ ...draft(), instructions: e.currentTarget.value })
+                        }
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="btn-primary"
+                      disabled={!draft().name.trim() || !draft().instructions.trim()}
+                      onClick={() => currentAgent() && saveEditDraft(currentAgent()?.id as string)}
+                    >
+                      Salvar alterações
+                    </button>
+                  </>
+                )}
+              </Show>
+            </div>
+          </div>
+        </dialog>
+      </Show>
+
+      <Show when={showMemoryModal() && currentAgent()}>
+        <dialog
+          class="modal-overlay"
+          open
+          onClick={() => setShowMemoryModal(false)}
+          onKeyDown={(e) => e.key === 'Escape' && setShowMemoryModal(false)}
+        >
+          <div
+            class="modal-content"
+            role="document"
+            style={{ width: '620px', 'max-height': '80vh' }}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <div class="modal-header">
+              <span class="modal-title">🧠 Memórias de {currentAgent()?.name}</span>
+              <button type="button" class="modal-close" onClick={() => setShowMemoryModal(false)}>
+                ✕
+              </button>
+            </div>
+            <div style={{ padding: '16px 20px', 'overflow-y': 'auto', flex: 1 }}>
+              <div
+                style={{ 'font-size': '12px', color: 'var(--text-muted)', 'margin-bottom': '12px' }}
+              >
+                Guardadas só neste computador. O robô também cria e apaga memórias sozinho durante
+                as conversas.
+              </div>
+              <div style={{ display: 'flex', gap: '8px', 'margin-bottom': '12px' }}>
+                <input
+                  type="text"
+                  style={{ flex: 1 }}
+                  placeholder="Adicionar memória…"
+                  value={newMemory()}
+                  onInput={(e) => setNewMemory(e.currentTarget.value)}
+                />
+                <button
+                  type="button"
+                  class="btn-primary"
+                  disabled={!newMemory().trim()}
+                  onClick={async () => {
+                    const id = currentAgent()?.id
+                    if (!id) return
+                    await window.orchbot.addMemory(id, newMemory())
+                    setNewMemory('')
+                    await refreshMemories(id)
+                  }}
+                >
+                  Salvar
+                </button>
+              </div>
+              <Show
+                when={memories().length > 0}
+                fallback={<p style={{ color: 'var(--text-muted)' }}>Nenhuma memória ainda.</p>}
+              >
+                <For each={memories()}>
+                  {(m) => (
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '8px',
+                        'align-items': 'flex-start',
+                        padding: '8px 0',
+                        'border-bottom': '1px solid rgba(128,128,128,.2)',
+                      }}
+                    >
+                      <span style={{ flex: 1, 'font-size': '13px', 'white-space': 'pre-wrap' }}>
+                        {m.text}
+                      </span>
+                      <button
+                        type="button"
+                        class="btn-outline"
+                        title="Esquecer"
+                        onClick={async () => {
+                          await window.orchbot.deleteMemory(m.agentId, m.id)
+                          await refreshMemories(m.agentId)
+                        }}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </Show>
+            </div>
+          </div>
+        </dialog>
+      </Show>
+
       <Show when={showRulesModal()}>
         <dialog
           class="modal-overlay"

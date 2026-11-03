@@ -41,11 +41,10 @@ export class DelegationService {
     }
 
     // Busca a thread principal do agente de destino
-    const toThreads = this.db.listThreads(toAgent.id)
-    if (toThreads.length === 0) {
+    const targetThread = this.db.getActiveThread(toAgent.id)
+    if (!targetThread) {
       throw new Error(`Nenhuma conversa disponível para o agente de destino: ${toAgent.name}`)
     }
-    const targetThread = toThreads[0]
 
     // Formata o texto indicando claramente a proveniência da delegação
     const delegationPrompt = `[Tarefa Delegada por ${fromAgent.name} (${fromAgent.provider})]:\n${input.prompt}`

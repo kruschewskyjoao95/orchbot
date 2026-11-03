@@ -17,9 +17,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "biome check .",
-    "lint:fix": "biome check --write ."
+    "lint:fix": "biome check --write .",
+    "package:dmg": "bun run build && electron-builder --mac dmg --config electron-builder.json",
+    "package:exe": "bun run build && electron-builder --win nsis --config electron-builder.json",
+    "package:feed": "bun run build && electron-builder --publish never --config electron-builder.json"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "electron-updater": "^6.8.11",
     "solid-js": "^1.9.5"
   },
   "devDependencies": {
@@ -33,5 +38,7 @@
     "vite-plugin-solid": "^2.11.6",
     "vitest": "^3.0.7"
   },
-  "trustedDependencies": ["@biomejs/biome"]
+  "trustedDependencies": [
+    "@biomejs/biome"
+  ]
 }

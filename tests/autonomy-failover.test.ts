@@ -151,12 +151,8 @@ describe('Modo de Autonomia & Failover Automático de Cota', () => {
     const messages = db.listMessages(thread.id)
     const systemNotice = messages.find((m) => m.role === 'system')
     expect(systemNotice).toBeDefined()
-    expect(systemNotice?.text).toContain(
-      '⚠️ Cota ou limite de requisições excedido no provedor CODEX',
-    )
-    expect(systemNotice?.text).toContain(
-      'Realizando failover automático e transparente para CLAUDE',
-    )
+    expect(systemNotice?.text).toContain('CODEX / Padrão')
+    expect(systemNotice?.text).toContain('CLAUDE / Padrão')
 
     // 3. A mensagem final do assistente deve estar gravada
     const assistantMsg = messages.find((m) => m.role === 'assistant')

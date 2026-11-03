@@ -12,7 +12,7 @@ export interface BrowserToolDefinition {
 
 export const BROWSER_TOOLS: BrowserToolDefinition[] = [
   {
-    name: 'openbot_browser.open',
+    name: 'orchbot_browser.open',
     description: 'Abre uma nova página web segura no navegador persistente do agente.',
     parameters: {
       type: 'object',
@@ -23,7 +23,7 @@ export const BROWSER_TOOLS: BrowserToolDefinition[] = [
     },
   },
   {
-    name: 'openbot_browser.inspect',
+    name: 'orchbot_browser.inspect',
     description: 'Inspeciona o conteúdo DOM, links e campos da página atual de forma sanitizada.',
     parameters: {
       type: 'object',
@@ -33,7 +33,7 @@ export const BROWSER_TOOLS: BrowserToolDefinition[] = [
     },
   },
   {
-    name: 'openbot_browser.click',
+    name: 'orchbot_browser.click',
     description: 'Clica em um elemento da página indicado por um seletor CSS.',
     parameters: {
       type: 'object',
@@ -45,7 +45,7 @@ export const BROWSER_TOOLS: BrowserToolDefinition[] = [
     },
   },
   {
-    name: 'openbot_browser.fill',
+    name: 'orchbot_browser.fill',
     description: 'Preenche um campo de formulário indicado por um seletor CSS.',
     parameters: {
       type: 'object',
@@ -58,7 +58,7 @@ export const BROWSER_TOOLS: BrowserToolDefinition[] = [
     },
   },
   {
-    name: 'openbot_browser.screenshot',
+    name: 'orchbot_browser.screenshot',
     description: 'Captura uma evidência visual em imagem da aba aberta.',
     parameters: {
       type: 'object',
@@ -68,7 +68,7 @@ export const BROWSER_TOOLS: BrowserToolDefinition[] = [
     },
   },
   {
-    name: 'openbot_browser.close',
+    name: 'orchbot_browser.close',
     description: 'Fecha uma aba do navegador.',
     parameters: {
       type: 'object',
@@ -90,16 +90,16 @@ export async function executeBrowserTool(
   const defaultTabId = tabs.length > 0 ? tabs[tabs.length - 1].id : ''
 
   switch (toolName) {
-    case 'openbot_browser.open': {
+    case 'orchbot_browser.open': {
       const url = String(args.url || '')
       return await manager.openTab(agentId, url)
     }
-    case 'openbot_browser.inspect': {
+    case 'orchbot_browser.inspect': {
       const tabId = String(args.tabId || defaultTabId)
       if (!tabId) throw new Error('Nenhuma aba aberta para inspecionar')
       return await manager.inspect(agentId, tabId)
     }
-    case 'openbot_browser.click': {
+    case 'orchbot_browser.click': {
       const tabId = String(args.tabId || defaultTabId)
       const selector = String(args.selector || '')
       if (!tabId) throw new Error('Nenhuma aba aberta para clicar')
@@ -107,7 +107,7 @@ export async function executeBrowserTool(
       const success = await manager.click(agentId, tabId, selector)
       return { success, selector, tabId }
     }
-    case 'openbot_browser.fill': {
+    case 'orchbot_browser.fill': {
       const tabId = String(args.tabId || defaultTabId)
       const selector = String(args.selector || '')
       const value = String(args.value || '')
@@ -116,13 +116,13 @@ export async function executeBrowserTool(
       const success = await manager.fill(agentId, tabId, selector, value)
       return { success, selector, tabId }
     }
-    case 'openbot_browser.screenshot': {
+    case 'orchbot_browser.screenshot': {
       const tabId = String(args.tabId || defaultTabId)
       if (!tabId) throw new Error('Nenhuma aba aberta para capturar tela')
       const base64 = await manager.captureScreenshot(agentId, tabId)
       return { tabId, screenshotAvailable: true, length: base64.length }
     }
-    case 'openbot_browser.close': {
+    case 'orchbot_browser.close': {
       const tabId = String(args.tabId || '')
       if (!tabId) throw new Error('Tab ID obrigatório')
       const success = await manager.closeTab(agentId, tabId)

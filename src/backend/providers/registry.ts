@@ -1,27 +1,40 @@
 import type { ProviderInfo, SupportedProvider } from '../../shared/types'
+import { AcpAdapter } from './acp-adapter'
+import { AntigravityAdapter } from './antigravity-adapter'
 import { ClaudeAdapter } from './claude-adapter'
 import { CodexAdapter } from './codex-adapter'
+import { CopilotAdapter } from './copilot-adapter'
 import { GeminiAdapter } from './gemini-adapter'
 import { GrokAdapter } from './grok-adapter'
+import { KimiAdapter } from './kimi-adapter'
 import { MuseAdapter } from './muse-adapter'
-import type { ActiveExecution, ProviderAdapter } from './types'
+import { OpenCodeAdapter } from './opencode-adapter'
+import { PiAdapter } from './pi-adapter'
+import type { ActiveExecution, ProviderAdapter, ProviderRuntimeConfig } from './types'
 
 export class ProviderRegistry {
   private adapters = new Map<SupportedProvider, ProviderAdapter>()
   private activeExecutions = new Map<string, ActiveExecution>()
 
   constructor() {
-    const codex = new CodexAdapter()
-    const claude = new ClaudeAdapter()
-    const grok = new GrokAdapter()
-    const gemini = new GeminiAdapter()
-    const muse = new MuseAdapter()
+    const all: ProviderAdapter[] = [
+      new CodexAdapter(),
+      new ClaudeAdapter(),
+      new GrokAdapter(),
+      new GeminiAdapter(),
+      new MuseAdapter(),
+      new AntigravityAdapter(),
+      new OpenCodeAdapter(),
+      new CopilotAdapter(),
+      new PiAdapter(),
+      new KimiAdapter(),
+      new AcpAdapter(),
+    ]
+    for (const adapter of all) this.adapters.set(adapter.id, adapter)
+  }
 
-    this.adapters.set(codex.id, codex)
-    this.adapters.set(claude.id, claude)
-    this.adapters.set(grok.id, grok)
-    this.adapters.set(gemini.id, gemini)
-    this.adapters.set(muse.id, muse)
+  public listAdapters(): ProviderAdapter[] {
+    return [...this.adapters.values()]
   }
 
   public getAdapter(id: SupportedProvider): ProviderAdapter {
@@ -36,22 +49,20 @@ export class ProviderRegistry {
     this.adapters.set(adapter.id, adapter)
   }
 
-  public async checkAllAvailability(): Promise<Record<SupportedProvider, ProviderInfo>> {
-    const [codex, claude, grok, gemini, muse] = await Promise.all([
-      this.getAdapter('codex').checkAvailability(),
-      this.getAdapter('claude').checkAvailability(),
-      this.getAdapter('grok').checkAvailability(),
-      this.getAdapter('gemini').checkAvailability(),
-      this.getAdapter('muse').checkAvailability(),
-    ])
+  public unregisterAdapter(id: SupportedProvider): void {
+    this.adapters.delete(id)
+  }
 
-    return {
-      codex,
-      claude,
-      grok,
-      gemini,
-      muse,
-    }
+  public async checkAllAvailability(
+    configs?: Partial<Record<SupportedProvider, ProviderRuntimeConfig>>,
+  ): Promise<Record<SupportedProvider, ProviderInfo>> {
+    const entries = await Promise.all(
+      [...this.adapters.keys()].map(async (id) => {
+        const info = await this.getAdapter(id).checkAvailability(configs?.[id])
+        return [id, info] as const
+      }),
+    )
+    return Object.fromEntries(entries) as Record<SupportedProvider, ProviderInfo>
   }
 
   public registerActiveExecution(threadId: string, execution: ActiveExecution): void {
@@ -60,6 +71,11 @@ export class ProviderRegistry {
 
   public removeActiveExecution(threadId: string): void {
     this.activeExecutions.delete(threadId)
+  }
+
+  public interruptAll(): void {
+    for (const execution of this.activeExecutions.values()) execution.interrupt()
+    this.activeExecutions.clear()
   }
 
   public interruptThread(threadId: string): boolean {

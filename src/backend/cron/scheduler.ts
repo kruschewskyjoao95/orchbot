@@ -98,9 +98,9 @@ export class CronScheduler {
     }
 
     if (!targetThreadId) {
-      const threads = this.db.listThreads(task.agentId)
-      if (threads.length > 0) {
-        targetThreadId = threads[0].id
+      const active = this.db.getActiveThread(task.agentId)
+      if (active) {
+        targetThreadId = active.id
       } else {
         const newThread = this.db.createThread(task.agentId, `[Cron] ${task.title}`)
         targetThreadId = newThread.id

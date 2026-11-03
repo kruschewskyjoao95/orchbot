@@ -1,32 +1,40 @@
-import { type ChildProcess, execFile, spawn } from 'node:child_process'
-import { promisify } from 'node:util'
-import type { ProviderInfo } from '../../shared/types'
+import { readFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import type { ProviderInfo, SupportedProvider } from '../../shared/types'
+import { codexMcp } from '../mcp/mcp-launch'
+import { getCatalogEntry } from './catalog'
+import { checkCliAvailability } from './cli-utils'
+import { runSessionCli } from './session-cli'
 import type {
   ActiveExecution,
   ExecutionCallbacks,
   ExecutionOptions,
   ProviderAdapter,
+  ProviderRuntimeConfig,
 } from './types'
 
-const execFileAsync = promisify(execFile)
-
 export class CodexAdapter implements ProviderAdapter {
-  public readonly id = 'codex'
+  public readonly id: SupportedProvider = 'codex'
   public readonly name = 'Codex (OpenAI)'
+  public readonly supportsSessionResume = true
 
-  public async checkAvailability(): Promise<ProviderInfo> {
+  public async checkAvailability(config?: ProviderRuntimeConfig): Promise<ProviderInfo> {
+    return checkCliAvailability('codex', config)
+  }
+
+  public async discoverModels(config?: ProviderRuntimeConfig): Promise<string[]> {
+    // O próprio Codex mantém a lista de modelos da conta em models_cache.json.
+    const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
     try {
-      const { stdout } = await execFileAsync('codex', ['--version'])
-      return {
-        available: true,
-        version: stdout.trim(),
-      }
-    } catch (err: unknown) {
-      return {
-        available: false,
-        error: err instanceof Error ? err.message : String(err),
-      }
-    }
+      const data = JSON.parse(await readFile(path.join(home, 'models_cache.json'), 'utf8'))
+      const slugs = (data.models as { slug: string; visibility?: string; priority?: number }[])
+        .filter((m) => m.visibility === 'list')
+        .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99))
+        .map((m) => m.slug)
+      if (slugs.length > 0) return slugs
+    } catch {}
+    return [...getCatalogEntry('codex').models]
   }
 
   public executeTurn(
@@ -34,104 +42,17 @@ export class CodexAdapter implements ProviderAdapter {
     options: ExecutionOptions,
     callbacks: ExecutionCallbacks,
   ): ActiveExecution {
-    const args = ['exec', '--skip-git-repo-check', '--json']
-
-    if (options.workspacePath) {
-      args.push('-C', options.workspacePath)
-    }
-
-    if (options.model) {
-      args.push('-m', options.model)
-    }
-
-    // Se houver instruções customizadas, combina de forma clara
+    const args = options.resumeSessionId
+      ? ['exec', 'resume', '--skip-git-repo-check', '--json']
+      : ['exec', '--skip-git-repo-check', '--json']
+    const servers = options.providerConfig?.mcpServers
+    if (servers?.length) args.push(...codexMcp(servers).args)
+    // exec resume has no -C flag; cwd sets the workspace for both commands.
+    if (options.model) args.push('-m', options.model)
     const effectivePrompt = options.instructions
       ? `[Instruções do Sistema: ${options.instructions}]\n\n${prompt}`
       : prompt
-
-    args.push(effectivePrompt)
-
-    let isInterrupted = false
-    let child: ChildProcess | null = null
-    let fullText = ''
-    let stderrText = ''
-
-    try {
-      child = spawn('codex', args, {
-        cwd: options.workspacePath || process.cwd(),
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1',
-        },
-      })
-    } catch (err: unknown) {
-      callbacks.onError(err instanceof Error ? err.message : String(err))
-      return { interrupt: () => {} }
-    }
-
-    let buffer = ''
-
-    child.stdout?.on('data', (data: Buffer) => {
-      buffer += data.toString('utf-8')
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-
-        try {
-          const parsed = JSON.parse(trimmed)
-          if (parsed.type === 'item.completed' || parsed.type === 'item.updated') {
-            if (parsed.item?.type === 'agent_message' && typeof parsed.item.text === 'string') {
-              const newText = parsed.item.text
-              if (newText.length > fullText.length) {
-                const chunk = newText.slice(fullText.length)
-                fullText = newText
-                callbacks.onChunk(chunk, fullText)
-              } else if (!fullText && newText) {
-                fullText = newText
-                callbacks.onChunk(newText, fullText)
-              }
-            }
-          } else if (parsed.type === 'turn.completed') {
-            // Conclusão do turno
-          }
-        } catch {
-          // Linha não-JSON (pode ser log)
-        }
-      }
-    })
-
-    child.stderr?.on('data', (data: Buffer) => {
-      stderrText += data.toString('utf-8')
-    })
-
-    child.on('close', (code) => {
-      if (isInterrupted) {
-        return
-      }
-
-      if (code !== 0 && !fullText) {
-        callbacks.onError(stderrText.trim() || `Codex encerrou com código ${code}`)
-      } else {
-        callbacks.onDone(fullText.trim())
-      }
-    })
-
-    child.on('error', (err) => {
-      if (!isInterrupted) {
-        callbacks.onError(err.message)
-      }
-    })
-
-    return {
-      interrupt: () => {
-        isInterrupted = true
-        if (child && !child.killed) {
-          child.kill('SIGTERM')
-        }
-      },
-    }
+    args.push('--', ...(options.resumeSessionId ? [options.resumeSessionId] : []), effectivePrompt)
+    return runSessionCli('codex', args, options, callbacks)
   }
 }

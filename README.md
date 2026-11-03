@@ -1,7 +1,7 @@
 # Orchbot 🤖
 
 > **Desktop workspace local-first para agentes de IA persistentes**  
-> Inspirado na arquitetura e visão do [nightly-labs/openbot](https://github.com/nightly-labs/openbot), adaptado e construído com Electron, SolidJS, TypeScript, Bun e SQLite nativo.
+> Construído com Electron, SolidJS, TypeScript, Bun e SQLite nativo.
 
 ---
 
@@ -12,10 +12,15 @@ O **Orchbot** é um ambiente de trabalho desktop local-first para hospedar, orqu
 - **Identidade Persistente por Agente**: cada agente possui seu próprio workspace em disco, seu modelo/instruções, sua conversa persistente e sua fila de tarefas durável.
 - **Local-First por Design**: SQLite local (`orchbot.db`) é a única fonte da verdade. Nenhum histórico, arquivo ou conversa é enviado para nuvem proprietária.
 - **Suporte Multi-Provedor Nativo (Codex & Claude)**: utiliza diretamente as assinaturas ativas do usuário através dos CLIs oficiais (`codex` e `claude`), com streaming de resposta em tempo real e interrupção graciosa de turnos.
+- **Várias contas por provedor**: cadastre chaves próprias ou perfis separados de Codex/Claude em Conexões → Contas, escolha a conta por robô e alterne automaticamente entre contas em erros de cota. [Como usar](docs/provider-accounts.md).
+- **Status de login**: distingue pronto, precisa entrar, não instalado e falhas de checagem; resultados inconclusivos ficam como login não verificado. Veja [checagens por provedor](docs/provider-login-status.md).
+- **Sessões nativas de Codex e Claude**: cada conversa retoma seu próprio ID de sessão, inclusive depois de reiniciar o app. Veja [continuidade e recuperação de sessões](docs/native-sessions.md).
+- **Provedores personalizados**: cadastre APIs OpenAI-compatible pela tela, incluindo Ollama, OpenRouter e DeepSeek, com chave protegida, streaming e descoberta de modelos. Veja [como cadastrar](docs/custom-providers.md).
+- **Agente ACP genérico**: conecte um agente ACP v1 por stdio, configurando executável e argumentos na tela. Veja [como configurar ACP](docs/acp.md).
 - **Fila FIFO Durável e Crash-Safe**: tarefas são salvas no banco antes de executar; sobrevivem a reinicializações e falhas com reconciliação automática de tarefas pendentes ou interrompidas (`reconcileRunningTasks`).
 - **Anexos Gerenciados com SHA-256**: staging e deduplicação de arquivos em diretório gerenciado com hashing criptográfico e limite de segurança de 50 MB.
 - **Colaboração e Delegação Entre Agentes**: agentes podem delegar subtarefas para outros agentes com prevenção estrita contra ciclos e loops infinitos (`MAX_DELEGATION_DEPTH = 2`).
-- **Navegador Embarcado Supervisionado**: browser com persistência de abas em `browser-tabs.json`, partições de sessão isoladas por agente (`persist:orchbot-agent-<id>`), bloqueio de popups e protocolos inseguros, inspeção de DOM sanitizada com redação de segredos e catálogo de ferramentas `openbot_browser.*`.
+- **Navegador Embarcado Supervisionado**: browser com persistência de abas em `browser-tabs.json`, partições de sessão isoladas por agente (`persist:orchbot-agent-<id>`), bloqueio de popups e protocolos inseguros, inspeção de DOM sanitizada com redação de segredos e catálogo de ferramentas `orchbot_browser.*`.
 - **Distribuição Linux Completa**: binários independentes para Linux empacotados em formato **AppImage** e executável descompactado.
 
 ---

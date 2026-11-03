@@ -13,10 +13,13 @@ describe('Contracts and Validation', () => {
 
     expect(valid).toEqual({
       name: 'Dev Bot',
+      role: 'worker',
       provider: 'codex',
       model: 'gpt-4o',
       workspacePath: '/home/user/project',
       instructions: 'Ajude no código',
+      contextMode: 'padrao',
+      browserAccess: true,
     })
   })
 
