@@ -141,6 +141,8 @@ export class QueueManager {
   /** Tarefas que a pessoa escreveu: só depois delas o curador roda (é dali que vêm fato e preferência). */
   private personTurns = new Set<string>()
   private taskFallbackAttempts = new Map<string, Set<string>>()
+  /** Resumo em curso, por agente. Pausa e cancelamento abortam e seguram a fila até ele parar. */
+  private compactAbort = new Map<string, AbortController>()
   private isClosed = false
   public readonly memory: MemoryService
   public readonly brain: BrainService
@@ -148,6 +150,8 @@ export class QueueManager {
   private skills: SkillService | null = null
   /** Seções de continuação acumuladas por tarefa: uma resposta gera no máximo UM turno de continuação. */
   private followUps = new Map<string, string[]>()
+  /** Qual contador essa continuação sobe. Memória não gasta navegador nem computador. */
+  private followUpBump = new Map<string, { browser: boolean; computer: boolean; memory: boolean }>()
   private consentCheck: (() => boolean) | null = null
 
   constructor(
@@ -170,6 +174,7 @@ export class QueueManager {
 
   public close(): void {
     this.isClosed = true
+    for (const ctrl of this.compactAbort.values()) ctrl.abort()
   }
 
   public setEvents(events: QueueManagerEvents): void {
@@ -210,6 +215,7 @@ export class QueueManager {
   public pause(agentId: string): boolean {
     this.pausedAgents.add(agentId)
     this.db.setAgentPaused(agentId, true)
+    this.compactAbort.get(agentId)?.abort()
     return true
   }
 
@@ -235,6 +241,9 @@ export class QueueManager {
     delegationDepth = 1,
     origin?: { originThreadId?: string; originAgentId?: string },
     browserRounds = 0,
+    createdAt?: string,
+    computerRounds = 0,
+    memoryRounds = 0,
   ): TaskQueueItem {
     const task = this.db.enqueueTask(
       agentId,
@@ -243,6 +252,9 @@ export class QueueManager {
       delegationDepth,
       origin,
       browserRounds,
+      createdAt,
+      computerRounds,
+      memoryRounds,
     )
     this.events?.onTaskStatusChanged?.({ task })
 
@@ -259,12 +271,33 @@ export class QueueManager {
     return this.registry.interruptThread(threadId)
   }
 
+  /**
+   * Para o CLI e a fila deste robô antes de apagar a linha.
+   * Pendente primeiro, tudo síncrono: o processo, ao fechar, pede o próximo no tick seguinte.
+   */
+  public stopAgent(agentId: string): void {
+    const tasks = this.listTasks(agentId)
+    for (const task of tasks) {
+      if (task.status === 'pending') this.cancel(task.id)
+    }
+    for (const thread of this.db.listThreads(agentId)) this.interruptThread(thread.id)
+    for (const task of tasks) {
+      if (task.status === 'running') this.cancel(task.id)
+    }
+    this.pausedAgents.add(agentId)
+  }
+
   public cancel(taskId: string): boolean {
     const task = this.db.getTask(taskId)
     if (!task) return false
 
+    // Compactação ainda não registrou o CLI do turno: segura a fila até o resumo parar sem gravar.
+    const compacting = task.status === 'running' ? this.compactAbort.get(task.agentId) : undefined
+    compacting?.abort()
     // Todo adaptador avisa onInterrupted ao fechar: se há execução registrada, ele libera o agente.
-    const waitsForClose = task.status === 'running' && this.registry.interruptThread(task.threadId)
+    const waitsForClose =
+      task.status === 'running' &&
+      (compacting !== undefined || this.registry.interruptThread(task.threadId))
 
     this.taskFallbackAttempts.delete(taskId)
     const updated = this.db.updateTaskStatus(taskId, 'cancelled', 'Cancelado pelo usuário')
@@ -319,10 +352,18 @@ export class QueueManager {
     agentId: string,
     fullText: string,
   ): Promise<void> {
-    const rounds = task.browserRounds ?? 0
-    if (rounds >= MAX_COMPUTER_ROUNDS) return
     const directives = parseComputerDirectives(fullText)
     if (directives.length === 0 || !this.computerExecutor) return
+    const rounds = task.computerRounds ?? 0
+    if (rounds >= MAX_COMPUTER_ROUNDS) {
+      this.reportSpentRounds(
+        task,
+        'computer',
+        rounds,
+        directives.map((directive) => directive.action).join(', '),
+      )
+      return
+    }
 
     const results = await this.collectComputerResults(agentId, directives)
     const notice = this.db.addMessage(
@@ -332,7 +373,7 @@ export class QueueManager {
     )
     this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
 
-    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`, 'computer')
   }
 
   private async collectComputerResults(
@@ -358,17 +399,62 @@ export class QueueManager {
     return results
   }
 
-  private addFollowUp(task: TaskQueueItem, section: string): void {
+  private addFollowUp(
+    task: TaskQueueItem,
+    section: string,
+    kind: 'browser' | 'computer' | 'memory',
+  ): void {
     const list = this.followUps.get(task.id) ?? []
     list.push(section)
     this.followUps.set(task.id, list)
+    const bump = this.followUpBump.get(task.id) ?? {
+      browser: false,
+      computer: false,
+      memory: false,
+    }
+    bump[kind] = true
+    this.followUpBump.set(task.id, bump)
+  }
+
+  /** O comando passou do limite: o robô lê isso no resultado. Uma repetição vira aviso e para. */
+  private reportSpentRounds(
+    task: TaskQueueItem,
+    kind: 'browser' | 'computer',
+    rounds: number,
+    actions: string,
+  ): void {
+    const max = kind === 'browser' ? MAX_BROWSER_ROUNDS : MAX_COMPUTER_ROUNDS
+    const label = kind === 'browser' ? 'navegador' : 'computador'
+    const tag = kind === 'browser' ? '[RESULTADO DO NAVEGADOR]' : '[RESULTADO DO COMPUTADOR]'
+    const line = `[${actions}] Limite de ${max} rodadas no ${label}. ${
+      actions.includes(',') ? 'Estes comandos não rodaram.' : 'Este comando não rodou.'
+    }`
+    if (rounds === max) {
+      this.addFollowUp(task, `${tag}\n${line}`, kind)
+      return
+    }
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `${kind === 'browser' ? '🌐' : '🖥️'} ${line}`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
   }
 
   /** Junta tudo que os despachantes pediram numa única mensagem de continuação. */
   private flushFollowUps(task: TaskQueueItem, agentId: string): boolean {
     const sections = this.followUps.get(task.id)
+    const bump = this.followUpBump.get(task.id) ?? {
+      browser: false,
+      computer: false,
+      memory: false,
+    }
     this.followUps.delete(task.id)
+    this.followUpBump.delete(task.id)
     if (!sections?.length || this.isClosed || !this.db.isOpen()) return false
+    const pendingAt = this.db.getNextPendingTask(agentId)?.createdAt
+    const pendingMs = pendingAt ? Date.parse(pendingAt) : Number.NaN
+    // Quem escreveu enquanto a página abria já está na fila: a continuação entra 1 ms antes.
     this.enqueue(
       agentId,
       task.threadId,
@@ -380,7 +466,10 @@ export class QueueManager {
       task.originThreadId
         ? { originThreadId: task.originThreadId, originAgentId: task.originAgentId }
         : undefined,
-      (task.browserRounds ?? 0) + 1,
+      (task.browserRounds ?? 0) + (bump.browser ? 1 : 0),
+      Number.isFinite(pendingMs) ? new Date(pendingMs - 1).toISOString() : undefined,
+      (task.computerRounds ?? 0) + (bump.computer ? 1 : 0),
+      (task.memoryRounds ?? 0) + (bump.memory ? 1 : 0),
     )
     return true
   }
@@ -440,7 +529,7 @@ export class QueueManager {
     approval: Approval,
     task: TaskQueueItem | null,
     prompt: string,
-    browserRounds = 0,
+    rounds?: { browser?: number; computer?: number; memory?: number },
   ): TaskQueueItem {
     return this.enqueue(
       approval.agentId,
@@ -450,7 +539,10 @@ export class QueueManager {
       task?.originThreadId
         ? { originThreadId: task.originThreadId, originAgentId: task.originAgentId }
         : undefined,
-      browserRounds,
+      rounds?.browser ?? 0,
+      undefined,
+      rounds?.computer ?? 0,
+      rounds?.memory ?? 0,
     )
   }
 
@@ -479,12 +571,13 @@ export class QueueManager {
     if (this.isClosed || !this.db.isOpen()) return
     const section = await this.replaySection(approval, task, payload)
     if (this.isClosed || !this.db.isOpen()) return
-    this.continueAfterApproval(
-      approval,
-      task,
-      runtimeApprovalDonePrompt(approval, section),
-      (task?.browserRounds ?? 0) + 1,
-    )
+    const browser = task?.browserRounds ?? 0
+    const computer = task?.computerRounds ?? 0
+    this.continueAfterApproval(approval, task, runtimeApprovalDonePrompt(approval, section), {
+      browser: payload.kind === 'browser' ? browser + 1 : browser,
+      computer: payload.kind === 'computer' ? computer + 1 : computer,
+      memory: task?.memoryRounds ?? 0,
+    })
   }
 
   private async replaySection(
@@ -547,7 +640,7 @@ export class QueueManager {
     directives: ReturnType<typeof parseSkillDirectives>,
   ): void {
     if (!this.skills || directives.length === 0) return
-    const rounds = task.browserRounds ?? 0
+    const rounds = task.memoryRounds ?? 0
     const lines = this.skills.run(agent, directives)
     if (!needsSkillFollowUp(directives) || rounds >= MAX_MEMORY_ROUNDS) {
       const notice = this.db.addMessage(
@@ -558,7 +651,7 @@ export class QueueManager {
       this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
       return
     }
-    this.addFollowUp(task, `[RESULTADO DAS SKILLS]\n${lines.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DAS SKILLS]\n${lines.join('\n\n')}`, 'memory')
   }
 
   /** MCP escolhido para o agente (Claude e Codex). Segredos vão pelo ambiente, nunca no argv. */
@@ -594,7 +687,7 @@ export class QueueManager {
     directives: ReturnType<typeof parseCollabDirectives>,
   ): void {
     if (directives.length === 0) return
-    const rounds = task.browserRounds ?? 0
+    const rounds = task.memoryRounds ?? 0
     const { lines, followUp } = this.collab.run(
       agent,
       { threadId: task.threadId, depth: task.delegationDepth ?? 1 },
@@ -609,7 +702,7 @@ export class QueueManager {
       this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
       return
     }
-    this.addFollowUp(task, `[RESULTADO DOS AGENTES]\n${lines.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DOS AGENTES]\n${lines.join('\n\n')}`, 'memory')
   }
 
   /** Avisa ou devolve [[BRAIN:*]]. A gravação em si já aconteceu em `run`. */
@@ -619,7 +712,7 @@ export class QueueManager {
     outcome: ReturnType<BrainService['run']>,
   ): void {
     if (directives.length === 0) return
-    const rounds = task.browserRounds ?? 0
+    const rounds = task.memoryRounds ?? 0
     if (!outcome.followUp || rounds >= MAX_MEMORY_ROUNDS) {
       const notice = this.db.addMessage(
         task.threadId,
@@ -629,7 +722,7 @@ export class QueueManager {
       this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
       return
     }
-    this.addFollowUp(task, `[RESULTADO DO CÉREBRO]\n${outcome.lines.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DO CÉREBRO]\n${outcome.lines.join('\n\n')}`, 'memory')
   }
 
   /** Executa [[MEMORY:*]] / [[HISTORY:*]]; buscas e leituras voltam ao robô num novo turno. */
@@ -639,7 +732,7 @@ export class QueueManager {
     directives: ReturnType<typeof parseMemoryDirectives>,
   ): void {
     if (directives.length === 0) return
-    const rounds = task.browserRounds ?? 0
+    const rounds = task.memoryRounds ?? 0
     const results = this.memory.run(agentId, directives)
     if (!needsMemoryFollowUp(directives) || rounds >= MAX_MEMORY_ROUNDS) {
       const notice = this.db.addMessage(
@@ -650,7 +743,7 @@ export class QueueManager {
       this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
       return
     }
-    this.addFollowUp(task, `[RESULTADO DA MEMÓRIA]\n${results.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DA MEMÓRIA]\n${results.join('\n\n')}`, 'memory')
   }
 
   /** Executa os blocos [[BROWSER:...]] do turno e devolve o resultado ao robô. */
@@ -659,8 +752,6 @@ export class QueueManager {
     agentId: string,
     fullText: string,
   ): Promise<void> {
-    const rounds = task.browserRounds ?? 0
-    if (rounds >= MAX_BROWSER_ROUNDS) return
     const directives = parseBrowserDirectives(fullText)
     if (directives.length === 0) return
 
@@ -674,6 +765,17 @@ export class QueueManager {
       return
     }
 
+    const rounds = task.browserRounds ?? 0
+    if (rounds >= MAX_BROWSER_ROUNDS) {
+      this.reportSpentRounds(
+        task,
+        'browser',
+        rounds,
+        directives.map((directive) => directive.action).join(', '),
+      )
+      return
+    }
+
     const results = await this.collectBrowserResults(agentId, directives)
 
     const notice = this.db.addMessage(
@@ -683,7 +785,7 @@ export class QueueManager {
     )
     this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
 
-    this.addFollowUp(task, `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`)
+    this.addFollowUp(task, `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`, 'browser')
   }
 
   private async collectBrowserResults(
@@ -785,6 +887,33 @@ export class QueueManager {
     )
   }
 
+  /** A espera antes do CLI (resumo ou git) não deve mais virar um turno. */
+  private preTurnStopped(agentId: string, taskId: string): boolean {
+    if (this.isClosed || !this.db.isOpen()) return true
+    if (this.pausedAgents.has(agentId)) return true
+    return this.db.getTask(taskId)?.status !== 'running'
+  }
+
+  /** Solta o robô. Na pausa a tarefa volta para a fila; no cancelamento o próximo pedido segue. */
+  private abandonPreTurn(agentId: string, taskId: string): void {
+    this.isProcessingAgent.delete(agentId)
+    if (this.isClosed || !this.db.isOpen()) return
+    const task = this.db.getTask(taskId)
+    if (this.pausedAgents.has(agentId) && task?.status === 'running') {
+      const pending = this.db.updateTaskStatus(taskId, 'pending', null)
+      this.events?.onTaskStatusChanged?.({ task: pending })
+      return
+    }
+    if (!this.pausedAgents.has(agentId)) setTimeout(() => this.processNextForAgent(agentId), 0)
+  }
+
+  /** Solta o robô só depois que o acompanhamento (página, clique, memória) já está na fila. */
+  private finishAgentTurn(agentId: string): void {
+    this.isProcessingAgent.delete(agentId)
+    if (this.isClosed || !this.db.isOpen()) return
+    setTimeout(() => this.processNextForAgent(agentId), 0)
+  }
+
   private async processNextForAgent(agentId: string): Promise<void> {
     if (this.isClosed || !this.db.isOpen()) {
       return
@@ -851,22 +980,45 @@ export class QueueManager {
         ]),
       )
       .digest('hex')
-    // Git e compactação em paralelo; nenhum outro await depois da checagem abaixo.
+    // Git e compactação em paralelo. O resumo só é gravado se o turno ainda for seguir depois das duas.
     const gitPromise = this.db.getSettings().gitContext
       ? buildGitContext(agent.workspacePath, agent.contextMode ?? 'padrao').catch(() => null)
       : Promise.resolve(null)
-    const compactNotice = await this.memory
+    const compactCtrl = new AbortController()
+    this.compactAbort.set(agentId, compactCtrl)
+    let markCompactReady = () => {}
+    const compactReady = new Promise<void>((resolve) => {
+      markCompactReady = () => {
+        resolve()
+      }
+    })
+    const compactPromise = this.memory
       .compactIfNeeded(
         { agent, adapter, config },
         nextTask.threadId,
         nextTask.createdAt,
         sessionScope,
+        {
+          signal: compactCtrl.signal,
+          ready: compactReady,
+        },
       )
       .catch(() => undefined)
-    const git = await gitPromise
-    // A compactação pode levar até 90 s: a tarefa pode ter sido cancelada ou o app fechado nesse meio-tempo.
-    if (this.isClosed || !this.db.isOpen() || this.db.getTask(nextTask.id)?.status !== 'running')
-      return
+    let git: string | null = null
+    let compactNotice: string | undefined
+    try {
+      git = await gitPromise
+      if (this.preTurnStopped(agentId, nextTask.id)) compactCtrl.abort()
+      markCompactReady()
+      compactNotice = await compactPromise
+      if (this.preTurnStopped(agentId, nextTask.id)) {
+        this.abandonPreTurn(agentId, nextTask.id)
+        return
+      }
+    } finally {
+      markCompactReady()
+      this.compactAbort.delete(agentId)
+    }
     if (compactNotice) {
       const notice = this.db.addMessage(nextTask.threadId, 'system', compactNotice)
       this.events?.onTurnFinished?.({
@@ -1172,217 +1324,223 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
-          if (this.isClosed || !this.db.isOpen()) return
+          if (this.isClosed || !this.db.isOpen()) {
+            this.finishAgentTurn(agentId)
+            return
+          }
           this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)
-          this.isProcessingAgent.delete(agentId)
-
-          // Orquestração: remove os blocos de delegação do texto visível
-          const isOrchestrator = agent.role === 'orchestrator'
-          const fullForDirectives = fullText
-          const memoryDirectives = parseMemoryDirectives(fullText)
-          const brainDirectives = parseBrainDirectives(fullText)
-          const brainOutcome = this.brain.run(speaker, brainDirectives)
-          const collabDirectives = parseCollabDirectives(fullText)
-          const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
-          const approvalRequests = parseApprovalRequests(fullText)
-          const stripped = stripApprovalRequests(
-            stripSkillDirectives(
-              stripCollabDirectives(
-                stripBrainDirectives(
-                  stripMemoryDirectives(
-                    stripComputerDirectives(
-                      stripNewChatDirectives(stripBrowserDirectives(fullText)),
+          let followUpScheduled = false
+          try {
+            // Orquestração: remove os blocos de delegação do texto visível
+            const isOrchestrator = agent.role === 'orchestrator'
+            const fullForDirectives = fullText
+            const memoryDirectives = parseMemoryDirectives(fullText)
+            const brainDirectives = parseBrainDirectives(fullText)
+            const brainOutcome = this.brain.run(speaker, brainDirectives)
+            const collabDirectives = parseCollabDirectives(fullText)
+            const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
+            const approvalRequests = parseApprovalRequests(fullText)
+            const stripped = stripApprovalRequests(
+              stripSkillDirectives(
+                stripCollabDirectives(
+                  stripBrainDirectives(
+                    stripMemoryDirectives(
+                      stripComputerDirectives(
+                        stripNewChatDirectives(stripBrowserDirectives(fullText)),
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          )
-          const visibleText = isOrchestrator ? stripDelegationDirectives(stripped) : stripped
-          const browserDirectives = parseBrowserDirectives(fullText)
-          const computerDirectives = parseComputerDirectives(fullText)
-          const capsNow = effectiveCapabilities(agent, this.db.getSettings())
-          // shortcut: shell do Codex/Claude não passa por aqui, só browser e COMPUTER (open via shell). Segure igual quando o adaptador expuser o pedido.
-          const holdBrowser =
-            agent.autonomyLevel === 'cautious' &&
-            agent.browserAccess !== false &&
-            this.browserExecutor !== null &&
-            browserBatchNeedsApproval(browserDirectives)
-          const holdComputer =
-            agent.autonomyLevel === 'cautious' &&
-            capsNow.computerUse &&
-            this.computerExecutor !== null &&
-            computerBatchNeedsApproval(computerDirectives)
-
-          // 1. Grava a mensagem do assistente no histórico do chat
-          const assistantMsg = this.db.addMessage(
-            nextTask.threadId,
-            'assistant',
-            visibleText.trim() ||
-              (approvalRequests.length > 0 || holdBrowser || holdComputer
-                ? '✋ Preciso da sua aprovação antes de continuar.'
-                : brainDirectives.length > 0 &&
-                    memoryDirectives.length === 0 &&
-                    collabDirectives.length === 0 &&
-                    skillDirectives.length === 0
-                  ? '🧠 Consultei o cérebro do projeto.'
-                  : memoryDirectives.length > 0 ||
-                      collabDirectives.length > 0 ||
-                      skillDirectives.length > 0
-                    ? '🧠 Consultando a memória…'
-                    : browserDirectives.length > 0
-                      ? '🌐 Consultando o navegador…'
-                      : isOrchestrator
-                        ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
-                        : '(Nenhum conteúdo retornado)'),
-          )
-
-          // 1a. Pedido de aprovação: texto [[APROVAR]] ou ação mutável no modo cauteloso.
-          for (const text of approvalRequests) this.openApproval(nextTask, agent, text)
-          if (holdBrowser) {
-            const payload: RuntimeApprovalPayload = {
-              kind: 'browser',
-              directives: browserDirectives,
-            }
-            this.openApproval(
-              nextTask,
-              agent,
-              runtimeApprovalText(payload),
-              JSON.stringify(payload),
             )
-          }
-          if (holdComputer) {
-            const payload: RuntimeApprovalPayload = {
-              kind: 'computer',
-              directives: computerDirectives,
-            }
-            this.openApproval(
-              nextTask,
-              agent,
-              runtimeApprovalText(payload),
-              JSON.stringify(payload),
-            )
-          }
-          const waitingApproval = this.db
-            .listPendingApprovals()
-            .some((item) => item.threadId === nextTask.threadId)
+            const visibleText = isOrchestrator ? stripDelegationDirectives(stripped) : stripped
+            const browserDirectives = parseBrowserDirectives(fullText)
+            const computerDirectives = parseComputerDirectives(fullText)
+            const capsNow = effectiveCapabilities(agent, this.db.getSettings())
+            // shortcut: shell do Codex/Claude não passa por aqui, só browser e COMPUTER (open via shell). Segure igual quando o adaptador expuser o pedido.
+            const holdBrowser =
+              agent.autonomyLevel === 'cautious' &&
+              agent.browserAccess !== false &&
+              this.browserExecutor !== null &&
+              browserBatchNeedsApproval(browserDirectives)
+            const holdComputer =
+              agent.autonomyLevel === 'cautious' &&
+              capsNow.computerUse &&
+              this.computerExecutor !== null &&
+              computerBatchNeedsApproval(computerDirectives)
 
-          if (turnUsage)
-            this.db.setMessageUsage(
-              assistantMsg.id,
-              this.db.perTurnUsage(
-                nextTask.threadId,
+            // 1. Grava a mensagem do assistente no histórico do chat
+            const assistantMsg = this.db.addMessage(
+              nextTask.threadId,
+              'assistant',
+              visibleText.trim() ||
+                (approvalRequests.length > 0 || holdBrowser || holdComputer
+                  ? '✋ Preciso da sua aprovação antes de continuar.'
+                  : brainDirectives.length > 0 &&
+                      memoryDirectives.length === 0 &&
+                      collabDirectives.length === 0 &&
+                      skillDirectives.length === 0
+                    ? '🧠 Consultei o cérebro do projeto.'
+                    : memoryDirectives.length > 0 ||
+                        collabDirectives.length > 0 ||
+                        skillDirectives.length > 0
+                      ? '🧠 Consultando a memória…'
+                      : browserDirectives.length > 0
+                        ? '🌐 Consultando o navegador…'
+                        : isOrchestrator
+                          ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
+                          : '(Nenhum conteúdo retornado)'),
+            )
+
+            // 1a. Pedido de aprovação: texto [[APROVAR]] ou ação mutável no modo cauteloso.
+            for (const text of approvalRequests) this.openApproval(nextTask, agent, text)
+            if (holdBrowser) {
+              const payload: RuntimeApprovalPayload = {
+                kind: 'browser',
+                directives: browserDirectives,
+              }
+              this.openApproval(
+                nextTask,
+                agent,
+                runtimeApprovalText(payload),
+                JSON.stringify(payload),
+              )
+            }
+            if (holdComputer) {
+              const payload: RuntimeApprovalPayload = {
+                kind: 'computer',
+                directives: computerDirectives,
+              }
+              this.openApproval(
+                nextTask,
+                agent,
+                runtimeApprovalText(payload),
+                JSON.stringify(payload),
+              )
+            }
+            const waitingApproval = this.db
+              .listPendingApprovals()
+              .some((item) => item.threadId === nextTask.threadId)
+
+            if (turnUsage)
+              this.db.setMessageUsage(
+                assistantMsg.id,
+                this.db.perTurnUsage(
+                  nextTask.threadId,
+                  nativeSessionId ?? resumeSessionId,
+                  turnUsage,
+                ),
                 nativeSessionId ?? resumeSessionId,
-                turnUsage,
-              ),
-              nativeSessionId ?? resumeSessionId,
-            )
+              )
 
-          // 1b. Orquestrador delega aos especialistas; especialista devolve ao orquestrador
-          if (isOrchestrator) {
-            this.dispatchDelegations(nextTask, agent, fullText)
-          }
+            // 1b. Orquestrador delega aos especialistas; especialista devolve ao orquestrador
+            if (isOrchestrator) {
+              this.dispatchDelegations(nextTask, agent, fullText)
+            }
 
-          // 1c. Comandos de navegador do robô (vale para qualquer papel)
-          const followUpWork: Promise<void>[] = []
-          if (agent.browserAccess !== false && !holdBrowser) {
-            followUpWork.push(this.dispatchBrowserDirectives(nextTask, agentId, fullText))
-          }
+            // 1c. Comandos de navegador do robô (vale para qualquer papel)
+            const followUpWork: Promise<void>[] = []
+            if (agent.browserAccess !== false && !holdBrowser) {
+              followUpWork.push(this.dispatchBrowserDirectives(nextTask, agentId, fullText))
+            }
 
-          // 1c0. Canal: a resposta do agente vai para o log compartilhado
-          {
-            const inChannel = this.db.getChannelByThread(nextTask.threadId)
-            if (inChannel && visibleText.trim())
-              this.db.addChannelMessage(inChannel.channel.id, agentId, visibleText.trim())
-          }
+            // 1c0. Canal: a resposta do agente vai para o log compartilhado
+            {
+              const inChannel = this.db.getChannelByThread(nextTask.threadId)
+              if (inChannel && visibleText.trim())
+                this.db.addChannelMessage(inChannel.channel.id, agentId, visibleText.trim())
+            }
 
-          // 1c0b. Conversa entre agentes e pedidos dentro de canais
-          this.dispatchCollabDirectives(nextTask, agent, collabDirectives)
+            // 1c0b. Conversa entre agentes e pedidos dentro de canais
+            this.dispatchCollabDirectives(nextTask, agent, collabDirectives)
 
-          // 1c0c. Skills
-          this.dispatchSkillDirectives(nextTask, agent, skillDirectives)
+            // 1c0c. Skills
+            this.dispatchSkillDirectives(nextTask, agent, skillDirectives)
 
-          // 1c1. Cérebro do projeto, memória e histórico locais
-          this.deliverBrain(nextTask, brainDirectives, brainOutcome)
-          this.dispatchMemoryDirectives(nextTask, agentId, memoryDirectives)
-          if (this.personTurns.delete(nextTask.id))
-            this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
-              if (this.isClosed || !this.db.isOpen()) return
-              const notice = this.db.addMessage(nextTask.threadId, 'system', text)
-              this.events?.onTurnFinished?.({
-                threadId: nextTask.threadId,
-                message: notice,
-                task: nextTask,
+            // 1c1. Cérebro do projeto, memória e histórico locais
+            this.deliverBrain(nextTask, brainDirectives, brainOutcome)
+            this.dispatchMemoryDirectives(nextTask, agentId, memoryDirectives)
+            if (this.personTurns.delete(nextTask.id))
+              this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
+                if (this.isClosed || !this.db.isOpen()) return
+                const notice = this.db.addMessage(nextTask.threadId, 'system', text)
+                this.events?.onTurnFinished?.({
+                  threadId: nextTask.threadId,
+                  message: notice,
+                  task: nextTask,
+                })
               })
+
+            // 1c2. Uso do computador. No modo cauteloso, lote com ação mutável espera o card.
+            if (capsNow.computerUse && !holdComputer) {
+              followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
+            }
+            // Cadeia só no fim de um pedido do usuário/rotina/webhook: não em delegações,
+            // canais, mensagens diretas, nem enquanto espera aprovação ou especialistas.
+            const canHandOff =
+              !!agent.handoffAgentId &&
+              !waitingApproval &&
+              !nextTask.originThreadId &&
+              !nextTask.prompt.startsWith('[Mensagem direta de') &&
+              !(isOrchestrator && parseDelegationDirectives(fullText).length > 0) &&
+              !this.db.getChannelByThread(nextTask.threadId)
+            void Promise.allSettled(followUpWork).then(() => {
+              try {
+                if (this.isClosed || !this.db.isOpen()) return
+                if (this.flushFollowUps(nextTask, agentId)) return
+                // Sem continuação agendada (inclusive no limite de rodadas): devolve o resultado.
+                if (!isOrchestrator && nextTask.originThreadId && !waitingApproval) {
+                  const specialistText = brainDirectives.length
+                    ? [stripBrainDirectives(fullText).trim(), brainOutcome.lines.join('\n')]
+                        .filter(Boolean)
+                        .join('\n\n')
+                    : fullText.trim()
+                  this.returnResultToOrchestrator(nextTask, agent.name, specialistText)
+                }
+                if (canHandOff) this.handOff(nextTask, agent, visibleText)
+              } finally {
+                this.finishAgentTurn(agentId)
+              }
             })
+            followUpScheduled = true
 
-          // 1c2. Uso do computador. No modo cauteloso, lote com ação mutável espera o card.
-          if (capsNow.computerUse && !holdComputer) {
-            followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
-          }
-          // Cadeia só no fim de um pedido do usuário/rotina/webhook: não em delegações,
-          // canais, mensagens diretas, nem enquanto espera aprovação ou especialistas.
-          const canHandOff =
-            !!agent.handoffAgentId &&
-            !waitingApproval &&
-            !nextTask.originThreadId &&
-            !nextTask.prompt.startsWith('[Mensagem direta de') &&
-            !(isOrchestrator && parseDelegationDirectives(fullText).length > 0) &&
-            !this.db.getChannelByThread(nextTask.threadId)
-          void Promise.allSettled(followUpWork).then(() => {
-            if (this.flushFollowUps(nextTask, agentId)) return
-            // Sem continuação agendada (inclusive no limite de rodadas): devolve o resultado.
-            if (this.isClosed || !this.db.isOpen()) return
-            if (!isOrchestrator && nextTask.originThreadId && !waitingApproval) {
-              const specialistText = brainDirectives.length
-                ? [stripBrainDirectives(fullText).trim(), brainOutcome.lines.join('\n')]
-                    .filter(Boolean)
-                    .join('\n\n')
-                : fullText.trim()
-              this.returnResultToOrchestrator(nextTask, agent.name, specialistText)
+            // 1d. Robô inicia um novo chat (quando a capacidade permite)
+            {
+              const caps = effectiveCapabilities(agent, this.db.getSettings())
+              const newChat = caps.startsNewChats ? parseNewChatDirective(fullForDirectives) : null
+              if (newChat) {
+                const thread = this.db.createThread(
+                  agentId,
+                  newChat.title,
+                  isForeman(agent) ? this.db.getThread(nextTask.threadId)?.projectId : undefined,
+                )
+                this.db.addMessage(thread.id, 'user', newChat.task)
+                this.enqueue(agentId, thread.id, newChat.task, 1)
+                const notice = this.db.addMessage(
+                  nextTask.threadId,
+                  'system',
+                  `💬 Novo chat iniciado: "${newChat.title}"`,
+                )
+                this.events?.onTurnFinished?.({
+                  threadId: nextTask.threadId,
+                  message: notice,
+                  task: nextTask,
+                })
+              }
             }
-            if (canHandOff) this.handOff(nextTask, agent, visibleText)
-          })
 
-          // 1d. Robô inicia um novo chat (quando a capacidade permite)
-          {
-            const caps = effectiveCapabilities(agent, this.db.getSettings())
-            const newChat = caps.startsNewChats ? parseNewChatDirective(fullForDirectives) : null
-            if (newChat) {
-              const thread = this.db.createThread(
-                agentId,
-                newChat.title,
-                isForeman(agent) ? this.db.getThread(nextTask.threadId)?.projectId : undefined,
-              )
-              this.db.addMessage(thread.id, 'user', newChat.task)
-              this.enqueue(agentId, thread.id, newChat.task, 1)
-              const notice = this.db.addMessage(
-                nextTask.threadId,
-                'system',
-                `💬 Novo chat iniciado: "${newChat.title}"`,
-              )
-              this.events?.onTurnFinished?.({
-                threadId: nextTask.threadId,
-                message: notice,
-                task: nextTask,
-              })
-            }
+            // 2. Marca a tarefa como concluída no banco
+            const completedTask = this.db.updateTaskStatus(nextTask.id, 'completed')
+            this.events?.onTaskStatusChanged?.({ task: completedTask })
+            this.events?.onTurnFinished?.({
+              threadId: nextTask.threadId,
+              message: assistantMsg,
+              task: completedTask,
+            })
+          } finally {
+            if (!followUpScheduled) this.finishAgentTurn(agentId)
           }
-
-          // 2. Marca a tarefa como concluída no banco
-          const completedTask = this.db.updateTaskStatus(nextTask.id, 'completed')
-          this.events?.onTaskStatusChanged?.({ task: completedTask })
-          this.events?.onTurnFinished?.({
-            threadId: nextTask.threadId,
-            message: assistantMsg,
-            task: completedTask,
-          })
-
-          // 3. Processa próxima tarefa da fila FIFO
-          setTimeout(() => {
-            this.processNextForAgent(agentId)
-          }, 50)
         },
       },
     )

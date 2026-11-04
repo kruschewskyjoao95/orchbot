@@ -1,7 +1,28 @@
 import { type BrowserWindow, WebContentsView, session } from 'electron'
 import type { BrowserBounds, BrowserPageContent } from '../../shared/types'
-import type { BrowserDriver, TabNavigationResult } from './driver'
+import {
+  type BrowserDriver,
+  type NavigationSurface,
+  type TabNavigationResult,
+  afterBrowserNavigation,
+} from './driver'
 import { parsePageDomSummary, sanitizeUrl } from './sanitizer'
+
+/** Setter do protótipo: o `el.value =` do React atualiza o rastreador e o estado da página não muda. */
+export function fillFieldScript(selector: string, value: string): string {
+  const sel = JSON.stringify(selector)
+  const val = JSON.stringify(value)
+  return `(() => {
+    const el = document.querySelector(${sel});
+    if (!el) throw new Error("Campo não encontrado no DOM: " + ${sel});
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
+    if (setter) setter.call(el, ${val});
+    else el.value = ${val};
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`
+}
 
 interface ElectronTabHolder {
   agentId: string
@@ -95,20 +116,14 @@ export class ElectronBrowserDriver implements BrowserDriver {
     const holder = this.tabs.get(tabId)
     if (!holder) throw new Error(`Aba ${tabId} não encontrada`)
 
-    if (action === 'back' && holder.view.webContents.navigationHistory.canGoBack()) {
-      holder.view.webContents.navigationHistory.goBack()
-    } else if (action === 'forward' && holder.view.webContents.navigationHistory.canGoForward()) {
-      holder.view.webContents.navigationHistory.goForward()
-    } else if (action === 'reload') {
-      holder.view.webContents.reload()
-    }
-
-    const title = holder.view.webContents.getTitle() || holder.url
-    const currentUrl = holder.view.webContents.getURL() || holder.url
-    holder.title = title
-    holder.url = currentUrl
-
-    return { title, url: currentUrl }
+    const settled = await afterBrowserNavigation(
+      holder.view.webContents as unknown as NavigationSurface,
+      action,
+      holder.url,
+    )
+    holder.title = settled.title
+    holder.url = settled.url
+    return settled
   }
 
   public async inspect(tabId: string): Promise<BrowserPageContent> {
@@ -157,14 +172,7 @@ export class ElectronBrowserDriver implements BrowserDriver {
     const holder = this.tabs.get(tabId)
     if (!holder) throw new Error(`Aba ${tabId} não encontrada`)
 
-    await holder.view.webContents.executeJavaScript(`(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) throw new Error("Campo não encontrado no DOM: " + ${JSON.stringify(selector)});
-      el.value = ${JSON.stringify(value)};
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      return true;
-    })()`)
+    await holder.view.webContents.executeJavaScript(fillFieldScript(selector, value))
 
     return { filled: true }
   }

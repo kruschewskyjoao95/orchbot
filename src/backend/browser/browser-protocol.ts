@@ -8,7 +8,7 @@ export interface BrowserDirective {
   value?: string
 }
 
-export const MAX_BROWSER_ROUNDS = 2
+export const MAX_BROWSER_ROUNDS = 4
 
 /** Clique, preenchimento e fechar aba mudam a página. Abrir, inspecionar e screenshot são leitura. */
 const MUTATING_BROWSER = new Set<BrowserDirectiveAction>(['click', 'fill', 'close'])

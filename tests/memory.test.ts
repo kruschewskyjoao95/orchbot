@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildThreadContext } from '../src/backend/context/context-builder'
 import { parseMemoryDirectives, stripMemoryDirectives } from '../src/backend/memory/memory-protocol'
 import { MemoryService } from '../src/backend/memory/memory-service'
@@ -91,6 +91,82 @@ describe('memória, histórico e compactação locais', () => {
     expect(saved.summary).toContain('mensagem 0')
     expect(svc.activeMessages(threadId, '9999')).toHaveLength(6)
     expect(buildThreadContext([], 'padrao', saved.summary).text).toContain('RESUMO COMPACTADO')
+  })
+
+  it('interrompe o resumo e não apaga a sessão se o turno for cancelado', async () => {
+    const session = '11111111-2222-4333-8444-555555555555'
+    for (let i = 0; i < 9; i++) db.addMessage(threadId, i % 2 ? 'assistant' : 'user', `m${i}`)
+    const last = db.addMessage(threadId, 'assistant', 'resposta curta')
+    db.saveProviderSession(threadId, 'codex', 'escopo', session)
+    db.setMessageUsage(
+      last.id,
+      { inputTokens: 150000, outputTokens: 100, contextTokens: 150100, contextWindow: 200000 },
+      session,
+    )
+    let interrupted = false
+    const ctrl = new AbortController()
+    const adapter = {
+      supportsSessionResume: true,
+      executeTurn: () => ({
+        interrupt: () => {
+          interrupted = true
+        },
+      }),
+    }
+    const pending = svc.compactIfNeeded(
+      { agent: db.getAgent(agentId) as Agent, adapter: adapter as never, config: {} },
+      threadId,
+      '9999',
+      'escopo',
+      { signal: ctrl.signal },
+    )
+    ctrl.abort()
+    await expect(pending).resolves.toBeUndefined()
+    expect(interrupted).toBe(true)
+    expect(db.getThreadSummary(threadId)).toBeUndefined()
+    expect(db.getProviderSession(threadId, 'codex', 'escopo')).toBe(session)
+  })
+
+  it('não grava o resumo se o cancelamento chega depois do modelo e antes da gravação', async () => {
+    const session = '11111111-2222-4333-8444-555555555555'
+    for (let i = 0; i < 9; i++) db.addMessage(threadId, i % 2 ? 'assistant' : 'user', `m${i}`)
+    const last = db.addMessage(threadId, 'assistant', 'resposta curta')
+    db.saveProviderSession(threadId, 'codex', 'escopo', session)
+    db.setMessageUsage(
+      last.id,
+      { inputTokens: 150000, outputTokens: 100, contextTokens: 150100, contextWindow: 200000 },
+      session,
+    )
+    let releaseReady = () => {}
+    const ready = new Promise<void>((resolve) => {
+      releaseReady = resolve
+    })
+    let modelDone = false
+    const ctrl = new AbortController()
+    const adapter = {
+      supportsSessionResume: true,
+      executeTurn: (_p: string, _o: unknown, cb: { onDone: (text: string) => void }) => {
+        queueMicrotask(() => {
+          modelDone = true
+          cb.onDone('resumo que não pode ser gravado')
+        })
+        return { interrupt: () => {} }
+      },
+    }
+    const pending = svc.compactIfNeeded(
+      { agent: db.getAgent(agentId) as Agent, adapter: adapter as never, config: {} },
+      threadId,
+      '9999',
+      'escopo',
+      { signal: ctrl.signal, ready },
+    )
+    await vi.waitFor(() => expect(modelDone).toBe(true))
+    await Promise.resolve()
+    ctrl.abort()
+    releaseReady()
+    await expect(pending).resolves.toBeUndefined()
+    expect(db.getThreadSummary(threadId)).toBeUndefined()
+    expect(db.getProviderSession(threadId, 'codex', 'escopo')).toBe(session)
   })
 
   it('estima tokens e janela', () => {

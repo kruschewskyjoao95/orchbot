@@ -11,6 +11,70 @@ export interface TabNavigationResult {
   url: string
 }
 
+/** Superfície mínima do webContents para esperar a navegação antes de ler a URL. */
+export interface NavigationSurface {
+  navigationHistory: {
+    canGoBack: () => boolean
+    canGoForward: () => boolean
+    goBack: () => void
+    goForward: () => void
+  }
+  reload: () => void
+  getTitle: () => string
+  getURL: () => string
+  on: (event: string, listener: (...args: unknown[]) => void) => void
+  removeListener: (event: string, listener: (...args: unknown[]) => void) => void
+}
+
+/** Espera a página terminar. Sem histórico, não finge que voltou. */
+export function afterBrowserNavigation(
+  wc: NavigationSurface,
+  action: 'back' | 'forward' | 'reload',
+  fallbackUrl: string,
+  timeoutMs = 15_000,
+): Promise<TabNavigationResult> {
+  if (action === 'back' && !wc.navigationHistory.canGoBack()) {
+    return Promise.reject(new Error('Não há página anterior.'))
+  }
+  if (action === 'forward' && !wc.navigationHistory.canGoForward()) {
+    return Promise.reject(new Error('Não há página seguinte.'))
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (err?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      wc.removeListener('did-navigate', onOk)
+      wc.removeListener('did-navigate-in-page', onOk)
+      wc.removeListener('did-finish-load', onOk)
+      wc.removeListener('did-fail-load', onFail)
+      if (err) reject(err)
+      else {
+        const url = wc.getURL() || fallbackUrl
+        resolve({ title: wc.getTitle() || url, url })
+      }
+    }
+    const onOk = () => finish()
+    const onFail = (...args: unknown[]) => {
+      if (args[4] === false) return
+      const description = typeof args[2] === 'string' ? args[2] : ''
+      const code = typeof args[1] === 'number' ? args[1] : 0
+      finish(new Error(description || `Navegação falhou (${code})`))
+    }
+    const timer = setTimeout(() => finish(new Error('A navegação não terminou.')), timeoutMs)
+    wc.on('did-navigate', onOk)
+    // Voltar para um #âncora da mesma página só dispara este.
+    wc.on('did-navigate-in-page', onOk)
+    wc.on('did-finish-load', onOk)
+    wc.on('did-fail-load', onFail)
+    if (action === 'back') wc.navigationHistory.goBack()
+    else if (action === 'forward') wc.navigationHistory.goForward()
+    else wc.reload()
+  })
+}
+
 export interface BrowserDriver {
   openTab(agentId: string, tabId: string, url: string): Promise<TabNavigationResult>
   closeTab(tabId: string): Promise<void>
@@ -83,10 +147,12 @@ export class MockBrowserDriver implements BrowserDriver {
     const tab = this.tabs.get(tabId)
     if (!tab) throw new Error(`Aba ${tabId} não encontrada`)
 
-    if (action === 'back' && tab.historyIndex > 0) {
+    if (action === 'back') {
+      if (tab.historyIndex <= 0) throw new Error('Não há página anterior.')
       tab.historyIndex--
       tab.url = tab.history[tab.historyIndex]
-    } else if (action === 'forward' && tab.historyIndex < tab.history.length - 1) {
+    } else if (action === 'forward') {
+      if (tab.historyIndex >= tab.history.length - 1) throw new Error('Não há página seguinte.')
       tab.historyIndex++
       tab.url = tab.history[tab.historyIndex]
     }

@@ -625,6 +625,8 @@ export class OrchbotDatabase {
       'ALTER TABLE messages ADD COLUMN context_session_id TEXT',
       'ALTER TABLE provider_connections ADD COLUMN default_account_enabled INTEGER NOT NULL DEFAULT 1',
       'ALTER TABLE task_queue ADD COLUMN browser_rounds INTEGER DEFAULT 0',
+      'ALTER TABLE task_queue ADD COLUMN computer_rounds INTEGER DEFAULT 0',
+      'ALTER TABLE task_queue ADD COLUMN memory_rounds INTEGER DEFAULT 0',
       'ALTER TABLE task_queue ADD COLUMN origin_thread_id TEXT',
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
@@ -2138,9 +2140,12 @@ export class OrchbotDatabase {
     delegationDepth = 1,
     origin?: { originThreadId?: string; originAgentId?: string },
     browserRounds = 0,
+    createdAt?: string,
+    computerRounds = 0,
+    memoryRounds = 0,
   ): TaskQueueItem {
     const id = randomUUID()
-    const now = new Date().toISOString()
+    const now = createdAt ?? new Date().toISOString()
     const item: TaskQueueItem = {
       id,
       agentId,
@@ -2148,6 +2153,8 @@ export class OrchbotDatabase {
       originThreadId: origin?.originThreadId,
       originAgentId: origin?.originAgentId,
       browserRounds,
+      computerRounds,
+      memoryRounds,
       prompt,
       status: 'pending',
       error: null,
@@ -2158,8 +2165,8 @@ export class OrchbotDatabase {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, computer_rounds, memory_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       item.id,
@@ -2168,6 +2175,8 @@ export class OrchbotDatabase {
       item.originThreadId ?? null,
       item.originAgentId ?? null,
       item.browserRounds ?? 0,
+      item.computerRounds ?? 0,
+      item.memoryRounds ?? 0,
       item.prompt,
       item.status,
       item.error ?? null,
@@ -2188,6 +2197,8 @@ export class OrchbotDatabase {
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
         browser_rounds AS browserRounds,
+        computer_rounds AS computerRounds,
+        memory_rounds AS memoryRounds,
         prompt, 
         status, 
         error, 
@@ -2211,6 +2222,8 @@ export class OrchbotDatabase {
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
         browser_rounds AS browserRounds,
+        computer_rounds AS computerRounds,
+        memory_rounds AS memoryRounds,
         prompt, 
         status, 
         error, 
@@ -2262,6 +2275,8 @@ export class OrchbotDatabase {
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
         browser_rounds AS browserRounds,
+        computer_rounds AS computerRounds,
+        memory_rounds AS memoryRounds,
         prompt, 
         status, 
         error, 

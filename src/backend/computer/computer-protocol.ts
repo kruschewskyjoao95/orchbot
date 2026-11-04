@@ -7,9 +7,9 @@ export interface ComputerDirective {
   y?: number
 }
 
-export const MAX_COMPUTER_ROUNDS = 2
+export const MAX_COMPUTER_ROUNDS = 4
 
-/** Abrir app passa por shell. Clique, digitação e tecla mudam o desktop. Screenshot e apps são leitura. */
+/** Abrir app, clique, digitação e tecla mudam o desktop. Screenshot e apps são leitura. */
 const MUTATING_COMPUTER = new Set<ComputerDirectiveAction>(['open', 'click', 'type', 'key'])
 
 export function computerBatchNeedsApproval(directives: ComputerDirective[]): boolean {

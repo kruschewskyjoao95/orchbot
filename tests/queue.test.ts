@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ProviderRegistry } from '../src/backend/providers/registry'
 import type { ExecutionCallbacks, ProviderAdapter } from '../src/backend/providers/types'
 import { QueueManager } from '../src/backend/queue/queue-manager'
 import { OrchbotDatabase } from '../src/backend/storage/db'
@@ -234,5 +235,55 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     expect(mockRegistry.executedPrompts).toEqual(['Tarefa Retry'])
+  })
+
+  it('parar o robô interrompe o CLI e não deixa o pedido seguinte começar', async () => {
+    queue.close()
+    const registry = new ProviderRegistry()
+    const started: string[] = []
+    const interrupted: string[] = []
+    const adapter: ProviderAdapter = {
+      id: 'codex',
+      name: 'Preso',
+      checkAvailability: async () => ({ available: true }),
+      executeTurn: (prompt) => {
+        started.push(prompt)
+        return {
+          interrupt: () => {
+            interrupted.push(prompt)
+          },
+        }
+      },
+    }
+    registry.registerAdapter(adapter)
+    const local = new QueueManager(db, registry)
+    try {
+      const running = local.enqueue(testAgent.id, threadId, 'Trabalhando')
+      await vi.waitFor(() => expect(started).toContain('Trabalhando'))
+      const next = local.enqueue(testAgent.id, threadId, 'Depois')
+      const other = db.createAgent({
+        name: 'Outro',
+        provider: 'codex',
+        model: 'gpt-4o',
+        workspacePath: '/tmp/queue-test',
+      })
+      const otherThread = db.listThreads(other.id)[0].id
+      local.pause(other.id)
+      const otherTask = local.enqueue(other.id, otherThread, 'Do outro')
+
+      local.stopAgent(testAgent.id)
+
+      expect(interrupted).toEqual(['Trabalhando'])
+      expect(db.getTask(running.id)?.status).toBe('cancelled')
+      expect(db.getTask(next.id)?.status).toBe('cancelled')
+      expect(db.getTask(otherTask.id)?.status).toBe('pending')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(started).toEqual(['Trabalhando'])
+
+      local.resume(other.id)
+      await vi.waitFor(() => expect(started).toContain('Do outro'))
+    } finally {
+      local.close()
+    }
   })
 })

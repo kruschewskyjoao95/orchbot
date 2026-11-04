@@ -46,6 +46,13 @@ describe('BrowserManager', () => {
     const reloaded = await manager.navigate('agent-1', tab.id, 'reload')
     expect(reloaded.id).toBe(tab.id)
     expect(reloaded.url).toBe('https://orchbot.local/')
+    await expect(manager.navigate('agent-1', tab.id, 'back')).rejects.toThrow(
+      'Não há página anterior.',
+    )
+    await expect(manager.navigate('agent-1', tab.id, 'forward')).rejects.toThrow(
+      'Não há página seguinte.',
+    )
+    expect(manager.getTabs('agent-1')[0]?.url).toBe('https://orchbot.local/')
   })
 
   it('inspeciona a página e extrai estrutura DOM sanitizada', async () => {
