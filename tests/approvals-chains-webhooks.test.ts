@@ -71,6 +71,7 @@ describe('aprovações', () => {
     queue.decideApproval(approval.id, true)
     await vi.waitFor(() => expect(prompts).toHaveLength(2))
     expect(prompts[1]).toContain('APROVADO')
+    expect(prompts[1]).toContain('Pode executar exatamente o que foi aprovado')
     expect(db.listPendingApprovals()).toHaveLength(0)
     // Duplo clique não dispara outro turno.
     expect(() => queue.decideApproval(approval.id, false)).toThrow('já foi respondido')
@@ -203,7 +204,7 @@ describe('webhooks', () => {
 describe('Foreman: equipe sugerida', () => {
   const d = (name: string, role: string) => ({ name, role, instructions: `faça ${name}` })
 
-  it('sempre começa pelo líder e limita a 4 especialistas', () => {
+  it('devolve só especialistas, no máximo 4, e ignora o líder', () => {
     const team = parseTeam(
       JSON.stringify({
         team: [
@@ -213,13 +214,15 @@ describe('Foreman: equipe sugerida', () => {
         ],
       }),
     )
-    expect(team[0]).toMatchObject({ name: 'Chefe', role: 'orchestrator' })
-    expect(team).toHaveLength(5)
-    expect(team.slice(1).every((m) => m.role === 'worker')).toBe(true)
+    expect(team.map((m) => m.name)).toEqual(['W1', 'W2', 'W3', 'W4'])
+    expect(team.every((m) => m.role === 'worker')).toBe(true)
   })
 
-  it('cria um líder quando o modelo esquece, e ignora resposta sem especialistas', () => {
-    expect(parseTeam(JSON.stringify({ team: [d('W1', 'worker')] }))[0].role).toBe('orchestrator')
+  it('ignora equipe sem especialista', () => {
+    expect(parseTeam(JSON.stringify({ team: [d('W1', 'worker')] }))[0]).toMatchObject({
+      name: 'W1',
+      role: 'worker',
+    })
     expect(parseTeam(JSON.stringify({ team: [d('Chefe', 'orchestrator')] }))).toEqual([])
     expect(parseTeam('sem json')).toEqual([])
   })

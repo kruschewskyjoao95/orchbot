@@ -54,6 +54,7 @@ export class GrokAdapter implements ProviderAdapter {
             'streaming-json',
           ]
           if (opts.model) args.push('-m', opts.model)
+          for (const dir of opts.extraDirs ?? []) args.push('--add-dir', dir)
           if (opts.providerConfig?.effort)
             args.push('--reasoning-effort', opts.providerConfig.effort)
           return args

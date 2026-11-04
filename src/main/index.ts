@@ -13,6 +13,7 @@ import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { buildDiagnostics } from '../backend/diagnostics/diagnostics'
 import { MCP_PRESETS } from '../backend/mcp/presets'
+import { ensureForeman } from '../backend/orchestration/foreman'
 import {
   accountStatus,
   profileLoginHint,
@@ -67,6 +68,7 @@ import type {
   DelegationInput,
   ProviderConnection,
   ProviderInfo,
+  SaveBrainPageInput,
   SaveMcpServerInput,
   SupportedProvider,
   UpdateAgentInput,
@@ -82,6 +84,7 @@ import { registerAppImageDesktop, setLinuxAutostart } from './linux-desktop'
 import { iconPath, initShell } from './shell'
 
 let mainWindow: BrowserWindow | null = null
+let foremanReady = false
 let db: OrchbotDatabase | null = null
 let registry: ProviderRegistry | null = null
 let queueManager: QueueManager | null = null
@@ -173,7 +176,7 @@ function getQueueManager(): QueueManager {
         if (!mainWindow || mainWindow.isDestroyed() || signal.aborted) return undefined
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question',
-          title: `Permissão ACP — ${agentName}`,
+          title: `Permissão — ${agentName}`,
           message:
             request.toolCall.title || 'O agente solicita permissão para executar uma ferramenta.',
           detail: JSON.stringify(request.toolCall.rawInput ?? {}, null, 2),
@@ -599,6 +602,8 @@ ${out.slice(-800)}`,
   })
 
   ipcMain.handle('orchbot:get-agents', () => {
+    // shortcut: se no boot não havia IA ligada, o coordenador nasce na primeira lista.
+    if (!foremanReady && ensureForeman(database)) foremanReady = true
     return database.listAgents()
   })
 
@@ -643,12 +648,13 @@ ${out.slice(-800)}`,
 
   ipcMain.handle(
     'orchbot:create-thread',
-    (_event, payload: { agentId: string; title?: string }) => {
+    (_event, payload: { agentId: string; title?: string; projectId?: string }) => {
       const { agentId, title } = payload
       if (!agentId || typeof agentId !== 'string') {
         throw new Error('ID do agente obrigatório')
       }
-      return database.createThread(agentId, title)
+      const projectId = typeof payload.projectId === 'string' ? payload.projectId.trim() : ''
+      return database.createThread(agentId, title, projectId || undefined)
     },
   )
 
@@ -967,6 +973,10 @@ ${out.slice(-800)}`,
   ipcMain.handle('orchbot:skills-install-bundled', (_e, slug: string) =>
     skills.installBundled(String(slug)),
   )
+  ipcMain.handle('orchbot:skill-proposals', () => skills.listProposals())
+  ipcMain.handle('orchbot:skill-decide', (_e, p: { id: string; accept: boolean }) =>
+    skills.decideProposal(String(p?.id ?? ''), p?.accept === true),
+  )
   ipcMain.handle('orchbot:agent-skills-get', (_e, agentId: string) =>
     database.listAgentSkills(String(agentId)),
   )
@@ -1068,6 +1078,28 @@ ${out.slice(-800)}`,
   ipcMain.handle('orchbot:memory-delete', (_e, p: { agentId: string; id: string }) =>
     database.deleteMemory(p.agentId, p.id),
   )
+  ipcMain.handle('orchbot:brain-pages', (_e, projectId: string) =>
+    queue.brain.listPages(String(projectId ?? '')),
+  )
+  ipcMain.handle('orchbot:brain-save', (_e, input: SaveBrainPageInput) =>
+    queue.brain.savePage({
+      projectId: String(input?.projectId ?? ''),
+      slug: typeof input?.slug === 'string' ? input.slug : undefined,
+      title: String(input?.title ?? ''),
+      type: input?.type,
+      content: String(input?.content ?? ''),
+      replace: input?.replace === true,
+    }),
+  )
+  ipcMain.handle('orchbot:brain-delete', (_e, p: { projectId: string; slug: string }) =>
+    queue.brain.deletePage(String(p?.projectId ?? ''), String(p?.slug ?? '')),
+  )
+  ipcMain.handle('orchbot:brain-proposals', (_e, projectId: string) =>
+    queue.brain.listProposals(String(projectId ?? '')),
+  )
+  ipcMain.handle('orchbot:brain-decide', (_e, p: { id: string; accept: boolean }) =>
+    queue.brain.decide(String(p?.id ?? ''), p?.accept === true),
+  )
   ipcMain.handle('orchbot:context-usage', (_e, p: { agentId: string; threadId: string }) => {
     const agent = database.getAgent(p.agentId)
     if (!agent || !queueManager) return { tokens: 0, window: 0, compacted: false }
@@ -1151,6 +1183,7 @@ ${out.slice(-800)}`,
 
       // 5. Enfileira a tarefa na fila durável FIFO do agente
       const task = queue.enqueue(agent.id, threadId, effectivePrompt)
+      queue.markFromPerson(task.id)
 
       return { userMessage, task }
     },
@@ -1352,6 +1385,7 @@ function sendDeepLink(link: DeepLink): void {
 if (gotLock)
   app.whenReady().then(() => {
     setManagedCliRoot(path.join(app.getPath('userData'), 'cli'))
+    if (ensureForeman(getDatabase())) foremanReady = true
     registerIpcHandlers()
     createWindow()
     startWebhookServer(getDatabase(), getQueueManager())

@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { Agent, Channel, ChannelMessage, CreateChannelInput } from '../../shared/types'
 import { MAX_ORCHESTRATION_DEPTH } from '../orchestration/protocol'
 import { describeMiss, resolveAgent } from '../orchestration/resolve-agent'
+import { orchbotDir } from '../storage/agent-mirror'
 
 /** Cada ida e volta no canal consome um nível; limita loops sem travar tarefas de várias etapas. */
 export const MAX_CHANNEL_DEPTH = 8
@@ -206,8 +207,7 @@ export class CollaborationService {
     if (!stat?.isFile()) return 'arquivo não encontrado.'
     if (stat.size > MAX_FILE_BYTES) return 'arquivo maior que 25 MB.'
     const safeSender = from.name.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 40) || 'agente'
-    const dir = path.join(path.resolve(to.workspacePath), '.orchbot', 'inbox', safeSender)
-    fs.mkdirSync(dir, { recursive: true })
+    const dir = orchbotDir(to.workspacePath, 'inbox', safeSender)
     const dest = path.join(dir, path.basename(real))
     fs.copyFileSync(real, dest)
     const toThread = this.latestThread(to.id)

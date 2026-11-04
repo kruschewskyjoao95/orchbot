@@ -78,10 +78,18 @@ describe('skills locais', () => {
 
   it('agente cria, carrega, revisa e instala só o que é dele', () => {
     const run = (text: string) => svc.run(agent, parseSkillDirectives(text))
-    expect(
-      run('[[SKILL:create]] Deploy Seguro :: Como publicar\n1. rode os testes [[/SKILL]]')[0],
-    ).toContain('criada e ativada')
+    const created = run(
+      '[[SKILL:create]] Deploy Seguro :: Como publicar\n1. rode os testes [[/SKILL]]',
+    )[0]
+    expect(created).toContain('proposta')
+    expect(created).toContain('aceitar')
+    expect(db.listAgentSkills(agent.id)).toEqual([])
+    expect(svc.list()).toEqual([])
+    const [proposal] = db.listSkillProposals()
+    expect(proposal.slug).toBe('deploy-seguro')
+    svc.decideProposal(proposal.id, true)
     expect(db.listAgentSkills(agent.id)).toEqual(['deploy-seguro'])
+    expect(() => svc.decideProposal(proposal.id, false)).toThrow('já foi respondida')
     expect(run('[[SKILL:load]] deploy-seguro [[/SKILL]]')[0]).toContain('1. rode os testes')
     expect(
       run('[[SKILL:revise]] deploy-seguro :: Publicar\n1. testes\n2. tag [[/SKILL]]')[0],

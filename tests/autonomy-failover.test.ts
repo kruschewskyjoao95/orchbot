@@ -206,7 +206,7 @@ describe('Modo de Autonomia & Failover Automático de Cota', () => {
 
     expect(capturedInstructions).toContain('NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO')
     expect(capturedInstructions).toContain(
-      'Peça confirmação expressa ao usuário antes de qualquer clique no navegador',
+      'o Orchbot abre um card e só executa depois que a pessoa aprovar',
     )
   })
 })

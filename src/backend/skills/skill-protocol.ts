@@ -43,7 +43,7 @@ export function buildSkillInstructions(skills: { slug: string; description: stri
     'Blocos disponíveis ao final da resposta:',
     '[[SKILL:list]] [[/SKILL]]',
     '[[SKILL:load]] slug [[/SKILL]]',
-    '[[SKILL:create]] slug :: descrição de uma linha, e nas linhas seguintes as instruções em markdown [[/SKILL]]  (salva um procedimento reutilizável que você descobriu)',
+    '[[SKILL:create]] slug :: descrição de uma linha, e nas linhas seguintes as instruções em markdown [[/SKILL]]  (abre uma proposta; a skill só existe depois que a pessoa aceitar)',
     '[[SKILL:revise]] slug :: nova descrição na 1ª linha, depois as novas instruções completas [[/SKILL]]  (versão anterior fica no histórico)',
     '[[SKILL:install]] pasta/dentro/do/workspace [[/SKILL]]  (instala uma pasta com SKILL.md)',
     'Crie skills só para procedimentos que se repetem; nunca coloque senhas ou segredos nelas.',

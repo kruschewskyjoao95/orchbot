@@ -73,8 +73,21 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (options.model) args.push('--model', options.model)
     if (options.providerConfig?.effort) args.push('--effort', options.providerConfig.effort)
     if (options.instructions) args.push('--append-system-prompt', options.instructions)
+    for (const dir of options.extraDirs ?? []) args.push('--add-dir', dir)
     const servers = options.providerConfig?.mcpServers
     if (servers?.length) args.push(...claudeMcp(servers).args)
+    if (options.permission) {
+      // O CLI pergunta ao host por stdin/stdout; manual ignora o modo padrão da conta (ex.: auto).
+      args.push(
+        '--input-format',
+        'stream-json',
+        '--permission-prompt-tool',
+        'stdio',
+        '--permission-mode',
+        'manual',
+      )
+      return runSessionCli('claude', args, options, callbacks, prompt)
+    }
     args.push('--', prompt)
     return runSessionCli('claude', args, options, callbacks)
   }

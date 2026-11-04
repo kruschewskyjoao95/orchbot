@@ -14,6 +14,7 @@ import type {
   DeepLink,
   DelegationInput,
   OrchbotApi,
+  SaveBrainPageInput,
   SaveMcpServerInput,
   ScheduledTask,
   StreamChunkEvent,
@@ -48,8 +49,8 @@ const api: OrchbotApi = {
   updateAgent: (input: UpdateAgentInput) => ipcRenderer.invoke('orchbot:update-agent', input),
   deleteAgent: (id: string) => ipcRenderer.invoke('orchbot:delete-agent', id),
   getThreads: (agentId: string) => ipcRenderer.invoke('orchbot:get-threads', agentId),
-  createThread: (agentId: string, title?: string) =>
-    ipcRenderer.invoke('orchbot:create-thread', { agentId, title }),
+  createThread: (agentId: string, title?: string, projectId?: string) =>
+    ipcRenderer.invoke('orchbot:create-thread', { agentId, title, projectId }),
   deleteThread: (threadId: string) => ipcRenderer.invoke('orchbot:delete-thread', threadId),
   updateThreadTitle: (threadId: string, title: string) =>
     ipcRenderer.invoke('orchbot:update-thread-title', { threadId, title }),
@@ -204,6 +205,9 @@ const api: OrchbotApi = {
   installSkillFolder: () => ipcRenderer.invoke('orchbot:skills-install-folder'),
   getSkillCatalog: () => ipcRenderer.invoke('orchbot:skills-catalog'),
   installBundledSkill: (slug: string) => ipcRenderer.invoke('orchbot:skills-install-bundled', slug),
+  listSkillProposals: () => ipcRenderer.invoke('orchbot:skill-proposals'),
+  decideSkillProposal: (id: string, accept: boolean) =>
+    ipcRenderer.invoke('orchbot:skill-decide', { id, accept }),
   getAgentSkills: (agentId: string) => ipcRenderer.invoke('orchbot:agent-skills-get', agentId),
   setAgentSkills: (agentId: string, slugs: string[]) =>
     ipcRenderer.invoke('orchbot:agent-skills-set', { agentId, slugs }),
@@ -230,6 +234,14 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:memory-add', { agentId, text }),
   deleteMemory: (agentId: string, id: string) =>
     ipcRenderer.invoke('orchbot:memory-delete', { agentId, id }),
+  listBrainPages: (projectId: string) => ipcRenderer.invoke('orchbot:brain-pages', projectId),
+  saveBrainPage: (input: SaveBrainPageInput) => ipcRenderer.invoke('orchbot:brain-save', input),
+  deleteBrainPage: (projectId: string, slug: string) =>
+    ipcRenderer.invoke('orchbot:brain-delete', { projectId, slug }),
+  listBrainProposals: (projectId: string) =>
+    ipcRenderer.invoke('orchbot:brain-proposals', projectId),
+  decideBrainProposal: (id: string, accept: boolean) =>
+    ipcRenderer.invoke('orchbot:brain-decide', { id, accept }),
   getContextUsage: (agentId: string, threadId: string) =>
     ipcRenderer.invoke('orchbot:context-usage', { agentId, threadId }),
   getWorkspaceRules: (agentId: string) =>

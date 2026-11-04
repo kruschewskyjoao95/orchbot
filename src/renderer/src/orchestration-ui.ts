@@ -1,3 +1,4 @@
+import { isForeman } from '../../backend/orchestration/foreman'
 import type { Agent, Channel, Project, TaskQueueItem } from '../../shared/types'
 import { AGENT_STATE_LABEL, type AgentState, needsYou } from './agent-state'
 
@@ -11,22 +12,19 @@ export interface CoworkerTemplate {
   instructions: string
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   autonomyLevel: 'autonomous' | 'cautious'
+  /** Perguntas feitas uma única vez, na primeira conversa. As respostas ficam na memória. */
+  setup?: string[]
+}
+
+/** Instruções do template + a entrevista inicial (roda uma vez: depois de gravada, não pergunta mais). */
+export function templateInstructions(
+  tpl: Pick<CoworkerTemplate, 'instructions' | 'setup'>,
+): string {
+  if (!tpl.setup?.length) return tpl.instructions
+  return `${tpl.instructions}\n\nConfiguração inicial: antes de qualquer trabalho, confira suas memórias. Para cada item abaixo que ainda não esteja nelas, pergunte à pessoa (um por vez, em linguagem simples) e grave a resposta com [[MEMORY:remember]]. Quando todos estiverem gravados, nunca mais pergunte.\n${tpl.setup.map((q) => `- ${q}`).join('\n')}`
 }
 
 export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
-  {
-    id: 'foreman',
-    name: 'Líder da Equipe (Coordenador)',
-    avatar: '👑',
-    role: 'orchestrator',
-    badge: 'Coordena tudo p/ você',
-    description:
-      'Recebe seu pedido em linguagem simples, divide as tarefas entre os colegas da equipe e te entrega o resultado pronto.',
-    instructions:
-      'Você é o Líder e Coordenador da equipe. Seu papel é entender o objetivo do usuário em linguagem simples, dividir o trabalho em subtarefas claras, delegar para os especialistas certos do projeto usando blocos [[DELEGAR:Nome]] e sintetizar as respostas com clareza e objetividade.',
-    effort: 'high',
-    autonomyLevel: 'autonomous',
-  },
   {
     id: 'software-architect',
     name: 'Criador de Apps & Sites',
@@ -104,6 +102,11 @@ export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
       'Você é uma secretária executiva. Separe o que é urgente do que pode esperar, proponha horários e rascunhe respostas curtas e educadas. Comece o dia com um resumo em tópicos: compromissos, pendências e o que precisa de decisão. Nunca envie, aceite convites ou cancele nada sem aprovação.',
     effort: 'medium',
     autonomyLevel: 'cautious',
+    setup: [
+      'De quem você é secretária: nome da pessoa e da empresa.',
+      'Qual caixa de e-mail e qual agenda acompanhar.',
+      'Horário de trabalho e quem sempre tem prioridade.',
+    ],
   },
   {
     id: 'data-analyst',
@@ -130,6 +133,11 @@ export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
       'Você cuida da reputação online da empresa. Leia avaliações novas, classifique por tom e urgência, e escreva respostas humanas, sem frases prontas, que reconhecem o problema e oferecem um próximo passo. Compare com o que os concorrentes recebem. Publicar qualquer resposta exige aprovação.',
     effort: 'medium',
     autonomyLevel: 'cautious',
+    setup: [
+      'Qual é a empresa e em quais sites ficam as avaliações dela.',
+      'Quais concorrentes acompanhar.',
+      'Tom das respostas (formal, próximo, com humor?).',
+    ],
   },
   {
     id: 'sales-rep',
@@ -143,6 +151,11 @@ export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
       'Você faz prospecção de vendas. Pergunte (ou deduza do contexto) quem é o cliente ideal, pesquise empresas que se encaixam e registre por que cada uma foi escolhida. Para cada contato, escreva uma primeira mensagem curta, específica e sem exageros. Enviar qualquer mensagem exige aprovação.',
     effort: 'medium',
     autonomyLevel: 'cautious',
+    setup: [
+      'O que a empresa vende e para quem (cliente ideal).',
+      'De qual empresa e de qual pessoa a mensagem sai.',
+      'Região ou segmento a evitar.',
+    ],
   },
   {
     id: 'social-media',
@@ -156,6 +169,11 @@ export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
       'Você é social media. Monte um calendário semanal com um post por dia para cada rede pedida, adaptando formato e tamanho a cada uma, com sugestão de imagem e horário. Mantenha o tom da marca consistente. Publicar exige aprovação.',
     effort: 'medium',
     autonomyLevel: 'cautious',
+    setup: [
+      'Qual é a marca e o tom de voz dela.',
+      'Quais redes sociais atender e com que frequência.',
+      'Assuntos proibidos ou palavras que a marca não usa.',
+    ],
   },
   {
     id: 'collections',
@@ -169,6 +187,11 @@ export const COWORKER_TEMPLATES: CoworkerTemplate[] = [
       'Você cuida de cobranças. Liste as faturas em atraso com valor, cliente e dias de atraso. Para cada uma, escreva um lembrete cordial adequado ao estágio (primeiro aviso, segundo, último), sempre com o valor e o jeito de pagar. Nunca ameace. Enviar lembretes ou registrar pagamentos exige aprovação.',
     effort: 'low',
     autonomyLevel: 'cautious',
+    setup: [
+      'Qual é a empresa que cobra e de onde vêm as faturas (planilha, sistema, pasta).',
+      'Como o cliente paga (Pix, boleto, link) e para quem responder.',
+      'Quantos dias de atraso para cada estágio do lembrete.',
+    ],
   },
 ]
 
@@ -185,18 +208,18 @@ export const STARTER_TEAM_PRESETS: StarterTeamPreset[] = [
   {
     id: 'full-product-team',
     title: 'Equipe Completa de Projeto',
-    subtitle: '1 Líder Coordenador + Criador de Apps + Revisor de Qualidade',
+    subtitle: 'Criador de Apps + Revisor de Qualidade. O coordenador distribui o trabalho.',
     icon: '🚀',
     badge: 'Recomendado p/ começar',
-    templateIds: ['foreman', 'software-architect', 'code-reviewer'],
+    templateIds: ['software-architect', 'code-reviewer'],
   },
   {
     id: 'research-assistant-team',
     title: 'Equipe de Pesquisa & Organização',
-    subtitle: '1 Líder Coordenador + Pesquisador da Internet + Assistente Pessoal',
+    subtitle: 'Pesquisador da Internet + Assistente Pessoal. O coordenador distribui o trabalho.',
     icon: '🧭',
     badge: 'Ideal para estudos e negócios',
-    templateIds: ['foreman', 'web-researcher', 'ops-assistant'],
+    templateIds: ['web-researcher', 'ops-assistant'],
   },
 ]
 
@@ -358,7 +381,6 @@ export interface PaletteItem {
   templateId?: string
   actionId?:
     | 'new-agent'
-    | 'new-foreman'
     | 'new-channel'
     | 'new-project'
     | 'delegate'
@@ -412,15 +434,6 @@ export function buildCommandPaletteItems(
       shortcut: 'Ctrl+N',
       icon: '➕',
       keywords: 'novo agente criar assistente coworker bot especialista',
-    },
-    {
-      id: 'action:new-foreman',
-      kind: 'template',
-      templateId: 'foreman',
-      label: 'Contratar Líder da Equipe (Coordenador)',
-      sublabel: 'Ele recebe seu pedido e distribui o trabalho para os outros assistentes',
-      icon: '👑',
-      keywords: 'foreman orquestrador lider coordenador equipe',
     },
     {
       id: 'action:delegate',
@@ -489,6 +502,7 @@ export function buildCommandPaletteItems(
   ]
 
   for (const agent of agents) {
+    if (isForeman(agent)) continue
     const st = states[agent.id] ?? 'idle'
     const proj = agent.projectId ? projects.find((p) => p.id === agent.projectId) : null
     items.push({

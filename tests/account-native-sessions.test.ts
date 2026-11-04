@@ -44,7 +44,10 @@ describe.each(['codex', 'claude'] as const)('%s account session ownership', (pro
   })
   async function run(agentId: string, threadId: string, prompt: string) {
     const task = queue.enqueue(agentId, threadId, prompt)
-    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'))
+    // Cada turno sobe um CLI falso; com a suíte inteira em paralelo passa de 1 s.
+    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'), {
+      timeout: 5000,
+    })
   }
 
   it('starts a new account-owned session on quota fallback and resumes that account afterwards', async () => {

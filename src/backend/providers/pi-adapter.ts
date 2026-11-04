@@ -32,6 +32,7 @@ export class PiAdapter implements ProviderAdapter {
           // CLI real: pi --print [--model <pattern>] <mensagem>
           const args = ['--print']
           if (opts.model) args.push('--model', opts.model)
+          if (opts.providerConfig?.effort) args.push('--thinking', opts.providerConfig.effort)
           if (opts.instructions) args.push('--append-system-prompt', opts.instructions)
           args.push(p)
           return args

@@ -49,6 +49,18 @@ export class CodexAdapter implements ProviderAdapter {
     if (servers?.length) args.push(...codexMcp(servers).args)
     // exec resume has no -C flag; cwd sets the workspace for both commands.
     if (options.model) args.push('-m', options.model)
+    const effort = options.providerConfig?.effort
+    if (effort) args.push('-c', `model_reasoning_effort="${effort}"`)
+    // exec não pergunta nada: no cauteloso o terminal fica só leitura até o turno aprovado.
+    // -c porque exec resume não aceita -s.
+    if (options.permission)
+      args.push(
+        '-c',
+        `sandbox_mode="${options.permission === 'approved' ? 'workspace-write' : 'read-only'}"`,
+      )
+    // exec resume não aceita --add-dir; a raiz gravável via -c vale nos dois.
+    if (options.extraDirs?.length)
+      args.push('-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(options.extraDirs)}`)
     const effectivePrompt = options.instructions
       ? `[Instruções do Sistema: ${options.instructions}]\n\n${prompt}`
       : prompt

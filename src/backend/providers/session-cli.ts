@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { getCatalogEntry } from './catalog'
 import { buildProviderEnv, resolveCliCommand } from './cli-utils'
 import type { ActiveExecution, ExecutionCallbacks, ExecutionOptions } from './types'
@@ -32,6 +33,14 @@ interface CliEvent {
   is_error?: unknown
   usage?: unknown
   modelUsage?: unknown
+  request_id?: unknown
+  request?: {
+    subtype?: unknown
+    tool_name?: unknown
+    tool_use_id?: unknown
+    description?: unknown
+    input?: unknown
+  }
 }
 
 export function isCliSessionId(value: unknown): value is string {
@@ -47,8 +56,11 @@ export function runSessionCli(
   args: string[],
   options: ExecutionOptions,
   callbacks: ExecutionCallbacks,
+  /** Claude com permissão por stdio: o prompt vai por stdin e o CLI pergunta antes de cada ferramenta. */
+  stdinPrompt?: string,
 ): ActiveExecution {
   let child: ChildProcess | undefined
+  const permissions = new AbortController()
   let interrupted = false
   let settled = false
   let sessionId: string | undefined
@@ -126,8 +138,58 @@ export function runSessionCli(
       })
       child = launched
       runningChildren.add(launched)
-      launched.once('close', () => runningChildren.delete(launched))
-      launched.stdin.end()
+      launched.once('close', () => {
+        runningChildren.delete(launched)
+        permissions.abort() // fecha o diálogo se o CLI morrer esperando resposta
+      })
+      const write = (message: unknown) => {
+        if (launched.stdin.writable) launched.stdin.write(`${JSON.stringify(message)}\n`)
+      }
+      if (stdinPrompt === undefined) launched.stdin.end()
+      else write({ type: 'user', message: { role: 'user', content: stdinPrompt } })
+      const answerPermission = async (event: CliEvent) => {
+        const requestId = event.request_id
+        const req = event.request
+        if (req?.subtype !== 'can_use_tool') {
+          write({
+            type: 'control_response',
+            response: { subtype: 'error', request_id: requestId, error: 'não suportado' },
+          })
+          return
+        }
+        const tool = typeof req.tool_name === 'string' ? req.tool_name : 'ferramenta'
+        const what = typeof req.description === 'string' ? req.description : ''
+        const request = {
+          sessionId: sessionId ?? '',
+          toolCall: {
+            toolCallId: String(req.tool_use_id ?? requestId),
+            title: what ? `${tool}: ${what}` : tool,
+            rawInput: req.input,
+          },
+          options: [
+            { optionId: 'allow', name: 'Permitir', kind: 'allow_once' },
+            { optionId: 'deny', name: 'Recusar', kind: 'reject_once' },
+          ],
+        } as RequestPermissionRequest
+        // Sem resposta (diálogo fechado, sem janela, erro) conta como recusa.
+        const choice = await callbacks
+          .onPermissionRequest?.(request, permissions.signal)
+          .catch(() => undefined)
+        write({
+          type: 'control_response',
+          response: {
+            subtype: 'success',
+            request_id: requestId,
+            response:
+              choice === 'allow'
+                ? { behavior: 'allow', updatedInput: req.input ?? {} }
+                : {
+                    behavior: 'deny',
+                    message: 'A pessoa recusou no Orchbot. Não tente de novo por outro caminho.',
+                  },
+          },
+        })
+      }
       const lines = createInterface({ input: launched.stdout, crlfDelay: Number.POSITIVE_INFINITY })
       lines.on('line', (line) => {
         if (interrupted || failure || !line.trim()) return
@@ -138,6 +200,10 @@ export function runSessionCli(
           return
         }
         if (!event || typeof event !== 'object') return
+        if (stdinPrompt !== undefined && event.type === 'control_request') {
+          void answerPermission(event)
+          return
+        }
         try {
           if (provider === 'codex') {
             if (event.type === 'thread.started') capture(event.thread_id)
@@ -183,6 +249,7 @@ export function runSessionCli(
             )
               updateText(fullText + event.event.delta.text)
             if (event.type === 'result') {
+              if (stdinPrompt !== undefined) launched.stdin.end()
               if (event.is_error || (event.subtype && event.subtype !== 'success')) {
                 failure = Array.isArray(event.errors)
                   ? event.errors.filter((error: unknown) => typeof error === 'string').join('\n')
@@ -218,6 +285,7 @@ export function runSessionCli(
     interrupt: () => {
       if (!interrupted && !settled) {
         interrupted = true
+        permissions.abort()
         terminate()
       }
     },

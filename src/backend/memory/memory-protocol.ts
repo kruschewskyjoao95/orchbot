@@ -37,8 +37,11 @@ export function needsMemoryFollowUp(directives: MemoryDirective[]): boolean {
 export function buildMemoryInstructions(): string {
   return [
     '[MEMÓRIA E HISTÓRICO LOCAIS]',
-    'Você tem memória persistente (guardada só neste computador). Use blocos ao final da resposta:',
-    '[[MEMORY:remember]] fato durável e útil (preferência, decisão, convenção do projeto) [[/MEMORY]]',
+    'Você tem memória persistente só neste computador, e ela é sua: preferência do seu trabalho, decisão de uma tarefa, detalhe que nenhuma página do cérebro cobre.',
+    'O que é da empresa ou do projeto (o que vende, para quem, a que preço, tom de voz, ferramentas, clientes, concorrentes) NÃO entra em [[MEMORY:remember]]. Isso vai para o cérebro do projeto.',
+    'Procedimento, checklist e formato de saída também não entram na memória. Use [[SKILL:create]]: vira proposta e só vale quando a pessoa aceitar.',
+    'Use blocos ao final da resposta:',
+    '[[MEMORY:remember]] fato do seu próprio trabalho [[/MEMORY]]',
     '[[MEMORY:forget]] id-da-memória [[/MEMORY]]',
     '[[MEMORY:search]] termos [[/MEMORY]]',
     '[[HISTORY:search]] termos [[/HISTORY]]  (busca em conversas antigas, inclusive trechos cortados do contexto)',

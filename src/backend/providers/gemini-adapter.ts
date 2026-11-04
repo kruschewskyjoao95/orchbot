@@ -32,6 +32,7 @@ export class GeminiAdapter implements ProviderAdapter {
           // Gemini CLI real: gemini -p <prompt> -m <model> (modo headless)
           const args = ['-p', withInstructions(p, opts.instructions)]
           if (opts.model) args.push('-m', opts.model)
+          if (opts.extraDirs?.length) args.push(`--include-directories=${opts.extraDirs.join(',')}`)
           return args
         },
       },

@@ -31,6 +31,14 @@ export interface ProviderRuntimeConfig {
 
 export interface ExecutionOptions {
   workspacePath: string
+  /** Pastas fora do workspace que o agente pode ler e escrever (ex.: `shared/` do projeto). */
+  extraDirs?: string[]
+  /**
+   * Modo cauteloso. 'ask': comando de terminal e edição param e pedem permissão (Claude) ou
+   * o terminal fica só leitura (Codex). 'approved': turno logo depois de uma aprovação.
+   * Ausente: modo autônomo, sem mudança.
+   */
+  permission?: 'ask' | 'approved'
   resumeSessionId?: string
   model?: string
   instructions?: string

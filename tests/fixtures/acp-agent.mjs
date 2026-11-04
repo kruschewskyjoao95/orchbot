@@ -30,7 +30,8 @@ input.on('line', (line) => {
     if (mode === 'hang-init') return
     reply(id, {
       protocolVersion: mode === 'bad-version' ? 999 : params.protocolVersion,
-      agentCapabilities: {},
+      agentCapabilities:
+        mode === 'dirs' ? { sessionCapabilities: { additionalDirectories: {} } } : {},
       agentInfo: { name: 'test-agent', version: '1.0.0' },
       authMethods: [],
     })

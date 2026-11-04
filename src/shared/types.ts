@@ -266,6 +266,47 @@ export interface Project {
   updatedAt: string
 }
 
+export type BrainPageType = 'company' | 'product' | 'note'
+
+/** Página do wiki compartilhado de um projeto. Fato da empresa mora aqui, não na memória do robô. */
+export interface BrainPage {
+  id: string
+  projectId: string
+  slug: string
+  title: string
+  type: BrainPageType
+  content: string
+  /** Títulos de seção marcados com `<!-- não confirmado -->`. */
+  unconfirmed: string[]
+  updatedAt: string
+}
+
+export interface SaveBrainPageInput {
+  projectId: string
+  slug?: string
+  title: string
+  type?: BrainPageType
+  content: string
+  /** false recusa se o slug já existe. O líder e o aceite de proposta substituem a página. */
+  replace?: boolean
+}
+
+export interface BrainProposal {
+  id: string
+  projectId: string
+  agentId?: string
+  slug: string
+  title: string
+  type: BrainPageType
+  content: string
+  reason: string
+  source: string
+  unconfirmed: string[]
+  status: 'open' | 'accepted' | 'dismissed'
+  createdAt: string
+  decidedAt?: string
+}
+
 export interface CreateProjectInput {
   name: string
   description?: string
@@ -289,6 +330,8 @@ export interface Agent {
   description?: string
   /** Projeto (pasta) ao qual o robô pertence; ausente = sem projeto. */
   projectId?: string
+  /** Coordenador fixo do app. Ausente nos colegas. */
+  systemRole?: 'foreman'
   provider: SupportedProvider
   accountId?: string
   model: string
@@ -363,6 +406,8 @@ export interface Thread {
   id: string
   agentId: string
   title: string
+  /** Pasta desta conversa. O coordenador usa isso para o cérebro e a equipe. */
+  projectId?: string
   createdAt: string
 }
 
@@ -556,7 +601,7 @@ export interface OrchbotApi {
   updateAgent: (input: UpdateAgentInput) => Promise<Agent>
   deleteAgent: (id: string) => Promise<boolean>
   getThreads: (agentId: string) => Promise<Thread[]>
-  createThread: (agentId: string, title?: string) => Promise<Thread>
+  createThread: (agentId: string, title?: string, projectId?: string) => Promise<Thread>
   deleteThread: (threadId: string) => Promise<boolean>
   updateThreadTitle: (threadId: string, title: string) => Promise<Thread>
   getMessages: (threadId: string) => Promise<Message[]>
@@ -656,6 +701,8 @@ export interface OrchbotApi {
   installSkillFolder: () => Promise<SkillInfo | null>
   getSkillCatalog: () => Promise<SkillCatalogEntry[]>
   installBundledSkill: (slug: string) => Promise<SkillInfo>
+  listSkillProposals: () => Promise<SkillProposal[]>
+  decideSkillProposal: (id: string, accept: boolean) => Promise<SkillProposal>
   getAgentSkills: (agentId: string) => Promise<string[]>
   setAgentSkills: (agentId: string, slugs: string[]) => Promise<string[]>
   listMcpServers: () => Promise<McpServerInfo[]>
@@ -677,6 +724,11 @@ export interface OrchbotApi {
   listMemories: (agentId: string) => Promise<AgentMemory[]>
   addMemory: (agentId: string, text: string) => Promise<AgentMemory>
   deleteMemory: (agentId: string, id: string) => Promise<boolean>
+  listBrainPages: (projectId: string) => Promise<BrainPage[]>
+  saveBrainPage: (input: SaveBrainPageInput) => Promise<BrainPage>
+  deleteBrainPage: (projectId: string, slug: string) => Promise<boolean>
+  listBrainProposals: (projectId: string) => Promise<BrainProposal[]>
+  decideBrainProposal: (id: string, accept: boolean) => Promise<BrainProposal>
   getContextUsage: (
     agentId: string,
     threadId: string,
@@ -714,6 +766,8 @@ export interface Approval {
   text: string
   status: ApprovalStatus
   note?: string
+  /** Ações do runtime seguradas no modo cauteloso. Ausente no pedido [[APROVAR]] só de texto. */
+  payloadJson?: string
   createdAt: string
   decidedAt?: string
 }
@@ -866,6 +920,18 @@ export interface McpPreset {
 
 export type SkillSource = 'user' | 'agent' | 'bundled' | 'installed'
 
+export interface SkillProposal {
+  id: string
+  agentId: string
+  slug: string
+  name: string
+  description: string
+  body: string
+  status: 'open' | 'accepted' | 'dismissed'
+  createdAt: string
+  decidedAt?: string
+}
+
 export interface SkillInfo {
   slug: string
   name: string
@@ -888,11 +954,17 @@ export interface SkillCatalogEntry {
   installed: boolean
 }
 
+/** Preferência permanece meses na busca; tarefa, dias. */
+export type MemoryKind = 'preference' | 'task'
+
 export interface AgentMemory {
   id: string
   agentId: string
   text: string
+  kind: MemoryKind
   createdAt: string
+  /** Atualizado quando o texto muda. A busca usa esta data para o decaimento. */
+  touchedAt: string
 }
 
 export interface SearchMessageResult {
