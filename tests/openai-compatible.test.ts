@@ -101,6 +101,7 @@ describe('OpenAI-compatible HTTP provider', () => {
     const onChunk = vi.fn()
     const onDone = vi.fn()
     const onError = vi.fn()
+    const onInterrupted = vi.fn()
     const active = adapter.executeTurn(
       'User prompt',
       {
@@ -109,9 +110,9 @@ describe('OpenAI-compatible HTTP provider', () => {
         instructions: 'System instructions',
         providerConfig: config,
       },
-      { onChunk, onDone, onError },
+      { onChunk, onDone, onError, onInterrupted },
     )
-    return { active, onChunk, onDone, onError }
+    return { active, onChunk, onDone, onError, onInterrupted }
   }
 
   it('discovers real model IDs and streams fragmented UTF-8 SSE with heartbeats and multiline data', async () => {
@@ -179,7 +180,7 @@ describe('OpenAI-compatible HTTP provider', () => {
     const turn = run()
     await vi.waitFor(() => expect(turn.onChunk).toHaveBeenCalledWith('Start', 'Start'))
     turn.active.interrupt()
-    await new Promise((resolve) => setImmediate(resolve))
+    await vi.waitFor(() => expect(turn.onInterrupted).toHaveBeenCalledTimes(1))
     expect(turn.onDone).not.toHaveBeenCalled()
     expect(turn.onError).not.toHaveBeenCalled()
   })

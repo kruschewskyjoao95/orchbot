@@ -296,6 +296,11 @@ export class AcpAdapter implements ProviderAdapter {
         const session = await agent.connection.agent.request(acp.methods.agent.session.new, {
           cwd: options.workspacePath,
           mcpServers: mcp.servers as never,
+          // Só manda se o agente anunciar suporte; os outros recusariam o campo desconhecido.
+          ...(options.extraDirs?.length &&
+          init.agentCapabilities?.sessionCapabilities?.additionalDirectories
+            ? { additionalDirectories: options.extraDirs }
+            : {}),
         })
         sessionId = session.sessionId
         const model = options.model
@@ -338,6 +343,7 @@ export class AcpAdapter implements ProviderAdapter {
       } finally {
         permissions.abort()
         agent?.close()
+        if (interrupted) callbacks.onInterrupted?.()
       }
     })
     return {

@@ -4,7 +4,13 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { isCustomProvider, validateCustomProviderInput } from '../../shared/custom-providers'
 import { tokensFromChars } from '../../shared/tokens'
-import { type AppSettings, DEFAULT_APP_SETTINGS, normalizeAvatar } from '../../shared/types'
+import {
+  type AppSettings,
+  DEFAULT_APP_SETTINGS,
+  MAX_AGENT_INSTRUCTIONS,
+  type MemoryKind,
+  normalizeAvatar,
+} from '../../shared/types'
 import type {
   Agent,
   AgentMemory,
@@ -32,6 +38,7 @@ import type {
   SearchFileResult,
   SearchMessageResult,
   SearchResultGroup,
+  SkillProposal,
   SupportedProvider,
   TaskQueueItem,
   TaskStatus,
@@ -45,9 +52,12 @@ import type {
 } from '../../shared/types'
 import { calculateNextRun, isValidCron } from '../cron/cron-parser'
 import { isSafeEnvKey } from '../mcp/mcp-launch'
+import { memoryFreshness } from '../memory/decay'
+import { FOREMAN_INSTRUCTIONS, isForeman } from '../orchestration/foreman'
 import { PROVIDER_CATALOG } from '../providers/catalog'
 import { isCliSessionId } from '../providers/session-cli'
 import type { McpLaunchServer, TurnUsage } from '../providers/types'
+import { mirrorAgent } from './agent-mirror'
 import {
   ENCRYPTED_KEY_PREFIX,
   KEY_STORAGE_ERROR,
@@ -56,6 +66,18 @@ import {
   decryptApiKey,
   encryptApiKey,
 } from './secrets'
+
+/** O coordenador tem texto fixo do sistema; o resto passa pelo limite. */
+function checkInstructionsLength(instructions: string | undefined): void {
+  if (
+    instructions &&
+    instructions !== FOREMAN_INSTRUCTIONS &&
+    instructions.length > MAX_AGENT_INSTRUCTIONS
+  )
+    throw new Error(
+      `As instruções passam de ${MAX_AGENT_INSTRUCTIONS} caracteres (${instructions.length}).`,
+    )
+}
 
 export function sanitizeFtsQuery(raw: string): string {
   if (!raw || typeof raw !== 'string') return ''
@@ -71,6 +93,8 @@ export function sanitizeFtsQuery(raw: string): string {
 export const IGNORED_INDEX_DIRS = new Set([
   'node_modules',
   '.git',
+  // espelho do agente e caixa de entrada: já estão no banco ou são do colega
+  '.orchbot',
   '.cache',
   'dist',
   'out',
@@ -154,6 +178,10 @@ function triToDb(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0
 }
 
+function normalizeThread(row: Thread): Thread {
+  return { ...row, projectId: row.projectId || undefined }
+}
+
 function normalizeAgent(row: Agent): Agent {
   return {
     ...row,
@@ -173,8 +201,37 @@ function normalizeAgent(row: Agent): Agent {
     steerMode: row.steerMode === 'imediato' || row.steerMode === 'fila' ? row.steerMode : undefined,
     computerUse: triState(row.computerUse as unknown),
     handoffAgentId: row.handoffAgentId ?? undefined,
+    systemRole: row.systemRole === 'foreman' ? 'foreman' : undefined,
   }
 }
+
+export interface BrainStoredPage {
+  id: string
+  projectId: string
+  slug: string
+  title: string
+  type: string
+  content: string
+  updatedAt: string
+}
+
+export interface BrainStoredProposal {
+  id: string
+  projectId: string
+  agentId: string | null
+  slug: string
+  title: string
+  type: string
+  content: string
+  reason: string
+  source: string
+  status: string
+  createdAt: string
+  decidedAt: string | null
+}
+
+const BRAIN_PROPOSAL_COLUMNS = `id, project_id AS projectId, agent_id AS agentId, slug, title, type,
+  content, reason, source, status, created_at AS createdAt, decided_at AS decidedAt`
 
 export class OrchbotDatabase {
   private db: DatabaseSync
@@ -397,6 +454,63 @@ export class OrchbotDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_memories_agent ON agent_memories(agent_id, created_at);
 
+      CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+        memory_id UNINDEXED,
+        agent_id UNINDEXED,
+        text,
+        tokenize='porter unicode61'
+      );
+      CREATE TRIGGER IF NOT EXISTS trg_memories_ai AFTER INSERT ON agent_memories BEGIN
+        INSERT INTO memories_fts (memory_id, agent_id, text) VALUES (new.id, new.agent_id, new.text);
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_memories_ad AFTER DELETE ON agent_memories BEGIN
+        DELETE FROM memories_fts WHERE memory_id = old.id;
+      END;
+      CREATE TRIGGER IF NOT EXISTS trg_memories_au AFTER UPDATE OF text ON agent_memories BEGIN
+        DELETE FROM memories_fts WHERE memory_id = old.id;
+        INSERT INTO memories_fts (memory_id, agent_id, text) VALUES (new.id, new.agent_id, new.text);
+      END;
+
+      CREATE TABLE IF NOT EXISTS skill_proposals (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        slug TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS brain_pages (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        slug TEXT NOT NULL,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (project_id, slug)
+      );
+
+      CREATE TABLE IF NOT EXISTS brain_proposals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+        slug TEXT NOT NULL,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_brain_proposals_project
+        ON brain_proposals(project_id, status, created_at);
+
       CREATE TABLE IF NOT EXISTS agent_skills (
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
         slug TEXT NOT NULL,
@@ -514,6 +628,11 @@ export class OrchbotDatabase {
       'ALTER TABLE task_queue ADD COLUMN origin_thread_id TEXT',
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
+      'ALTER TABLE agents ADD COLUMN system_role TEXT',
+      'ALTER TABLE threads ADD COLUMN project_id TEXT',
+      'ALTER TABLE approvals ADD COLUMN payload_json TEXT',
+      "ALTER TABLE agent_memories ADD COLUMN kind TEXT DEFAULT 'preference'",
+      'ALTER TABLE agent_memories ADD COLUMN touched_at TEXT',
     ]) {
       try {
         this.db.exec(alter)
@@ -530,6 +649,11 @@ export class OrchbotDatabase {
         FROM messages m
         JOIN threads t ON t.id = m.thread_id
         WHERE m.id NOT IN (SELECT message_id FROM messages_fts);
+      `)
+      this.db.exec(`
+        INSERT INTO memories_fts (memory_id, agent_id, text)
+        SELECT id, agent_id, text FROM agent_memories
+        WHERE id NOT IN (SELECT memory_id FROM memories_fts);
       `)
     } catch {
       // Ignora erro se a tabela estiver sincronizada
@@ -1409,6 +1533,9 @@ export class OrchbotDatabase {
     if (!this.getProject(id)) return false
     // Robôs do projeto ficam sem projeto (não são apagados)
     this.db.prepare('UPDATE agents SET project_id = NULL WHERE project_id = ?').run(id)
+    this.db.prepare('UPDATE threads SET project_id = NULL WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM brain_proposals WHERE project_id = ?').run(id)
+    this.db.prepare('DELETE FROM brain_pages WHERE project_id = ?').run(id)
     const result = this.db.prepare('DELETE FROM projects WHERE id = ?').run(id)
     return Number(result.changes) > 0
   }
@@ -1437,6 +1564,7 @@ export class OrchbotDatabase {
         steer_mode AS steerMode,
         computer_use AS computerUse,
         handoff_agent_id AS handoffAgentId,
+        system_role AS systemRole,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -1469,6 +1597,7 @@ export class OrchbotDatabase {
         steer_mode AS steerMode,
         computer_use AS computerUse,
         handoff_agent_id AS handoffAgentId,
+        system_role AS systemRole,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -1487,6 +1616,7 @@ export class OrchbotDatabase {
     if (input.projectId && !this.getProject(input.projectId)) {
       throw new Error(`Projeto "${input.projectId}" não encontrado`)
     }
+    checkInstructionsLength(input.instructions)
 
     const agent: Agent = {
       id,
@@ -1554,6 +1684,7 @@ export class OrchbotDatabase {
     `)
     threadStmt.run(threadId, agent.id, 'Conversa Inicial', now)
 
+    this.mirror(agent.id)
     return agent
   }
 
@@ -1566,6 +1697,15 @@ export class OrchbotDatabase {
     const now = new Date().toISOString()
     if (input.projectId && !this.getProject(input.projectId)) {
       throw new Error(`Projeto "${input.projectId}" não encontrado`)
+    }
+    if (isForeman(current)) {
+      if (input.role === 'worker') throw new Error('O coordenador não vira colega.')
+      if (input.accountId) throw new Error('O coordenador não tem conta própria.')
+      if (input.projectId) throw new Error('O coordenador não entra numa pasta.')
+      if (input.handoffAgentId) throw new Error('O coordenador não entra numa cadeia.')
+      if (input.instructions !== undefined && input.instructions !== FOREMAN_INSTRUCTIONS) {
+        throw new Error('O coordenador é reescrito a cada início. As instruções não mudam.')
+      }
     }
     const name = input.name ?? current.name
     const role = input.role ?? current.role ?? 'worker'
@@ -1587,6 +1727,7 @@ export class OrchbotDatabase {
       throw new Error('Conta não pertence ao provedor selecionado.')
     const model = input.model ?? current.model
     const effort = input.effort !== undefined ? (input.effort ?? undefined) : current.effort
+    if (input.instructions !== current.instructions) checkInstructionsLength(input.instructions)
     const instructions = input.instructions ?? current.instructions
     const workspacePath = input.workspacePath ?? current.workspacePath
     const autonomyLevel = input.autonomyLevel ?? current.autonomyLevel ?? 'autonomous'
@@ -1672,13 +1813,16 @@ export class OrchbotDatabase {
         .run(input.id)
     }
 
+    this.mirror(input.id)
     return updated
   }
 
   public deleteAgent(id: string): boolean {
+    if (isForeman(this.getAgent(id))) throw new Error('O coordenador não sai da equipe.')
     try {
       this.db.prepare('DELETE FROM workspace_files_fts WHERE agent_id = ?').run(id)
       this.db.prepare('DELETE FROM messages_fts WHERE agent_id = ?').run(id)
+      this.db.prepare('DELETE FROM memories_fts WHERE agent_id = ?').run(id)
     } catch {
       // Ignora erro se tabelas FTS não existirem
     }
@@ -1687,14 +1831,51 @@ export class OrchbotDatabase {
     return true
   }
 
+  public findForeman(): Agent | null {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM agents WHERE system_role = 'foreman' ORDER BY created_at ASC LIMIT 1`,
+      )
+      .get() as { id: string } | undefined
+    return row ? this.getAgent(row.id) : null
+  }
+
+  public markForeman(id: string): void {
+    if (!this.getAgent(id)) throw new Error('Agente não encontrado.')
+    this.db.prepare(`UPDATE agents SET system_role = 'foreman' WHERE id = ?`).run(id)
+  }
+
+  /** Zera preferência, skill, agenda, conta e conector. Não apaga a conversa. */
+  public stripPersonalState(agentId: string): void {
+    this.db.prepare('DELETE FROM agent_memories WHERE agent_id = ?').run(agentId)
+    try {
+      this.db.prepare('DELETE FROM memories_fts WHERE agent_id = ?').run(agentId)
+    } catch {
+      // FTS pode não existir neste banco
+    }
+    this.db.prepare('DELETE FROM agent_skills WHERE agent_id = ?').run(agentId)
+    this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
+    this.db.prepare('DELETE FROM scheduled_tasks WHERE agent_id = ?').run(agentId)
+    this.db
+      .prepare(
+        `UPDATE skill_proposals SET status = 'dismissed', decided_at = ? WHERE agent_id = ? AND status = 'open'`,
+      )
+      .run(new Date().toISOString(), agentId)
+    this.db
+      .prepare(
+        'UPDATE agents SET account_id = NULL, project_id = NULL, handoff_agent_id = NULL WHERE id = ?',
+      )
+      .run(agentId)
+  }
+
   public listThreads(agentId: string): Thread[] {
     const stmt = this.db.prepare(`
-      SELECT id, agent_id AS agentId, title, created_at AS createdAt
+      SELECT id, agent_id AS agentId, title, project_id AS projectId, created_at AS createdAt
       FROM threads
       WHERE agent_id = ?
       ORDER BY created_at ASC
     `)
-    return stmt.all(agentId) as unknown as Thread[]
+    return (stmt.all(agentId) as unknown as Thread[]).map(normalizeThread)
   }
 
   /**
@@ -1702,17 +1883,16 @@ export class OrchbotDatabase {
    * mais recente, ignorando conversas de canal. Sem nenhuma, devolve null.
    */
   public getActiveThread(agentId: string): Thread | null {
-    return (
-      (this.db
-        .prepare(
-          `SELECT t.id, t.agent_id AS agentId, t.title, t.created_at AS createdAt FROM threads t
-           WHERE t.agent_id = ? AND NOT EXISTS (SELECT 1 FROM channel_members cm WHERE cm.thread_id = t.id)
-           ORDER BY COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id = t.id), t.created_at) DESC,
-                    COALESCE((SELECT MAX(m.rowid) FROM messages m WHERE m.thread_id = t.id), 0) DESC, t.rowid DESC
-           LIMIT 1`,
-        )
-        .get(agentId) as unknown as Thread | undefined) ?? null
-    )
+    const row = this.db
+      .prepare(
+        `SELECT t.id, t.agent_id AS agentId, t.title, t.project_id AS projectId, t.created_at AS createdAt FROM threads t
+         WHERE t.agent_id = ? AND NOT EXISTS (SELECT 1 FROM channel_members cm WHERE cm.thread_id = t.id)
+         ORDER BY COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.thread_id = t.id), t.created_at) DESC,
+                  COALESCE((SELECT MAX(m.rowid) FROM messages m WHERE m.thread_id = t.id), 0) DESC, t.rowid DESC
+         LIMIT 1`,
+      )
+      .get(agentId) as unknown as Thread | undefined
+    return row ? normalizeThread(row) : null
   }
 
   public getProviderSession(
@@ -1758,15 +1938,18 @@ export class OrchbotDatabase {
     )
   }
 
-  public createThread(agentId: string, title = 'Nova Conversa'): Thread {
+  public createThread(agentId: string, title = 'Nova Conversa', projectId?: string): Thread {
+    if (projectId && !this.getProject(projectId)) {
+      throw new Error(`Projeto "${projectId}" não encontrado`)
+    }
     const id = randomUUID()
     const now = new Date().toISOString()
     const stmt = this.db.prepare(`
-      INSERT INTO threads (id, agent_id, title, created_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO threads (id, agent_id, title, project_id, created_at)
+      VALUES (?, ?, ?, ?, ?)
     `)
-    stmt.run(id, agentId, title, now)
-    return { id, agentId, title, createdAt: now }
+    stmt.run(id, agentId, title, projectId ?? null, now)
+    return { id, agentId, title, projectId: projectId || undefined, createdAt: now }
   }
 
   public deleteThread(threadId: string): boolean {
@@ -1779,7 +1962,7 @@ export class OrchbotDatabase {
     const stmt = this.db.prepare('UPDATE threads SET title = ? WHERE id = ?')
     stmt.run(title, threadId)
     const getStmt = this.db.prepare(`
-      SELECT id, agent_id AS agentId, title, created_at AS createdAt
+      SELECT id, agent_id AS agentId, title, project_id AS projectId, created_at AS createdAt
       FROM threads
       WHERE id = ?
     `)
@@ -1787,7 +1970,7 @@ export class OrchbotDatabase {
     if (!updated) {
       throw new Error(`Thread não encontrada: ${threadId}`)
     }
-    return updated
+    return normalizeThread(updated)
   }
 
   public listMessages(threadId: string): Message[] {
@@ -1905,12 +2088,12 @@ export class OrchbotDatabase {
 
   public getThread(threadId: string): Thread | null {
     const stmt = this.db.prepare(`
-      SELECT id, agent_id AS agentId, title, created_at AS createdAt
+      SELECT id, agent_id AS agentId, title, project_id AS projectId, created_at AS createdAt
       FROM threads
       WHERE id = ?
     `)
     const result = stmt.get(threadId) as unknown as Thread | undefined
-    return result ?? null
+    return result ? normalizeThread(result) : null
   }
 
   public getAgentByThreadId(threadId: string): Agent | null {
@@ -1937,6 +2120,7 @@ export class OrchbotDatabase {
         a.steer_mode AS steerMode,
         a.computer_use AS computerUse,
         a.handoff_agent_id AS handoffAgentId,
+        a.system_role AS systemRole,
         a.created_at AS createdAt, 
         a.updated_at AS updatedAt
       FROM agents a
@@ -2036,7 +2220,7 @@ export class OrchbotDatabase {
         completed_at AS completedAt
       FROM task_queue
       WHERE agent_id = ? AND status = 'pending'
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, rowid ASC
       LIMIT 1
     `)
     const rawResult = stmt.get(agentId) as unknown as TaskQueueItem | undefined
@@ -2105,7 +2289,9 @@ export class OrchbotDatabase {
   }
 
   public setAgentSkills(agentId: string, slugs: string[]): string[] {
-    if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')
+    const agent = this.getAgent(agentId)
+    if (!agent) throw new Error('Agente não encontrado.')
+    if (isForeman(agent) && slugs.length > 0) throw new Error('O coordenador não tem skill.')
     this.db.prepare('DELETE FROM agent_skills WHERE agent_id = ?').run(agentId)
     const insert = this.db.prepare(
       'INSERT OR IGNORE INTO agent_skills (agent_id, slug) VALUES (?, ?)',
@@ -2248,7 +2434,11 @@ export class OrchbotDatabase {
   }
 
   public setAgentMcp(agentId: string, serverIds: string[]): string[] {
-    if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')
+    const agent = this.getAgent(agentId)
+    if (!agent) throw new Error('Agente não encontrado.')
+    if (isForeman(agent) && serverIds.length > 0) {
+      throw new Error('O coordenador não tem conector próprio.')
+    }
     const known = new Set(this.listMcpServers().map((s) => s.id))
     this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
     const insert = this.db.prepare(
@@ -2610,31 +2800,78 @@ export class OrchbotDatabase {
 
   // --- Memórias do agente (locais) ---
 
-  public addMemory(agentId: string, text: string): AgentMemory {
-    const memory = {
+  private mirror(agentId: string): void {
+    const agent = this.getAgent(agentId)
+    if (agent) mirrorAgent(agent, this.listMemories(agentId))
+  }
+
+  public addMemory(
+    agentId: string,
+    text: string,
+    kind: MemoryKind = 'preference',
+    touchedAt?: string,
+  ): AgentMemory {
+    if (isForeman(this.getAgent(agentId))) {
+      throw new Error('O coordenador não guarda preferência pessoal.')
+    }
+    const now = touchedAt ?? new Date().toISOString()
+    const memory: AgentMemory = {
       id: randomUUID(),
       agentId,
       text: text.trim(),
-      createdAt: new Date().toISOString(),
+      kind: kind === 'task' ? 'task' : 'preference',
+      createdAt: now,
+      touchedAt: now,
     }
     const dup = this.db
       .prepare(
-        'SELECT id, created_at AS createdAt FROM agent_memories WHERE agent_id = ? AND text = ?',
+        `SELECT ${OrchbotDatabase.MEMORY_COLS} FROM agent_memories WHERE agent_id = ? AND text = ?`,
       )
-      .get(agentId, memory.text) as { id: string; createdAt: string } | undefined
-    if (dup) return { ...memory, ...dup }
+      .get(agentId, memory.text) as AgentMemory | undefined
+    if (dup) return OrchbotDatabase.normalizeMemory(dup)
     this.db
-      .prepare('INSERT INTO agent_memories (id, agent_id, text, created_at) VALUES (?, ?, ?, ?)')
-      .run(memory.id, agentId, memory.text, memory.createdAt)
+      .prepare(
+        'INSERT INTO agent_memories (id, agent_id, text, kind, created_at, touched_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(memory.id, agentId, memory.text, memory.kind, memory.createdAt, memory.touchedAt)
+    this.mirror(agentId)
     return memory
   }
 
+  private static readonly MEMORY_COLS =
+    'id, agent_id AS agentId, text, kind, created_at AS createdAt, touched_at AS touchedAt'
+
+  private static normalizeMemory(row: AgentMemory): AgentMemory {
+    return {
+      ...row,
+      kind: row.kind === 'task' ? 'task' : 'preference',
+      touchedAt: row.touchedAt || row.createdAt,
+    }
+  }
+
   public listMemories(agentId: string, limit = 200): AgentMemory[] {
-    return this.db
-      .prepare(
-        'SELECT id, agent_id AS agentId, text, created_at AS createdAt FROM agent_memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?',
-      )
-      .all(agentId, limit) as unknown as AgentMemory[]
+    return (
+      this.db
+        .prepare(
+          `SELECT ${OrchbotDatabase.MEMORY_COLS} FROM agent_memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?`,
+        )
+        .all(agentId, limit) as unknown as AgentMemory[]
+    ).map(OrchbotDatabase.normalizeMemory)
+  }
+
+  /** Troca o texto de uma memória (id completo ou prefixo único) e renova o prazo na busca. */
+  public updateMemory(agentId: string, idOrPrefix: string, text: string): boolean {
+    const clean = text.trim()
+    if (!clean) return false
+    const ids = this.db
+      .prepare('SELECT id FROM agent_memories WHERE agent_id = ? AND id LIKE ?')
+      .all(agentId, `${idOrPrefix.replace(/[%_]/g, '')}%`) as { id: string }[]
+    if (ids.length !== 1) return false
+    this.db
+      .prepare('UPDATE agent_memories SET text = ?, touched_at = ? WHERE id = ?')
+      .run(clean, new Date().toISOString(), ids[0].id)
+    this.mirror(agentId)
+    return true
   }
 
   /** Aceita o id completo ou um prefixo único (os agentes veem ids curtos). */
@@ -2644,22 +2881,265 @@ export class OrchbotDatabase {
       .all(agentId, `${idOrPrefix.replace(/[%_]/g, '')}%`) as { id: string }[]
     if (ids.length !== 1) return false
     this.db.prepare('DELETE FROM agent_memories WHERE id = ?').run(ids[0].id)
+    this.mirror(agentId)
     return true
   }
 
-  // shortcut: busca por LIKE em todos os termos; trocar por FTS5 se passar de alguns milhares de memórias.
-  public searchMemories(agentId: string, query: string, limit = 10): AgentMemory[] {
-    const terms = query
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((t) => t.length > 2)
-    if (terms.length === 0) return []
-    return this.listMemories(agentId, 1000)
-      .map((m) => ({ m, hits: terms.filter((t) => m.text.toLowerCase().includes(t)).length }))
-      .filter((x) => x.hits > 0)
-      .sort((a, b) => b.hits - a.hits)
+  public listBrainPages(projectId: string): BrainStoredPage[] {
+    return this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, slug, title, type, content, updated_at AS updatedAt
+         FROM brain_pages WHERE project_id = ?
+         ORDER BY CASE WHEN slug = 'company' OR type = 'company' THEN 0 ELSE 1 END, title`,
+      )
+      .all(projectId) as unknown as BrainStoredPage[]
+  }
+
+  public getBrainPage(projectId: string, slug: string): BrainStoredPage | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, project_id AS projectId, slug, title, type, content, updated_at AS updatedAt
+         FROM brain_pages WHERE project_id = ? AND slug = ?`,
+      )
+      .get(projectId, slug) as BrainStoredPage | undefined
+    return row ?? null
+  }
+
+  public upsertBrainPage(input: {
+    projectId: string
+    slug: string
+    title: string
+    type: string
+    content: string
+  }): BrainStoredPage {
+    const now = new Date().toISOString()
+    const existing = this.getBrainPage(input.projectId, input.slug)
+    if (existing) {
+      this.db
+        .prepare(
+          'UPDATE brain_pages SET title = ?, type = ?, content = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(input.title, input.type, input.content, now, existing.id)
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO brain_pages (id, project_id, slug, title, type, content, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(randomUUID(), input.projectId, input.slug, input.title, input.type, input.content, now)
+    }
+    const saved = this.getBrainPage(input.projectId, input.slug)
+    if (!saved) throw new Error('Falha ao gravar a página do cérebro.')
+    return saved
+  }
+
+  public deleteBrainPage(projectId: string, slug: string): boolean {
+    const result = this.db
+      .prepare('DELETE FROM brain_pages WHERE project_id = ? AND slug = ?')
+      .run(projectId, slug)
+    return Number(result.changes) > 0
+  }
+
+  public insertBrainProposal(input: {
+    projectId: string
+    agentId: string
+    slug: string
+    title: string
+    type: string
+    content: string
+    reason: string
+    source: string
+  }): BrainStoredProposal {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO brain_proposals (
+           id, project_id, agent_id, slug, title, type, content, reason, source, status, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+      )
+      .run(
+        id,
+        input.projectId,
+        input.agentId,
+        input.slug,
+        input.title,
+        input.type,
+        input.content,
+        input.reason,
+        input.source,
+        now,
+      )
+    const saved = this.findBrainProposal(id, input.projectId)
+    if (!saved) throw new Error('Falha ao gravar a proposta do cérebro.')
+    return saved
+  }
+
+  public listBrainProposals(projectId: string, status?: string): BrainStoredProposal[] {
+    const sql = status
+      ? `SELECT ${BRAIN_PROPOSAL_COLUMNS} FROM brain_proposals
+         WHERE project_id = ? AND status = ? ORDER BY created_at DESC`
+      : `SELECT ${BRAIN_PROPOSAL_COLUMNS} FROM brain_proposals
+         WHERE project_id = ? ORDER BY created_at DESC`
+    const stmt = this.db.prepare(sql)
+    return (status
+      ? stmt.all(projectId, status)
+      : stmt.all(projectId)) as unknown as BrainStoredProposal[]
+  }
+
+  public countOpenBrainProposals(projectId: string): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM brain_proposals WHERE project_id = ? AND status = 'open'`)
+      .get(projectId) as { n: number }
+    return Number(row?.n ?? 0)
+  }
+
+  /** Id completo ou prefixo único. Com projectId, não atravessa outro projeto. */
+  public findBrainProposal(idOrPrefix: string, projectId?: string): BrainStoredProposal | null {
+    const prefix = idOrPrefix.replace(/[%_]/g, '')
+    if (!prefix) return null
+    const rows = (projectId
+      ? this.db
+          .prepare(
+            `SELECT ${BRAIN_PROPOSAL_COLUMNS} FROM brain_proposals
+               WHERE project_id = ? AND id LIKE ?`,
+          )
+          .all(projectId, `${prefix}%`)
+      : this.db
+          .prepare(`SELECT ${BRAIN_PROPOSAL_COLUMNS} FROM brain_proposals WHERE id LIKE ?`)
+          .all(`${prefix}%`)) as unknown as BrainStoredProposal[]
+    return rows.length === 1 ? rows[0] : null
+  }
+
+  public setBrainProposalStatus(id: string, status: 'accepted' | 'dismissed'): BrainStoredProposal {
+    const now = new Date().toISOString()
+    this.db
+      .prepare('UPDATE brain_proposals SET status = ?, decided_at = ? WHERE id = ?')
+      .run(status, now, id)
+    const saved = this.findBrainProposal(id)
+    if (!saved) throw new Error('Proposta não encontrada.')
+    return saved
+  }
+
+  /**
+   * FTS5 e depois o decaimento: preferência dura meses, tarefa dura dias.
+   * shortcut: reordena só os 40 primeiros do FTS; se a palavra for comum demais, um fato antigo pode ficar de fora.
+   */
+  public searchMemories(
+    agentId: string,
+    query: string,
+    limit = 10,
+    now = Date.now(),
+  ): AgentMemory[] {
+    const ftsQuery = sanitizeFtsQuery(query)
+    if (!ftsQuery) return []
+    const rows = this.db
+      .prepare(
+        `SELECT m.id, m.agent_id AS agentId, m.text, m.kind, m.created_at AS createdAt,
+                m.touched_at AS touchedAt, memories_fts.rank AS rank
+         FROM memories_fts
+         JOIN agent_memories m ON m.id = memories_fts.memory_id
+         WHERE memories_fts MATCH ? AND m.agent_id = ?
+         ORDER BY memories_fts.rank
+         LIMIT ?`,
+      )
+      .all(ftsQuery, agentId, Math.min(Math.max(limit, 1) * 8, 40)) as unknown as Array<
+      AgentMemory & { rank: number }
+    >
+    return rows
+      .map((row) => {
+        const { rank: rawRank, ...rest } = row
+        const memory = OrchbotDatabase.normalizeMemory(rest)
+        const rank = Number(rawRank)
+        return {
+          memory,
+          score:
+            -(Number.isFinite(rank) ? rank : 0) *
+            memoryFreshness(memory.kind, memory.touchedAt, now),
+        }
+      })
+      .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map((x) => x.m)
+      .map((item) => item.memory)
+  }
+
+  public createSkillProposal(input: {
+    agentId: string
+    slug: string
+    name: string
+    description: string
+    body: string
+  }): SkillProposal {
+    if (isForeman(this.getAgent(input.agentId))) throw new Error('O coordenador não tem skill.')
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(input.slug))
+      throw new Error('Nome de skill inválido (use minúsculas, números e "-").')
+    const description = input.description.trim()
+    const body = input.body.trim()
+    if (!description || !body) throw new Error('A proposta precisa de descrição e instruções.')
+    const open = this.listSkillProposals().find(
+      (item) => item.agentId === input.agentId && item.slug === input.slug,
+    )
+    if (open) return open
+    const proposal: SkillProposal = {
+      id: randomUUID(),
+      agentId: input.agentId,
+      slug: input.slug,
+      name: input.name.trim().slice(0, 80) || input.slug,
+      description: description.slice(0, 300),
+      body,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    }
+    this.db
+      .prepare(
+        `INSERT INTO skill_proposals (id, agent_id, slug, name, description, body, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        proposal.id,
+        proposal.agentId,
+        proposal.slug,
+        proposal.name,
+        proposal.description,
+        proposal.body,
+        proposal.status,
+        proposal.createdAt,
+      )
+    return proposal
+  }
+
+  private static readonly SKILL_PROPOSAL_COLS =
+    'id, agent_id AS agentId, slug, name, description, body, status, created_at AS createdAt, decided_at AS decidedAt'
+
+  private static normalizeSkillProposal(row: SkillProposal): SkillProposal {
+    return { ...row, decidedAt: row.decidedAt ?? undefined }
+  }
+
+  public listSkillProposals(status = 'open'): SkillProposal[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT ${OrchbotDatabase.SKILL_PROPOSAL_COLS} FROM skill_proposals WHERE status = ? ORDER BY created_at`,
+        )
+        .all(status) as unknown as SkillProposal[]
+    ).map(OrchbotDatabase.normalizeSkillProposal)
+  }
+
+  public getSkillProposal(id: string): SkillProposal | null {
+    const row = this.db
+      .prepare(`SELECT ${OrchbotDatabase.SKILL_PROPOSAL_COLS} FROM skill_proposals WHERE id = ?`)
+      .get(id) as SkillProposal | undefined
+    return row ? OrchbotDatabase.normalizeSkillProposal(row) : null
+  }
+
+  public setSkillProposalStatus(id: string, status: 'accepted' | 'dismissed'): SkillProposal {
+    const current = this.getSkillProposal(id)
+    if (!current) throw new Error('Proposta não encontrada.')
+    if (current.status !== 'open') throw new Error('Esta proposta já foi respondida.')
+    this.db
+      .prepare('UPDATE skill_proposals SET status = ?, decided_at = ? WHERE id = ? AND status = ?')
+      .run(status, new Date().toISOString(), id, 'open')
+    return this.getSkillProposal(id) as SkillProposal
   }
 
   /** Mensagem (id ou prefixo) do agente com `radius` vizinhas de cada lado, na mesma conversa. */
@@ -2700,6 +3180,7 @@ export class OrchbotDatabase {
     threadId: string
     taskId?: string
     text: string
+    payloadJson?: string
   }): Approval {
     const approval: Approval = {
       id: randomUUID(),
@@ -2709,7 +3190,7 @@ export class OrchbotDatabase {
     }
     this.db
       .prepare(
-        'INSERT INTO approvals (id, agent_id, thread_id, task_id, text, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO approvals (id, agent_id, thread_id, task_id, text, status, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         approval.id,
@@ -2719,18 +3200,20 @@ export class OrchbotDatabase {
         approval.text,
         approval.status,
         approval.createdAt,
+        approval.payloadJson ?? null,
       )
     return approval
   }
 
   private static readonly APPROVAL_COLS =
-    'id, agent_id AS agentId, thread_id AS threadId, task_id AS taskId, text, status, note, created_at AS createdAt, decided_at AS decidedAt'
+    'id, agent_id AS agentId, thread_id AS threadId, task_id AS taskId, text, status, note, payload_json AS payloadJson, created_at AS createdAt, decided_at AS decidedAt'
 
   private static normalizeApproval(row: Approval): Approval {
     return {
       ...row,
       taskId: row.taskId ?? undefined,
       note: row.note ?? undefined,
+      payloadJson: row.payloadJson ?? undefined,
       decidedAt: row.decidedAt ?? undefined,
     }
   }
@@ -2959,6 +3442,7 @@ export class OrchbotDatabase {
   // --- Agendamentos & Tarefas em Background (Cron) ---
 
   public createScheduledTask(input: CreateScheduledTaskInput): ScheduledTask {
+    if (isForeman(this.getAgent(input.agentId))) throw new Error('O coordenador não tem agenda.')
     const id = randomUUID()
     const now = new Date()
     const nowIso = now.toISOString()

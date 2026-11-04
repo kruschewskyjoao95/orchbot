@@ -124,11 +124,14 @@ export class CronScheduler {
     this.queueManager.enqueue(task.agentId, targetThreadId, prompt)
 
     // 5. Calcula próximo disparo e registra execução no banco
-    let nextRunIso = nowIso
     if (isValidCron(task.cronExpression)) {
-      nextRunIso = calculateNextRun(task.cronExpression, executionTime).toISOString()
+      const nextRunIso = calculateNextRun(task.cronExpression, executionTime).toISOString()
+      this.db.recordScheduledTaskRun(task.id, nowIso, nextRunIso)
+    } else {
+      // Expressão inválida: agendar "agora" dispararia a cada ciclo; desliga a rotina.
+      this.db.recordScheduledTaskRun(task.id, nowIso, nowIso)
+      this.db.updateScheduledTask({ id: task.id, enabled: false })
     }
-    this.db.recordScheduledTaskRun(task.id, nowIso, nextRunIso)
 
     // 6. Notifica ouvinte externo
     this.options.onTaskTriggered?.(task)

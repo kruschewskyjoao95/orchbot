@@ -1,5 +1,6 @@
 import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import { describeCron } from '../../backend/cron/cron-parser'
+import { isForeman } from '../../backend/orchestration/foreman'
 import { CUSTOM_PROVIDER_PRESETS, isCustomProvider } from '../../shared/custom-providers'
 import { providerStatusLabel } from '../../shared/provider-status'
 import type {
@@ -34,7 +35,12 @@ import type {
   WebhookTrigger,
   WorkspaceRulesInfo,
 } from '../../shared/types'
-import { DEFAULT_APP_SETTINGS, effectiveCapabilities } from '../../shared/types'
+import {
+  DEFAULT_APP_SETTINGS,
+  MAX_AGENT_INSTRUCTIONS,
+  effectiveCapabilities,
+} from '../../shared/types'
+import { BrainPanel } from './Brain'
 import { Channels } from './Channels'
 import {
   ConsentGate,
@@ -63,6 +69,8 @@ import {
   getActiveTaskForAgent,
   parseComposerInput,
   parseStructuredMessage,
+  safeSnippetHtml,
+  templateInstructions,
 } from './orchestration-ui'
 
 export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
@@ -92,6 +100,16 @@ export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
   kimi: '🌙',
   acp: '🔌',
 }
+
+// Nível de raciocínio ("esforço"): mesmos nomes em todas as telas.
+const EFFORT_OPTIONS: [ProviderEffort | '', string][] = [
+  ['', 'Padrão'],
+  ['low', 'Baixo'],
+  ['medium', 'Médio'],
+  ['high', 'Alto'],
+  ['xhigh', 'Muito alto'],
+  ['max', 'Máximo'],
+]
 
 const BOARD_SUGGESTIONS = [
   {
@@ -292,6 +310,18 @@ const Switch: Component<{
   </button>
 )
 
+/** Só aparece quando o texto passa do limite: mostra quanto tem e quanto pode. */
+function OverLimitCounter(props: { id: string; text: string }) {
+  return (
+    <Show when={props.text.length > MAX_AGENT_INSTRUCTIONS}>
+      <output id={props.id} class="char-over">
+        {props.text.length}/{MAX_AGENT_INSTRUCTIONS} caracteres: reduza{' '}
+        {props.text.length - MAX_AGENT_INSTRUCTIONS} para salvar.
+      </output>
+    </Show>
+  )
+}
+
 export const App: Component = () => {
   // Abre diretamente na Central da Equipe ('board') para visualização imediata e intuitiva.
   const [activeSection, setActiveSection] = createSignal<
@@ -303,7 +333,6 @@ export const App: Component = () => {
   const [paletteIndex, setPaletteIndex] = createSignal(0)
   const [boardFilterProject, setBoardFilterProject] = createSignal<string>('all')
   const [boardForemanPrompt, setBoardForemanPrompt] = createSignal('')
-  const [boardForemanTargetId, setBoardForemanTargetId] = createSignal('')
   const [boardProviderId, setBoardProviderId] = createSignal('')
   const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
   const [approvals, setApprovals] = createSignal<Approval[]>([])
@@ -604,6 +633,7 @@ export const App: Component = () => {
 
   const [projects, setProjects] = createSignal<Project[]>([])
   const [showProjectModal, setShowProjectModal] = createSignal(false)
+  const [brainProject, setBrainProject] = createSignal<Project | null>(null)
   const [projectFormName, setProjectFormName] = createSignal('')
   const [projectFormDescription, setProjectFormDescription] = createSignal('')
   const [projectFormPath, setProjectFormPath] = createSignal('')
@@ -874,8 +904,9 @@ export const App: Component = () => {
       agent.provider.toLowerCase().includes(query)
     )
   }
+  const coworkers = () => agents().filter((a) => !isForeman(a))
   const agentsOfProject = (projectId: string | null) =>
-    agents().filter((a) => (a.projectId ?? null) === projectId && agentMatchesQuery(a))
+    coworkers().filter((a) => (a.projectId ?? null) === projectId && agentMatchesQuery(a))
 
   const handleSwitchEffort = async (agentId: string, effort: ProviderEffort | '') => {
     try {
@@ -1243,6 +1274,7 @@ export const App: Component = () => {
       if (
         showModal() ||
         showProjectModal() ||
+        brainProject() ||
         showRulesModal() ||
         showSearchModal() ||
         showCronModal() ||
@@ -1427,7 +1459,7 @@ export const App: Component = () => {
 
   const otherAgents = () => {
     const id = selectedAgentId()
-    return agents().filter((a) => a.id !== id)
+    return coworkers().filter((a) => a.id !== id)
   }
 
   const pendingTasksCount = () => {
@@ -1647,7 +1679,7 @@ export const App: Component = () => {
     setNewAvatar(tpl.avatar)
     setAgentRole(tpl.role)
     setDescription(tpl.description)
-    setInstructions(tpl.instructions)
+    setInstructions(templateInstructions(tpl))
     setAutonomyLevel(tpl.autonomyLevel)
     if (tpl.effort) setAgentEffort(tpl.effort)
     setDraftNote(`Modelo "${tpl.name}" aplicado. Ajuste se quiser e clique em Criar Agente.`)
@@ -1939,12 +1971,11 @@ export const App: Component = () => {
   }
 
   // --- Quadro da Equipe & Despacho Rápido (Foreman) ---
-  const orchestratorsList = () => agents().filter((a) => a.role === 'orchestrator')
-  const boardSummary = () => computeBoardSummary(agents(), agentStates(), sidebarChannels())
+  const boardSummary = () => computeBoardSummary(coworkers(), agentStates(), sidebarChannels())
 
   const filteredBoardAgents = () => {
     const projFilter = boardFilterProject()
-    return agents().filter((a) => {
+    return coworkers().filter((a) => {
       if (projFilter !== 'all') {
         if (projFilter === 'none' && a.projectId) return false
         if (projFilter !== 'none' && a.projectId !== projFilter) return false
@@ -1964,6 +1995,9 @@ export const App: Component = () => {
       first?.defaultModel ?? DEFAULT_PROVIDER_MODELS[prov] ?? DEFAULT_PROVIDER_MODELS.codex
     return { provider: prov, model: mod }
   }
+
+  const supportsEffort = (provider: string) =>
+    !!connections().find((c) => c.providerId === provider)?.supportsEffort
 
   // Várias equipes = vários líderes: "Líder", "Líder 2", ...
   const uniqueAgentName = (base: string) => {
@@ -1997,7 +2031,7 @@ export const App: Component = () => {
         contextMode: 'padrao',
         browserAccess: true,
         workspacePath: '',
-        instructions: tpl.instructions,
+        instructions: templateInstructions(tpl),
         autonomyLevel: tpl.autonomyLevel,
       })
       await loadAgents()
@@ -2025,19 +2059,15 @@ export const App: Component = () => {
       const projectFilter = boardFilterProject()
       const projectId =
         projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
-      let leaderId: string | null = null
 
       for (const tplId of preset.templateIds) {
         const tpl = COWORKER_TEMPLATES.find((t) => t.id === tplId)
         if (!tpl) continue
-        const existing = agents().find(
+        const existing = coworkers().find(
           (a) => a.name.toLowerCase() === tpl.name.toLowerCase() && a.projectId === projectId,
         )
-        if (existing) {
-          if (existing.role === 'orchestrator') leaderId = existing.id
-          continue
-        }
-        const created = await window.orchbot.createAgent({
+        if (existing) continue
+        await window.orchbot.createAgent({
           name: tpl.name,
           avatar: tpl.avatar,
           role: tpl.role,
@@ -2049,16 +2079,14 @@ export const App: Component = () => {
           contextMode: 'padrao',
           browserAccess: true,
           workspacePath: '',
-          instructions: tpl.instructions,
+          instructions: templateInstructions(tpl),
           autonomyLevel: tpl.autonomyLevel,
         })
-        if (created.role === 'orchestrator') leaderId = created.id
       }
 
       await loadAgents()
-      if (leaderId) setSelectedAgentId(leaderId)
       setBoardDispatchMsg(
-        `🎉 "${preset.title}" pronta! Agora basta digitar seu pedido na caixa acima que o Líder coordena o restante.`,
+        `🎉 "${preset.title}" pronta. Peça na caixa acima e o coordenador distribui o trabalho.`,
       )
       setTimeout(() => setBoardDispatchMsg(null), 6000)
     } catch (err: unknown) {
@@ -2073,50 +2101,31 @@ export const App: Component = () => {
     const prompt = boardForemanPrompt().trim()
     if (!prompt || !window.orchbot) return
 
-    const choice = boardForemanTargetId() || orchestratorsList()[0]?.id || 'new'
-    let targetId: string | null = choice === 'new' ? null : choice
+    const foreman = agents().find((a) => isForeman(a))
+    if (!foreman) {
+      alert('Conecte uma inteligência artificial para o coordenador poder falar.')
+      return
+    }
+    const projectFilter = boardFilterProject()
+    const projectId =
+      projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
+    const projectName = projectId ? projects().find((p) => p.id === projectId)?.name : undefined
 
     try {
-      // Sem líder escolhido (ou "Nova equipe"): cria um líder com a IA escolhida.
-      if (!targetId) {
-        const foremanTpl =
-          COWORKER_TEMPLATES.find((t) => t.id === 'foreman') ?? COWORKER_TEMPLATES[0]
-        if (foremanTpl) {
-          const { provider: prov, model: mod } = getDefaultProviderAndModel()
-          const created = await window.orchbot.createAgent({
-            name: uniqueAgentName(foremanTpl.name),
-            avatar: foremanTpl.avatar,
-            role: foremanTpl.role,
-            description: foremanTpl.description,
-            provider: prov,
-            model: mod,
-            effort: foremanTpl.effort,
-            contextMode: 'padrao',
-            browserAccess: true,
-            workspacePath: '',
-            instructions: foremanTpl.instructions,
-            autonomyLevel: foremanTpl.autonomyLevel,
-          })
-          await loadAgents()
-          targetId = created.id
-        }
-      }
-
-      if (!targetId) return
-
-      const threads = await window.orchbot.getThreads(targetId)
-      let targetThread = threads[0]
+      const threads = await window.orchbot.getThreads(foreman.id)
+      let targetThread = threads.find((t) => (t.projectId ?? undefined) === projectId)
       if (!targetThread) {
-        targetThread = await window.orchbot.createThread(targetId, 'Pedido da Central')
+        targetThread = await window.orchbot.createThread(
+          foreman.id,
+          projectName ? `Pedido · ${projectName}` : 'Pedido da Central',
+          projectId,
+        )
       }
       await window.orchbot.sendMessage(targetThread.id, prompt, [])
       setBoardForemanPrompt('')
-      const targetAgent = agents().find((a) => a.id === targetId)
-      setBoardDispatchMsg(
-        `🚀 Pedido enviado para ${targetAgent?.name ?? 'o Líder'}! Abrindo a conversa ao vivo...`,
-      )
-      void refreshAgentState(targetId)
-      openAgent(targetId)
+      setBoardDispatchMsg('🚀 Pedido enviado ao coordenador. Abrindo a conversa…')
+      void refreshAgentState(foreman.id)
+      openAgent(foreman.id)
       setTimeout(() => setBoardDispatchMsg(null), 4000)
     } catch (err: unknown) {
       alert(`Erro ao enviar pedido: ${err instanceof Error ? err.message : String(err)}`)
@@ -2176,7 +2185,7 @@ export const App: Component = () => {
     }
   }
 
-  /** Contrata a equipe sugerida e manda o pedido para o líder dela. */
+  /** Contrata só os especialistas e manda o pedido ao coordenador fixo. */
   const handleHireTeam = async () => {
     const team = teamDraft()
     if (!team || !window.orchbot) return
@@ -2186,12 +2195,12 @@ export const App: Component = () => {
       const projectFilter = boardFilterProject()
       const projectId =
         projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
-      let leaderId = ''
       for (const draft of team) {
-        const created = await window.orchbot.createAgent({
+        if (draft.role === 'orchestrator') continue
+        await window.orchbot.createAgent({
           name: draft.name,
           avatar: draft.avatar,
-          role: draft.role,
+          role: 'worker',
           description: draft.description,
           projectId,
           provider: prov,
@@ -2203,11 +2212,9 @@ export const App: Component = () => {
           instructions: draft.instructions,
           autonomyLevel: 'autonomous',
         })
-        if (created.role === 'orchestrator' && !leaderId) leaderId = created.id
       }
       await loadAgents()
       setTeamDraft(null)
-      setBoardForemanTargetId(leaderId)
       await handleBoardForemanDispatch(new Event('submit'))
     } catch (err: unknown) {
       alert(`Erro ao contratar a equipe: ${err instanceof Error ? err.message : String(err)}`)
@@ -2612,7 +2619,7 @@ export const App: Component = () => {
   }
 
   /** Assistentes que precisam de atenção do usuário. */
-  const needsYouAgents = () => agents().filter((a) => needsYou(agentStates()[a.id] ?? 'idle'))
+  const needsYouAgents = () => coworkers().filter((a) => needsYou(agentStates()[a.id] ?? 'idle'))
 
   const openAgent = (agentId: string) => {
     setSelectedAgentId(agentId)
@@ -2667,46 +2674,108 @@ export const App: Component = () => {
         customTheme={settings().customTheme}
         effectiveTheme={effectiveTheme() === 'light' ? 'light' : 'dark'}
       />
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <button
-            type="button"
-            class="logo-group logo-home-btn"
-            onClick={() => setActiveSection('board')}
-            title="Voltar para o Início (Central da Equipe)"
-          >
-            <span class="rail-logo" style={{ background: settings().logoColor }} aria-hidden="true">
-              ✦
-            </span>
-            <div class="logo-text-stack">
-              <span class="logo-title">Orchbot</span>
-              <span class="logo-subtitle">Sua Equipe de IA</span>
-            </div>
-          </button>
-          <div class="sidebar-top-actions">
+      <nav class="icon-rail" aria-label="Navegação principal">
+        <button
+          type="button"
+          class="rail-logo"
+          style={{ background: settings().logoColor }}
+          onClick={() => setActiveSection('board')}
+          title="Início"
+          aria-label="Início"
+        >
+          ✦
+        </button>
+        <For
+          each={
+            [
+              ['board', 'board', 'Início (Ctrl+1)'],
+              ['agents', 'chat', 'Conversas (Ctrl+2)'],
+              ['channels', 'channels', 'Grupos (Ctrl+3)'],
+              ['skills', 'skills', 'Habilidades'],
+            ] as const
+          }
+        >
+          {([section, icon, label]) => (
             <button
               type="button"
-              class="btn-cmd-trigger"
-              onClick={() => {
-                setPaletteQuery('')
-                setPaletteIndex(0)
-                setShowCommandPalette(true)
-              }}
-              title="Busca Rápida de Ações (Ctrl+K)"
-              aria-label="Busca Rápida"
+              class="rail-btn"
+              classList={{ active: activeSection() === section }}
+              onClick={() => setActiveSection(section)}
+              title={label}
+              aria-label={label}
+              aria-current={activeSection() === section ? 'page' : undefined}
             >
-              <RailIcon name="search" />
-              <kbd>Ctrl+K</kbd>
+              <RailIcon name={icon} />
+              <Show when={section === 'board' && boardSummary().working > 0}>
+                <span class="rail-badge">{boardSummary().working}</span>
+              </Show>
             </button>
+          )}
+        </For>
+        <div class="rail-spacer" />
+        <button
+          type="button"
+          class="rail-btn"
+          onClick={() => openSettings('provedores')}
+          title={
+            connections().some((c) => c.enabled && c.readiness === 'ready')
+              ? 'IA conectada'
+              : 'Conectar inteligência artificial'
+          }
+          aria-label="Conexões de IA"
+        >
+          <span
+            class={`status-dot rail-status ${connections().some((c) => c.readiness === 'ready' && c.enabled) ? 'online' : ''}`}
+          />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          onClick={() => {
+            setPaletteQuery('')
+            setPaletteIndex(0)
+            setShowCommandPalette(true)
+          }}
+          title="Busca rápida (Ctrl+K)"
+          aria-label="Busca rápida"
+        >
+          <RailIcon name="command" />
+        </button>
+        <button
+          type="button"
+          class="rail-btn"
+          classList={{ active: settingsOpen() }}
+          onClick={() => openSettings()}
+          title="Configurações"
+          aria-label="Configurações"
+        >
+          <RailIcon name="gear" />
+        </button>
+      </nav>
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <label class="list-search">
+            <RailIcon name="search" />
+            <input
+              type="search"
+              placeholder="Buscar"
+              value={listQuery()}
+              onInput={(event) => setListQuery(event.currentTarget.value)}
+              aria-label="Buscar assistentes"
+            />
+          </label>
+          <div class="sidebar-top-actions">
             <div class="menu-anchor" onKeyDown={(e) => e.key === 'Escape' && setShowNewMenu(false)}>
               <button
                 type="button"
-                class="btn-primary"
                 aria-haspopup="menu"
                 aria-expanded={showNewMenu()}
                 onClick={() => setShowNewMenu(!showNewMenu())}
+                class="btn-icon-gear new-btn"
+                title="Criar"
+                aria-label="Criar"
               >
-                + Criar
+                +
               </button>
               <Show when={showNewMenu()}>
                 <button
@@ -2717,19 +2786,6 @@ export const App: Component = () => {
                   onClick={() => setShowNewMenu(false)}
                 />
                 <div class="dropdown-menu" role="menu">
-                  <button
-                    type="button"
-                    class="dropdown-item"
-                    role="menuitem"
-                    title="Cria imediatamente um Líder que recebe seus pedidos e coordena a equipe"
-                    onClick={() => {
-                      setShowNewMenu(false)
-                      const tpl = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
-                      if (tpl) void handleQuickHireTemplate(tpl, true)
-                    }}
-                  >
-                    👑 Nova equipe (novo líder)
-                  </button>
                   <button
                     type="button"
                     class="dropdown-item"
@@ -2773,63 +2829,6 @@ export const App: Component = () => {
           </div>
         </div>
 
-        {/* Navegação principal amigável: Início, Conversas e Grupos */}
-        <div class="sidebar-mode-tabs" role="tablist" aria-label="Navegação principal">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeSection() === 'board'}
-            class="sidebar-mode-tab"
-            classList={{ active: activeSection() === 'board' }}
-            onClick={() => setActiveSection('board')}
-            title="Tela Inicial da sua Equipe (Ctrl+1)"
-          >
-            <span class="mode-tab-emoji">🏠</span>
-            <span>Início</span>
-            <Show when={boardSummary().working > 0}>
-              <span class="mode-tab-badge working">{boardSummary().working}</span>
-            </Show>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeSection() === 'agents'}
-            class="sidebar-mode-tab"
-            classList={{ active: activeSection() === 'agents' }}
-            onClick={() => setActiveSection('agents')}
-            title="Conversar com um Assistente (Ctrl+2)"
-          >
-            <span class="mode-tab-emoji">💬</span>
-            <span>Conversas</span>
-            <Show when={agents().length > 0}>
-              <span class="mode-tab-badge">{agents().length}</span>
-            </Show>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeSection() === 'channels'}
-            class="sidebar-mode-tab"
-            classList={{ active: activeSection() === 'channels' }}
-            onClick={() => setActiveSection('channels')}
-            title="Salas de Conversa em Grupo (Ctrl+3)"
-          >
-            <span class="mode-tab-emoji">👥</span>
-            <span>Grupos</span>
-          </button>
-        </div>
-
-        <label class="list-search">
-          <RailIcon name="search" />
-          <input
-            type="search"
-            placeholder="Buscar assistente na equipe..."
-            value={listQuery()}
-            onInput={(event) => setListQuery(event.currentTarget.value)}
-            aria-label="Buscar assistentes"
-          />
-        </label>
-
         <div class="agent-list">
           <Show when={needsYouAgents().length > 0}>
             <div class="project-group needs-you">
@@ -2842,24 +2841,14 @@ export const App: Component = () => {
           </Show>
 
           <Show
-            when={agents().length > 0}
+            when={coworkers().length > 0}
             fallback={
-              <div class="list-empty-card">
-                <div class="list-empty-icon">👋</div>
-                <strong>Sua equipe está vazia</strong>
-                <p>Adicione uma equipe pronta com 1 clique na tela de Início!</p>
-                <button
-                  type="button"
-                  class="btn-primary"
-                  style={{ width: '100%', 'margin-top': '6px' }}
-                  onClick={() => {
-                    const tpl = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
-                    if (tpl) void handleQuickHireTemplate(tpl, false)
-                  }}
-                >
-                  👑 Adicionar Líder da Equipe
-                </button>
-              </div>
+              <button type="button" class="agent-item" onClick={() => setActiveSection('board')}>
+                <span class="agent-avatar" style={{ background: settings().logoColor }}>
+                  👑
+                </span>
+                <span class="agent-item-name">Peça na Central para montar a equipe</span>
+              </button>
             }
           >
             <For each={projects()}>
@@ -2872,6 +2861,15 @@ export const App: Component = () => {
                     >
                       <span class="project-group-name">📁 {project.name}</span>
                       <span class="nav-badge">{agentsOfProject(project.id).length}</span>
+                      <button
+                        type="button"
+                        class="btn-icon-gear small"
+                        onClick={() => setBrainProject(project)}
+                        title={`Cérebro de ${project.name}`}
+                        aria-label={`Cérebro de ${project.name}`}
+                      >
+                        🧠
+                      </button>
                       <button
                         type="button"
                         class="btn-icon-gear small"
@@ -2968,37 +2966,6 @@ export const App: Component = () => {
               {showArchivedChannels() ? 'Esconder salas arquivadas' : 'Ver salas arquivadas'}
             </button>
           </div>
-        </div>
-
-        <div class="sidebar-footer">
-          <button
-            type="button"
-            class="footer-link"
-            classList={{ active: activeSection() === 'skills' }}
-            onClick={() => setActiveSection('skills')}
-          >
-            <RailIcon name="skills" />
-            <span>Habilidades Extras</span>
-          </button>
-          <button type="button" class="footer-link" onClick={() => openSettings()}>
-            <RailIcon name="gear" />
-            <span>Configurações do App</span>
-          </button>
-          <button
-            type="button"
-            class="footer-link provider-status-pill"
-            onClick={() => openSettings('provedores')}
-            title="Configurar conexões de Inteligência Artificial"
-          >
-            <span
-              class={`status-dot ${connections().some((c) => c.readiness === 'ready' && c.enabled) ? 'online' : ''}`}
-            />
-            <span>
-              {connections().filter((c) => c.enabled && c.readiness === 'ready').length > 0
-                ? `IA Conectada (${connections().filter((c) => c.enabled && c.readiness === 'ready').length} ativa${connections().filter((c) => c.enabled && c.readiness === 'ready').length > 1 ? 's' : ''})`
-                : 'Conectar Inteligência Artificial'}
-            </span>
-          </button>
         </div>
       </aside>
 
@@ -4203,39 +4170,18 @@ export const App: Component = () => {
                   }
                 }}
               />
-              <div class="board-min-row">
-                <select
-                  aria-label="Quem recebe o pedido"
-                  value={boardForemanTargetId() || orchestratorsList()[0]?.id || 'new'}
-                  onChange={(e) => setBoardForemanTargetId(e.currentTarget.value)}
-                >
-                  <For each={orchestratorsList()}>
-                    {(a) => (
-                      <option value={a.id}>
-                        {a.avatar ?? '👑'} {a.name}
-                      </option>
-                    )}
-                  </For>
-                  <option value="new">➕ Nova equipe (novo líder)</option>
-                </select>
-                <Show
-                  when={(boardForemanTargetId() || orchestratorsList()[0]?.id || 'new') === 'new'}
-                >
+              <Show when={projects().length > 0}>
+                <div class="board-min-row">
                   <select
-                    aria-label="IA do novo líder"
-                    value={getDefaultProviderAndModel().provider}
-                    onChange={(e) => setBoardProviderId(e.currentTarget.value)}
+                    aria-label="Pasta do projeto"
+                    value={boardFilterProject()}
+                    onChange={(e) => setBoardFilterProject(e.currentTarget.value)}
                   >
-                    <For each={connections().filter((c) => c.enabled)}>
-                      {(c) => (
-                        <option value={c.providerId}>
-                          {PROVIDER_ICONS[c.providerId] || '🔗'} {c.name}
-                        </option>
-                      )}
-                    </For>
+                    <option value="all">Todas as pastas</option>
+                    <For each={projects()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
                   </select>
-                </Show>
-              </div>
+                </div>
+              </Show>
               <div class="board-min-actions">
                 <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
                   Começar
@@ -4296,29 +4242,43 @@ export const App: Component = () => {
                 <For each={approvals()}>{(a) => <ApprovalCard approval={a} />}</For>
               </div>
             </Show>
-            <div class="board-min-suggestions">
-              <For each={BOARD_SUGGESTIONS}>
-                {(s) => (
-                  <button
-                    type="button"
-                    class="board-min-chip"
-                    onClick={() => setBoardForemanPrompt(s.prompt)}
-                  >
-                    <strong>{s.title}</strong>
-                    <span>{s.desc}</span>
-                  </button>
-                )}
-              </For>
-            </div>
+            <Show when={agents().find((a) => isForeman(a))}>
+              {(foreman) => (
+                <button
+                  type="button"
+                  class="board-min-link"
+                  onClick={() => openAgent(foreman().id)}
+                >
+                  Conversar com o coordenador
+                </button>
+              )}
+            </Show>
             <button type="button" class="board-min-link" onClick={() => openNewAgent()}>
               Criar assistente personalizado
             </button>
+            <section class="board-min-suggest-wrap" aria-label="Sugestões">
+              <h2 class="board-min-suggest-title">Sugestões</h2>
+              <div class="board-min-suggestions">
+                <For each={BOARD_SUGGESTIONS}>
+                  {(s) => (
+                    <button
+                      type="button"
+                      class="board-min-chip"
+                      onClick={() => setBoardForemanPrompt(s.prompt)}
+                    >
+                      <strong>{s.title}</strong>
+                      <span>{s.desc}</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </section>
           </div>
         </Show>
 
         <Show when={activeSection() === 'channels'}>
           <Channels
-            agents={agents()}
+            agents={coworkers()}
             selectedId={selectedChannelId()}
             onSelect={setSelectedChannelId}
             creating={creatingChannel()}
@@ -4327,7 +4287,7 @@ export const App: Component = () => {
           />
         </Show>
         <Show when={activeSection() === 'skills'}>
-          <SkillsPlugins agents={agents()} />
+          <SkillsPlugins agents={coworkers()} />
         </Show>
         <Show when={activeSection() === 'agents'}>
           <Show
@@ -4415,8 +4375,8 @@ export const App: Component = () => {
                     <li class="first-run-step">
                       <h2 class="welcome-subtitle">2. Monte sua equipe com 1 clique</h2>
                       <p class="first-run-hint">
-                        Vá para a tela de Início para criar sua equipe pronta ou crie seu Líder
-                        agora mesmo.
+                        Na Central, descreva o que precisa. O coordenador monta a equipe e distribui
+                        o trabalho.
                       </p>
                       <div
                         style={{
@@ -4431,16 +4391,6 @@ export const App: Component = () => {
                           onClick={() => setActiveSection('board')}
                         >
                           🏠 Abrir Central da Equipe
-                        </button>
-                        <button
-                          type="button"
-                          class="btn-outline"
-                          onClick={() => {
-                            const tpl = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
-                            if (tpl) void handleQuickHireTemplate(tpl, true)
-                          }}
-                        >
-                          👑 Criar Líder da Equipe (1 clique)
                         </button>
                       </div>
                     </li>
@@ -4467,19 +4417,26 @@ export const App: Component = () => {
                         {agent().avatar || initialsOf(agent().name)}
                       </span>
                       <h2>{agent().name}</h2>
-                      <button
-                        type="button"
-                        class={`role-badge-toggle ${agent().role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
-                        onClick={() =>
-                          handleSwitchRole(
-                            agent().id,
-                            agent().role === 'orchestrator' ? 'worker' : 'orchestrator',
-                          )
-                        }
-                        title="Clique para alternar entre Líder da Equipe e Especialista"
+                      <Show
+                        when={!isForeman(agent())}
+                        fallback={<span class="role-badge-toggle orchestrator">Coordenador</span>}
                       >
-                        {agent().role === 'orchestrator' ? '👑 Líder da Equipe' : '🛠️ Especialista'}
-                      </button>
+                        <button
+                          type="button"
+                          class={`role-badge-toggle ${agent().role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
+                          onClick={() =>
+                            handleSwitchRole(
+                              agent().id,
+                              agent().role === 'orchestrator' ? 'worker' : 'orchestrator',
+                            )
+                          }
+                          title="Clique para alternar entre Líder da Equipe e Especialista"
+                        >
+                          {agent().role === 'orchestrator'
+                            ? '👑 Líder da Equipe'
+                            : '🛠️ Especialista'}
+                        </button>
+                      </Show>
                     </div>
                     <div class="agent-meta">
                       <Show when={agent().description}>
@@ -4793,7 +4750,12 @@ export const App: Component = () => {
                             </select>
                           </div>
 
-                          <Show when={(providerAccounts()[agent().provider]?.length ?? 0) > 1}>
+                          <Show
+                            when={
+                              !isForeman(agent()) &&
+                              (providerAccounts()[agent().provider]?.length ?? 0) > 1
+                            }
+                          >
                             <div class="midchat-field">
                               <label class="midchat-label" for="robot-account">
                                 Conta:
@@ -4865,7 +4827,7 @@ export const App: Component = () => {
                           </div>
 
                           <div class="midchat-field">
-                            <span class="midchat-label">Dedicação:</span>
+                            <span class="midchat-label">Raciocínio:</span>
                             <select
                               class="chat-autonomy-select"
                               value={agent().effort ?? ''}
@@ -4876,12 +4838,9 @@ export const App: Component = () => {
                                 )
                               }
                             >
-                              <option value="">Normal (Recomendado)</option>
-                              <option value="low">Rápido</option>
-                              <option value="medium">Equilibrado</option>
-                              <option value="high">Cuidadoso</option>
-                              <option value="xhigh">Muito profundo</option>
-                              <option value="max">Máximo cuidado</option>
+                              <For each={EFFORT_OPTIONS}>
+                                {([value, label]) => <option value={value}>{label}</option>}
+                              </For>
                             </select>
                           </div>
 
@@ -5352,8 +5311,26 @@ export const App: Component = () => {
                             onClick={() => setShowAgentSettings(true)}
                             title="Trocar modelo de IA ou ajustes avançados"
                           >
-                            ⚙️ IA: {agent().provider}
+                            {PROVIDER_ICONS[agent().provider] || '🔗'} {agent().model}
                           </button>
+                          <Show when={supportsEffort(agent().provider)}>
+                            <select
+                              class="composer-effort-select"
+                              aria-label="Nível de raciocínio"
+                              title="Nível de raciocínio: mais alto pensa mais, mas demora e gasta mais"
+                              value={agent().effort ?? ''}
+                              onChange={(e) =>
+                                handleSwitchEffort(
+                                  agent().id,
+                                  e.currentTarget.value as ProviderEffort | '',
+                                )
+                              }
+                            >
+                              <For each={EFFORT_OPTIONS}>
+                                {([value, label]) => <option value={value}>{label}</option>}
+                              </For>
+                            </select>
+                          </Show>
                         </div>
 
                         <div style={{ display: 'flex', gap: '8px' }}>
@@ -6255,11 +6232,9 @@ export const App: Component = () => {
                           )
                         }
                       >
-                        <option value="low">Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                        <option value="xhigh">XHigh</option>
-                        <option value="max">Max</option>
+                        <For each={EFFORT_OPTIONS.slice(1)}>
+                          {([value, label]) => <option value={value}>{label}</option>}
+                        </For>
                       </select>
                     </div>
                   </Show>
@@ -6466,6 +6441,10 @@ export const App: Component = () => {
       </Show>
 
       {/* Modal Criar Agente com Escolha de Provedor (Codex ou Claude) */}
+      <Show when={brainProject()}>
+        {(project) => <BrainPanel project={project()} onClose={() => setBrainProject(null)} />}
+      </Show>
+
       {/* Modal Novo Projeto (pasta de robôs) */}
       <Show when={showProjectModal()}>
         <dialog
@@ -6711,7 +6690,9 @@ export const App: Component = () => {
                   placeholder="Ex: Você é um desenvolvedor focado em testes limpos..."
                   value={instructions()}
                   onInput={(e) => setInstructions(e.currentTarget.value)}
+                  aria-describedby="agent-instructions-count"
                 />
+                <OverLimitCounter id="agent-instructions-count" text={instructions()} />
               </div>
 
               <details class="advanced-box">
@@ -6849,12 +6830,9 @@ export const App: Component = () => {
                     value={agentEffort()}
                     onChange={(e) => setAgentEffort(e.currentTarget.value as ProviderEffort | '')}
                   >
-                    <option value="">Padrão do provedor</option>
-                    <option value="low">Low — rápido e barato</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="xhigh">XHigh</option>
-                    <option value="max">Max — máximo raciocínio</option>
+                    <For each={EFFORT_OPTIONS}>
+                      {([value, label]) => <option value={value}>{label}</option>}
+                    </For>
                   </select>
                 </div>
 
@@ -6955,7 +6933,11 @@ export const App: Component = () => {
                 <button type="button" class="btn-secondary" onClick={() => setShowModal(false)}>
                   Cancelar
                 </button>
-                <button type="submit" class="btn-primary" disabled={loading()}>
+                <button
+                  type="submit"
+                  class="btn-primary"
+                  disabled={loading() || instructions().length > MAX_AGENT_INSTRUCTIONS}
+                >
                   {loading() ? 'Criando...' : 'Criar Agente'}
                 </button>
               </div>
@@ -7001,7 +6983,7 @@ export const App: Component = () => {
                     onChange={(e) => void handleSetHandoff(agent().id, e.currentTarget.value)}
                   >
                     <option value="">Ninguém (sem cadeia)</option>
-                    <For each={agents().filter((a) => a.id !== agent().id)}>
+                    <For each={coworkers().filter((a) => a.id !== agent().id)}>
                       {(a) => (
                         <option value={a.id}>
                           {a.avatar ?? '🤖'} {a.name}
@@ -7671,6 +7653,7 @@ export const App: Component = () => {
                       <textarea
                         id="ai-edit-instr"
                         rows={9}
+                        aria-describedby="ai-edit-instr-count"
                         value={draft().instructions}
                         onInput={(e) =>
                           setEditDraft({
@@ -7679,11 +7662,16 @@ export const App: Component = () => {
                           })
                         }
                       />
+                      <OverLimitCounter id="ai-edit-instr-count" text={draft().instructions} />
                     </div>
                     <button
                       type="button"
                       class="btn-primary"
-                      disabled={!draft().name.trim() || !draft().instructions.trim()}
+                      disabled={
+                        !draft().name.trim() ||
+                        !draft().instructions.trim() ||
+                        draft().instructions.length > MAX_AGENT_INSTRUCTIONS
+                      }
                       onClick={() => currentAgent() && saveEditDraft(currentAgent()?.id as string)}
                     >
                       Salvar alterações
@@ -7772,7 +7760,7 @@ export const App: Component = () => {
                           'white-space': 'pre-wrap',
                         }}
                       >
-                        {m.text}
+                        {m.kind === 'task' ? 'tarefa' : 'preferência'} · {m.text}
                       </span>
                       <button
                         type="button"
@@ -7972,7 +7960,7 @@ export const App: Component = () => {
                           Ir para Conversa ↗
                         </button>
                       </div>
-                      <div class="search-result-snippet" innerHTML={res.snippet} />
+                      <div class="search-result-snippet" innerHTML={safeSnippetHtml(res.snippet)} />
                     </div>
                   )}
                 </For>
@@ -7999,7 +7987,10 @@ export const App: Component = () => {
                           </span>
                         </div>
                       </div>
-                      <div class="search-result-snippet code" innerHTML={file.snippet} />
+                      <div
+                        class="search-result-snippet code"
+                        innerHTML={safeSnippetHtml(file.snippet)}
+                      />
                     </div>
                   )}
                 </For>

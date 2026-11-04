@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import {
@@ -11,13 +12,21 @@ import {
 } from '../../shared/types'
 import {
   APPROVAL_INSTRUCTIONS,
+  type RuntimeApprovalPayload,
   approvalAnswerPrompt,
   parseApprovalRequests,
+  parseRuntimePayload,
+  runtimeApprovalDonePrompt,
+  runtimeApprovalText,
   stripApprovalRequests,
 } from '../approvals/approval-protocol'
+import { parseBrainDirectives, stripBrainDirectives } from '../brain/brain-protocol'
+import { BrainService } from '../brain/brain-service'
 import {
+  type BrowserDirective,
   MAX_BROWSER_ROUNDS,
   argsFor,
+  browserBatchNeedsApproval,
   buildBrowserInstructions,
   parseBrowserDirectives,
   stripBrowserDirectives,
@@ -31,9 +40,11 @@ import {
 } from '../collaboration/collab-protocol'
 import { CollaborationService, MAX_CHANNEL_DEPTH } from '../collaboration/collaboration-service'
 import {
+  type ComputerDirective,
   MAX_COMPUTER_ROUNDS,
   argsForComputer,
   buildComputerInstructions,
+  computerBatchNeedsApproval,
   parseComputerDirectives,
   stripComputerDirectives,
 } from '../computer/computer-protocol'
@@ -46,6 +57,7 @@ import {
   stripMemoryDirectives,
 } from '../memory/memory-protocol'
 import { MemoryService } from '../memory/memory-service'
+import { isForeman, withForemanProject } from '../orchestration/foreman'
 import {
   MAX_ORCHESTRATION_DEPTH,
   buildOrchestratorInstructions,
@@ -80,20 +92,26 @@ export interface QueueManagerEvents {
   onTaskStatusChanged: (event: { task: TaskQueueItem }) => void
 }
 
+/** O que o terminal do CLI faz no modo cauteloso (os outros provedores seguem a própria configuração). */
+const CAUTIOUS_TERMINAL: Partial<Record<string, string>> = {
+  claude:
+    '\nComando de terminal e edição de arquivo também param: cada um abre um pedido de permissão para a pessoa. Se ela recusar, não tente por outro caminho.',
+  codex:
+    '\nSeu terminal está só leitura. Para rodar algo que grava ou altera arquivos, peça com [[APROVAR]] dizendo o comando exato e pare. Depois do APROVADO, o terminal grava naquele turno.',
+}
+
 export function isQuotaOrRateLimitError(error: string): boolean {
   if (!error) return false
   const lower = error.toLowerCase()
   return (
-    lower.includes('429') ||
+    /\b429\b/.test(lower) ||
     lower.includes('too many requests') ||
     lower.includes('quota') ||
     lower.includes('rate_limit') ||
     lower.includes('rate limit') ||
     lower.includes('insufficient_quota') ||
     lower.includes('resource_exhausted') ||
-    lower.includes('overloaded') ||
     lower.includes('exceeded your current quota') ||
-    lower.includes('capacity exceeded') ||
     lower.includes('tokens per min') ||
     lower.includes('requests per min')
   )
@@ -118,10 +136,14 @@ export class QueueManager {
   private computerExecutor: ComputerExecutor | null = null
   private pausedAgents = new Set<string>()
   private isProcessingAgent = new Set<string>()
-  private nativeExecutionThreads = new Set<string>()
+  /** Tarefas que retomam depois de uma aprovação em texto: no cauteloso, o Codex pode gravar só nelas. */
+  private approvedTurns = new Set<string>()
+  /** Tarefas que a pessoa escreveu: só depois delas o curador roda (é dali que vêm fato e preferência). */
+  private personTurns = new Set<string>()
   private taskFallbackAttempts = new Map<string, Set<string>>()
   private isClosed = false
   public readonly memory: MemoryService
+  public readonly brain: BrainService
   public readonly collab: CollaborationService
   private skills: SkillService | null = null
   /** Seções de continuação acumuladas por tarefa: uma resposta gera no máximo UM turno de continuação. */
@@ -134,6 +156,7 @@ export class QueueManager {
     private events?: Partial<QueueManagerEvents>,
   ) {
     this.memory = new MemoryService(db)
+    this.brain = new BrainService(db)
     this.collab = new CollaborationService(db, {
       enqueue: (agentId, threadId, prompt, depth, origin) =>
         this.enqueue(agentId, threadId, prompt, depth, origin),
@@ -200,6 +223,11 @@ export class QueueManager {
     return true
   }
 
+  /** A pessoa escreveu esta tarefa pela conversa: o curador revisa a memória depois do turno. */
+  public markFromPerson(taskId: string): void {
+    this.personTurns.add(taskId)
+  }
+
   public enqueue(
     agentId: string,
     threadId: string,
@@ -235,9 +263,8 @@ export class QueueManager {
     const task = this.db.getTask(taskId)
     if (!task) return false
 
-    const waitsForClose =
-      task.status === 'running' && this.nativeExecutionThreads.has(task.threadId)
-    if (task.status === 'running') this.registry.interruptThread(task.threadId)
+    // Todo adaptador avisa onInterrupted ao fechar: se há execução registrada, ele libera o agente.
+    const waitsForClose = task.status === 'running' && this.registry.interruptThread(task.threadId)
 
     this.taskFallbackAttempts.delete(taskId)
     const updated = this.db.updateTaskStatus(taskId, 'cancelled', 'Cancelado pelo usuário')
@@ -273,6 +300,19 @@ export class QueueManager {
     return this.db.listTasks(agentId)
   }
 
+  /** `<pasta do projeto>/shared/`, criada na hora; null se o projeto não tem pasta. */
+  private sharedDirFor(projectId: string | undefined): string | null {
+    const root = projectId ? this.db.getProject(projectId)?.workspacePath : undefined
+    if (!root) return null
+    const dir = path.join(path.resolve(root), 'shared')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+      return dir
+    } catch {
+      return null
+    }
+  }
+
   /** Executa os blocos [[COMPUTER:...]] e devolve o resultado ao robô. */
   private async dispatchComputerDirectives(
     task: TaskQueueItem,
@@ -282,9 +322,24 @@ export class QueueManager {
     const rounds = task.browserRounds ?? 0
     if (rounds >= MAX_COMPUTER_ROUNDS) return
     const directives = parseComputerDirectives(fullText)
-    if (directives.length === 0) return
-    if (!this.computerExecutor) return
+    if (directives.length === 0 || !this.computerExecutor) return
 
+    const results = await this.collectComputerResults(agentId, directives)
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `🖥️ Computador executou ${directives.length} comando(s). Lendo o resultado…`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+
+    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`)
+  }
+
+  private async collectComputerResults(
+    agentId: string,
+    directives: ComputerDirective[],
+  ): Promise<string[]> {
+    if (!this.computerExecutor) return []
     const results: string[] = []
     for (const directive of directives) {
       try {
@@ -300,14 +355,7 @@ export class QueueManager {
         )
       }
     }
-    const notice = this.db.addMessage(
-      task.threadId,
-      'system',
-      `🖥️ Computador executou ${directives.length} comando(s). Lendo o resultado…`,
-    )
-    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
-
-    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`)
+    return results
   }
 
   private addFollowUp(task: TaskQueueItem, section: string): void {
@@ -350,16 +398,127 @@ export class QueueManager {
       'user',
       `${approved ? '✅ Aprovado' : '❌ Recusado'}: ${approval.text}${approval.note ? `\n${approval.note}` : ''}`,
     )
-    this.enqueue(
+    const payload = approved ? parseRuntimePayload(approval.payloadJson) : undefined
+    if (approved && approval.payloadJson) {
+      if (payload) this.replayRuntimeApproval(approval, task, payload)
+      else
+        this.continueAfterApproval(
+          approval,
+          task,
+          '[RESPOSTA DA APROVAÇÃO] APROVADO\nO pedido salvo não pôde ser executado. Não repita a ação por conta própria.',
+        )
+      return approval
+    }
+    const next = this.continueAfterApproval(approval, task, approvalAnswerPrompt(approval))
+    if (approved) this.approvedTurns.add(next.id)
+    return approval
+  }
+
+  /** Card de aprovação. payloadJson guarda as ações que o runtime executa depois do aprovado. */
+  private openApproval(
+    task: TaskQueueItem,
+    agent: { id: string; name: string },
+    text: string,
+    payloadJson?: string,
+  ): void {
+    const approval = this.db.createApproval({
+      agentId: agent.id,
+      threadId: task.threadId,
+      taskId: task.id,
+      text,
+      payloadJson,
+    })
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `✋ ${agent.name} pede sua aprovação: ${approval.text.slice(0, 200)}`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+  }
+
+  private continueAfterApproval(
+    approval: Approval,
+    task: TaskQueueItem | null,
+    prompt: string,
+    browserRounds = 0,
+  ): TaskQueueItem {
+    return this.enqueue(
       approval.agentId,
       approval.threadId,
-      approvalAnswerPrompt(approval),
+      prompt,
       task?.delegationDepth ?? 1,
       task?.originThreadId
         ? { originThreadId: task.originThreadId, originAgentId: task.originAgentId }
         : undefined,
+      browserRounds,
     )
-    return approval
+  }
+
+  /** Aprovado: executa o payload guardado e devolve o resultado. Não pede ao modelo para fazer de novo. */
+  private replayRuntimeApproval(
+    approval: Approval,
+    task: TaskQueueItem | null,
+    payload: RuntimeApprovalPayload,
+  ): void {
+    void this.runReplay(approval, task, payload).catch((err: unknown) => {
+      if (this.isClosed || !this.db.isOpen()) return
+      const message = err instanceof Error ? err.message : String(err)
+      this.continueAfterApproval(
+        approval,
+        task,
+        `[RESPOSTA DA APROVAÇÃO] APROVADO\nA ação foi aprovada, mas falhou ao executar: ${message}\nNão repita a ação por conta própria.`,
+      )
+    })
+  }
+
+  private async runReplay(
+    approval: Approval,
+    task: TaskQueueItem | null,
+    payload: RuntimeApprovalPayload,
+  ): Promise<void> {
+    if (this.isClosed || !this.db.isOpen()) return
+    const section = await this.replaySection(approval, task, payload)
+    if (this.isClosed || !this.db.isOpen()) return
+    this.continueAfterApproval(
+      approval,
+      task,
+      runtimeApprovalDonePrompt(approval, section),
+      (task?.browserRounds ?? 0) + 1,
+    )
+  }
+
+  private async replaySection(
+    approval: Approval,
+    task: TaskQueueItem | null,
+    payload: RuntimeApprovalPayload,
+  ): Promise<string> {
+    if (payload.kind === 'browser') {
+      if (!this.browserExecutor) {
+        return '[RESULTADO DO NAVEGADOR]\nO navegador não está disponível. A ação aprovada não rodou.'
+      }
+      const results = await this.collectBrowserResults(approval.agentId, payload.directives)
+      this.postRuntimeNotice(
+        task,
+        approval.threadId,
+        `🌐 Navegador executou ${payload.directives.length} comando(s). Lendo o resultado…`,
+      )
+      return `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`
+    }
+    if (!this.computerExecutor) {
+      return '[RESULTADO DO COMPUTADOR]\nO uso do computador não está disponível. A ação aprovada não rodou.'
+    }
+    const results = await this.collectComputerResults(approval.agentId, payload.directives)
+    this.postRuntimeNotice(
+      task,
+      approval.threadId,
+      `🖥️ Computador executou ${payload.directives.length} comando(s). Lendo o resultado…`,
+    )
+    return `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`
+  }
+
+  private postRuntimeNotice(task: TaskQueueItem | null, threadId: string, text: string): void {
+    const notice = this.db.addMessage(threadId, 'system', text)
+    if (task) this.events?.onTurnFinished?.({ threadId, message: notice, task })
   }
 
   /** Cadeia: o resultado final de um pedido segue para o próximo robô configurado. */
@@ -453,6 +612,26 @@ export class QueueManager {
     this.addFollowUp(task, `[RESULTADO DOS AGENTES]\n${lines.join('\n\n')}`)
   }
 
+  /** Avisa ou devolve [[BRAIN:*]]. A gravação em si já aconteceu em `run`. */
+  private deliverBrain(
+    task: TaskQueueItem,
+    directives: ReturnType<typeof parseBrainDirectives>,
+    outcome: ReturnType<BrainService['run']>,
+  ): void {
+    if (directives.length === 0) return
+    const rounds = task.browserRounds ?? 0
+    if (!outcome.followUp || rounds >= MAX_MEMORY_ROUNDS) {
+      const notice = this.db.addMessage(
+        task.threadId,
+        'system',
+        `🧠 ${outcome.lines.join(' ')}`.slice(0, 400),
+      )
+      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+      return
+    }
+    this.addFollowUp(task, `[RESULTADO DO CÉREBRO]\n${outcome.lines.join('\n\n')}`)
+  }
+
   /** Executa [[MEMORY:*]] / [[HISTORY:*]]; buscas e leituras voltam ao robô num novo turno. */
   private dispatchMemoryDirectives(
     task: TaskQueueItem,
@@ -495,6 +674,23 @@ export class QueueManager {
       return
     }
 
+    const results = await this.collectBrowserResults(agentId, directives)
+
+    const notice = this.db.addMessage(
+      task.threadId,
+      'system',
+      `🌐 Navegador executou ${directives.length} comando(s). Lendo o resultado…`,
+    )
+    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
+
+    this.addFollowUp(task, `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`)
+  }
+
+  private async collectBrowserResults(
+    agentId: string,
+    directives: BrowserDirective[],
+  ): Promise<string[]> {
+    if (!this.browserExecutor) return []
     const results: string[] = []
     for (const directive of directives) {
       try {
@@ -510,15 +706,7 @@ export class QueueManager {
         )
       }
     }
-
-    const notice = this.db.addMessage(
-      task.threadId,
-      'system',
-      `🌐 Navegador executou ${directives.length} comando(s). Lendo o resultado…`,
-    )
-    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
-
-    this.addFollowUp(task, `[RESULTADO DO NAVEGADOR]\n${results.join('\n\n')}`)
+    return results
   }
 
   /** Orquestrador delegou: enfileira nos especialistas e avisa na conversa dele. */
@@ -534,7 +722,10 @@ export class QueueManager {
 
     const orch = this.db.getAgent(orchestrator.id)
     if (!orch) return
-    const team = teamForOrchestrator(orch, this.db.listAgents())
+    const team = teamForOrchestrator(
+      withForemanProject(orch, this.db.getThread(orchestratorTask.threadId)?.projectId),
+      this.db.listAgents(),
+    )
     const { resolved, unknownTargets } = resolveDelegations(directives, team)
     const notices: string[] = []
 
@@ -644,6 +835,7 @@ export class QueueManager {
       setTimeout(() => this.processNextForAgent(agentId), 50)
       return
     }
+    const speaker = withForemanProject(agent, this.db.getThread(nextTask.threadId)?.projectId)
     const { connection, account, config } = runtime
     const apiKey = config.apiKey
     const adapter = this.registry.getAdapter(agent.provider)
@@ -692,7 +884,9 @@ export class QueueManager {
     const contextSections: string[] = []
 
     if (rules.exists && rules.content) {
-      contextSections.push(`[DIRETRIZES DO PROJETO (${rules.filename})]\n${rules.content}`)
+      contextSections.push(
+        `[DIRETRIZES DO PROJETO (${rules.filename})]\n${capRulesContent(rules.content, agent.contextMode ?? 'padrao')}`,
+      )
     }
 
     // 1b. Estado do repositório git do workspace (barato e útil para agentes de código)
@@ -762,10 +956,18 @@ export class QueueManager {
       contextSections.push(`[INSTRUÇÕES DO AGENTE]\n${agent.instructions.trim()}`)
     }
 
+    // 4b. Pasta compartilhada do projeto: todos leem e escrevem, sem copiar entre workspaces
+    const sharedDir = this.sharedDirFor(speaker.projectId)
+    if (sharedDir) {
+      contextSections.push(
+        `[PASTA COMPARTILHADA DO PROJETO]\n${sharedDir}\nTodo colega deste projeto lê e escreve aqui. Para passar um arquivo a alguém, salve nesta pasta e diga o nome, sem mandar cópia.`,
+      )
+    }
+
     // 5. Nível de Autonomia do Agente
     if (agent.autonomyLevel === 'cautious') {
       contextSections.push(
-        '[NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO]\nVocê está operando em Modo Cauteloso. Peça confirmação expressa ao usuário antes de qualquer clique no navegador, preenchimento de campos ou comandos de terminal. Não execute ações destrutivas ou de escrita externa sem validação prévia.',
+        `[NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO]\nVocê está operando em Modo Cauteloso. Clique, preenchimento e fechar aba no navegador, e abrir app, clicar, digitar e teclas no computador, ficam parados: o Orchbot abre um card e só executa depois que a pessoa aprovar, mesmo que você não peça. Pode ler na hora (abrir página, inspecionar, screenshot, listar janelas). Para e-mail, publicar, pagar ou apagar fora desses comandos, use o bloco [[APROVAR]] e pare.${CAUTIOUS_TERMINAL[agent.provider] ?? ''}`,
       )
     } else {
       contextSections.push(
@@ -776,9 +978,9 @@ export class QueueManager {
     contextSections.push(APPROVAL_INSTRUCTIONS)
 
     // 6. Papel de orquestrador: equipe + protocolo de delegação
-    if (agent.role === 'orchestrator') {
-      const team = teamForOrchestrator(agent, this.db.listAgents())
-      contextSections.push(buildOrchestratorInstructions(agent, team))
+    if (speaker.role === 'orchestrator') {
+      const team = teamForOrchestrator(speaker, this.db.listAgents())
+      contextSections.push(buildOrchestratorInstructions(speaker, team))
     }
 
     // 6b. Capacidades (padrão do computador + override do robô)
@@ -804,7 +1006,9 @@ export class QueueManager {
       contextSections.push(buildComputerInstructions(agent.name))
     }
 
-    // 6d. Memória persistente + busca no histórico
+    // 6d. Cérebro do projeto (fato da empresa) e memória só do robô
+    const brainSection = this.brain.contextSection(speaker)
+    if (brainSection) contextSections.push(brainSection)
     contextSections.push(...this.memory.contextSections(agentId))
     contextSections.push(...this.collab.contextSections(agent, nextTask.threadId))
     if (this.skills) contextSections.push(this.skills.contextSection(agentId))
@@ -820,11 +1024,19 @@ export class QueueManager {
     // Uso de tokens informado pela CLI neste turno (gravado junto da resposta).
     let turnUsage: TurnUsage | undefined
     let nativeSessionId: string | undefined
-    if (adapter.supportsSessionResume) this.nativeExecutionThreads.add(nextTask.threadId)
+    const permission =
+      agent.autonomyLevel === 'cautious'
+        ? this.approvedTurns.has(nextTask.id)
+          ? ('approved' as const)
+          : ('ask' as const)
+        : undefined
+    this.approvedTurns.delete(nextTask.id)
     const execution = adapter.executeTurn(
       nextTask.prompt,
       {
         workspacePath: agent.workspacePath,
+        extraDirs: sharedDir ? [sharedDir] : undefined,
+        permission: permission,
         resumeSessionId,
         model: agent.model,
         instructions: effectiveInstructions,
@@ -854,7 +1066,6 @@ export class QueueManager {
         },
         onInterrupted: () => {
           this.taskFallbackAttempts.delete(nextTask.id)
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
@@ -881,7 +1092,6 @@ export class QueueManager {
         },
         onError: (rawError) => {
           const error = apiKey ? rawError.split(apiKey).join('[REDACTED]') : rawError
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
           if (isQuotaOrRateLimitError(error)) {
@@ -962,7 +1172,6 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)
@@ -972,57 +1181,92 @@ export class QueueManager {
           const isOrchestrator = agent.role === 'orchestrator'
           const fullForDirectives = fullText
           const memoryDirectives = parseMemoryDirectives(fullText)
+          const brainDirectives = parseBrainDirectives(fullText)
+          const brainOutcome = this.brain.run(speaker, brainDirectives)
           const collabDirectives = parseCollabDirectives(fullText)
           const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
           const approvalRequests = parseApprovalRequests(fullText)
           const stripped = stripApprovalRequests(
             stripSkillDirectives(
               stripCollabDirectives(
-                stripMemoryDirectives(
-                  stripComputerDirectives(stripNewChatDirectives(stripBrowserDirectives(fullText))),
+                stripBrainDirectives(
+                  stripMemoryDirectives(
+                    stripComputerDirectives(
+                      stripNewChatDirectives(stripBrowserDirectives(fullText)),
+                    ),
+                  ),
                 ),
               ),
             ),
           )
           const visibleText = isOrchestrator ? stripDelegationDirectives(stripped) : stripped
+          const browserDirectives = parseBrowserDirectives(fullText)
+          const computerDirectives = parseComputerDirectives(fullText)
+          const capsNow = effectiveCapabilities(agent, this.db.getSettings())
+          // shortcut: shell do Codex/Claude não passa por aqui, só browser e COMPUTER (open via shell). Segure igual quando o adaptador expuser o pedido.
+          const holdBrowser =
+            agent.autonomyLevel === 'cautious' &&
+            agent.browserAccess !== false &&
+            this.browserExecutor !== null &&
+            browserBatchNeedsApproval(browserDirectives)
+          const holdComputer =
+            agent.autonomyLevel === 'cautious' &&
+            capsNow.computerUse &&
+            this.computerExecutor !== null &&
+            computerBatchNeedsApproval(computerDirectives)
 
           // 1. Grava a mensagem do assistente no histórico do chat
           const assistantMsg = this.db.addMessage(
             nextTask.threadId,
             'assistant',
             visibleText.trim() ||
-              (approvalRequests.length > 0
+              (approvalRequests.length > 0 || holdBrowser || holdComputer
                 ? '✋ Preciso da sua aprovação antes de continuar.'
-                : memoryDirectives.length > 0 ||
-                    collabDirectives.length > 0 ||
-                    skillDirectives.length > 0
-                  ? '🧠 Consultando a memória…'
-                  : parseBrowserDirectives(fullText).length > 0
-                    ? '🌐 Consultando o navegador…'
-                    : isOrchestrator
-                      ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
-                      : '(Nenhum conteúdo retornado)'),
+                : brainDirectives.length > 0 &&
+                    memoryDirectives.length === 0 &&
+                    collabDirectives.length === 0 &&
+                    skillDirectives.length === 0
+                  ? '🧠 Consultei o cérebro do projeto.'
+                  : memoryDirectives.length > 0 ||
+                      collabDirectives.length > 0 ||
+                      skillDirectives.length > 0
+                    ? '🧠 Consultando a memória…'
+                    : browserDirectives.length > 0
+                      ? '🌐 Consultando o navegador…'
+                      : isOrchestrator
+                        ? 'Deleguei as subtarefas aos especialistas. Assim que responderem, eu resumo aqui.'
+                        : '(Nenhum conteúdo retornado)'),
           )
 
-          // 1a. Pedido de aprovação: o robô para aqui até o usuário responder.
-          for (const text of approvalRequests) {
-            const approval = this.db.createApproval({
-              agentId,
-              threadId: nextTask.threadId,
-              taskId: nextTask.id,
-              text,
-            })
-            const notice = this.db.addMessage(
-              nextTask.threadId,
-              'system',
-              `✋ ${agent.name} pede sua aprovação: ${approval.text.slice(0, 200)}`,
+          // 1a. Pedido de aprovação: texto [[APROVAR]] ou ação mutável no modo cauteloso.
+          for (const text of approvalRequests) this.openApproval(nextTask, agent, text)
+          if (holdBrowser) {
+            const payload: RuntimeApprovalPayload = {
+              kind: 'browser',
+              directives: browserDirectives,
+            }
+            this.openApproval(
+              nextTask,
+              agent,
+              runtimeApprovalText(payload),
+              JSON.stringify(payload),
             )
-            this.events?.onTurnFinished?.({
-              threadId: nextTask.threadId,
-              message: notice,
-              task: nextTask,
-            })
           }
+          if (holdComputer) {
+            const payload: RuntimeApprovalPayload = {
+              kind: 'computer',
+              directives: computerDirectives,
+            }
+            this.openApproval(
+              nextTask,
+              agent,
+              runtimeApprovalText(payload),
+              JSON.stringify(payload),
+            )
+          }
+          const waitingApproval = this.db
+            .listPendingApprovals()
+            .some((item) => item.threadId === nextTask.threadId)
 
           if (turnUsage)
             this.db.setMessageUsage(
@@ -1038,20 +1282,11 @@ export class QueueManager {
           // 1b. Orquestrador delega aos especialistas; especialista devolve ao orquestrador
           if (isOrchestrator) {
             this.dispatchDelegations(nextTask, agent, fullText)
-          } else if (
-            nextTask.originThreadId &&
-            approvalRequests.length === 0 &&
-            parseBrowserDirectives(fullText).length === 0 &&
-            !needsMemoryFollowUp(memoryDirectives) &&
-            !needsCollabFollowUp(collabDirectives) &&
-            !needsSkillFollowUp(skillDirectives)
-          ) {
-            this.returnResultToOrchestrator(nextTask, agent.name, fullText.trim())
           }
 
           // 1c. Comandos de navegador do robô (vale para qualquer papel)
           const followUpWork: Promise<void>[] = []
-          if (agent.browserAccess !== false) {
+          if (agent.browserAccess !== false && !holdBrowser) {
             followUpWork.push(this.dispatchBrowserDirectives(nextTask, agentId, fullText))
           }
 
@@ -1068,37 +1303,46 @@ export class QueueManager {
           // 1c0c. Skills
           this.dispatchSkillDirectives(nextTask, agent, skillDirectives)
 
-          // 1c1. Memória e histórico locais
+          // 1c1. Cérebro do projeto, memória e histórico locais
+          this.deliverBrain(nextTask, brainDirectives, brainOutcome)
           this.dispatchMemoryDirectives(nextTask, agentId, memoryDirectives)
-          this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
-            if (this.isClosed || !this.db.isOpen()) return
-            const notice = this.db.addMessage(nextTask.threadId, 'system', text)
-            this.events?.onTurnFinished?.({
-              threadId: nextTask.threadId,
-              message: notice,
-              task: nextTask,
+          if (this.personTurns.delete(nextTask.id))
+            this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
+              if (this.isClosed || !this.db.isOpen()) return
+              const notice = this.db.addMessage(nextTask.threadId, 'system', text)
+              this.events?.onTurnFinished?.({
+                threadId: nextTask.threadId,
+                message: notice,
+                task: nextTask,
+              })
             })
-          })
 
-          // 1c2. Uso do computador
-          {
-            const capsNow = effectiveCapabilities(agent, this.db.getSettings())
-            if (capsNow.computerUse) {
-              followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
-            }
+          // 1c2. Uso do computador. No modo cauteloso, lote com ação mutável espera o card.
+          if (capsNow.computerUse && !holdComputer) {
+            followUpWork.push(this.dispatchComputerDirectives(nextTask, agentId, fullText))
           }
           // Cadeia só no fim de um pedido do usuário/rotina/webhook: não em delegações,
           // canais, mensagens diretas, nem enquanto espera aprovação ou especialistas.
           const canHandOff =
             !!agent.handoffAgentId &&
-            approvalRequests.length === 0 &&
+            !waitingApproval &&
             !nextTask.originThreadId &&
             !nextTask.prompt.startsWith('[Mensagem direta de') &&
             !(isOrchestrator && parseDelegationDirectives(fullText).length > 0) &&
             !this.db.getChannelByThread(nextTask.threadId)
           void Promise.allSettled(followUpWork).then(() => {
-            if (!this.flushFollowUps(nextTask, agentId) && canHandOff)
-              this.handOff(nextTask, agent, visibleText)
+            if (this.flushFollowUps(nextTask, agentId)) return
+            // Sem continuação agendada (inclusive no limite de rodadas): devolve o resultado.
+            if (this.isClosed || !this.db.isOpen()) return
+            if (!isOrchestrator && nextTask.originThreadId && !waitingApproval) {
+              const specialistText = brainDirectives.length
+                ? [stripBrainDirectives(fullText).trim(), brainOutcome.lines.join('\n')]
+                    .filter(Boolean)
+                    .join('\n\n')
+                : fullText.trim()
+              this.returnResultToOrchestrator(nextTask, agent.name, specialistText)
+            }
+            if (canHandOff) this.handOff(nextTask, agent, visibleText)
           })
 
           // 1d. Robô inicia um novo chat (quando a capacidade permite)
@@ -1106,7 +1350,11 @@ export class QueueManager {
             const caps = effectiveCapabilities(agent, this.db.getSettings())
             const newChat = caps.startsNewChats ? parseNewChatDirective(fullForDirectives) : null
             if (newChat) {
-              const thread = this.db.createThread(agentId, newChat.title)
+              const thread = this.db.createThread(
+                agentId,
+                newChat.title,
+                isForeman(agent) ? this.db.getThread(nextTask.threadId)?.projectId : undefined,
+              )
               this.db.addMessage(thread.id, 'user', newChat.task)
               this.enqueue(agentId, thread.id, newChat.task, 1)
               const notice = this.db.addMessage(

@@ -47,6 +47,10 @@ describe('memória, histórico e compactação locais', () => {
       svc.run(agentId, [{ kind: 'MEMORY', action: 'forget', body: id.slice(0, 8) }])[0],
     ).toContain('esquecido')
     expect(db.listMemories(agentId)).toHaveLength(0)
+    expect(
+      svc.run(agentId, [{ kind: 'MEMORY', action: 'remember', body: '1. rode os testes' }])[0],
+    ).toContain('não memorizado')
+    expect(db.listMemories(agentId)).toHaveLength(0)
   })
 
   it('history search/read só enxerga o próprio agente', () => {

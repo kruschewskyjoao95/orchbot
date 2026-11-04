@@ -9,6 +9,13 @@ export interface ComputerDirective {
 
 export const MAX_COMPUTER_ROUNDS = 2
 
+/** Abrir app passa por shell. Clique, digitação e tecla mudam o desktop. Screenshot e apps são leitura. */
+const MUTATING_COMPUTER = new Set<ComputerDirectiveAction>(['open', 'click', 'type', 'key'])
+
+export function computerBatchNeedsApproval(directives: ComputerDirective[]): boolean {
+  return directives.some((directive) => MUTATING_COMPUTER.has(directive.action))
+}
+
 const BLOCK_RE = /\[\[COMPUTER:([a-z]+)\]\]([\s\S]*?)\[\[\/COMPUTER\]\]/gi
 const KNOWN: ComputerDirectiveAction[] = ['screenshot', 'apps', 'open', 'click', 'type', 'key']
 

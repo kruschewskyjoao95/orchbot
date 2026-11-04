@@ -9,6 +9,7 @@ import {
   getActiveTaskForAgent,
   parseComposerInput,
   parseStructuredMessage,
+  safeSnippetHtml,
 } from '../src/renderer/src/orchestration-ui'
 import type { Agent, Channel, Project, TaskQueueItem } from '../src/shared/types'
 
@@ -73,9 +74,8 @@ const sampleProjects: Project[] = [
 describe('orchestration-ui helpers (Quadro da Equipe & Paleta de Comandos)', () => {
   it('exposes coworker templates and 1-click starter team presets for laypeople', () => {
     expect(COWORKER_TEMPLATES.length).toBeGreaterThanOrEqual(5)
-    const foreman = COWORKER_TEMPLATES.find((t) => t.id === 'foreman')
-    expect(foreman).toBeDefined()
-    expect(foreman?.role).toBe('orchestrator')
+    expect(COWORKER_TEMPLATES.some((t) => t.id === 'foreman')).toBe(false)
+    expect(COWORKER_TEMPLATES.every((t) => t.role === 'worker')).toBe(true)
     const workers = COWORKER_TEMPLATES.filter((t) => t.role === 'worker')
     expect(workers.length).toBeGreaterThanOrEqual(4)
 
@@ -185,6 +185,13 @@ describe('orchestration-ui helpers (Quadro da Equipe & Paleta de Comandos)', () 
 
     const filteredForeman = filterPaletteItems(items, 'foreman')
     expect(filteredForeman.some((i) => i.agentId === 'foreman-1')).toBe(true)
+    const hidden = buildCommandPaletteItems(
+      [{ ...sampleAgents[0], id: 'sys', systemRole: 'foreman', name: 'Coordenador' }],
+      [],
+      {},
+    )
+    expect(hidden.some((i) => i.agentId === 'sys')).toBe(false)
+    expect(hidden.some((i) => i.id === 'action:new-foreman')).toBe(false)
 
     const filteredBoard = filterPaletteItems(items, 'quadro')
     expect(filteredBoard.some((i) => i.id === 'nav:board')).toBe(true)
@@ -239,5 +246,13 @@ describe('orchestration-ui helpers (Quadro da Equipe & Paleta de Comandos)', () 
     expect(getActiveTaskForAgent(tasks)?.id).toBe('t2')
     expect(getActiveTaskForAgent([tasks[0], tasks[2]])?.id).toBe('t3')
     expect(getActiveTaskForAgent([tasks[0]])).toBeUndefined()
+  })
+})
+
+describe('safeSnippetHtml', () => {
+  it('escapa HTML do texto e mantém só o destaque <b>', () => {
+    expect(safeSnippetHtml('a <img src=x onerror=alert(1)> <b>termo</b> & fim')).toBe(
+      'a &lt;img src=x onerror=alert(1)&gt; <b>termo</b> &amp; fim',
+    )
   })
 })

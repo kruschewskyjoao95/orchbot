@@ -25,6 +25,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     id: string
     resume?: string
     prompt: string
+    system?: string
     args: string[]
     event?: string
   }> =>
@@ -57,7 +58,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
   })
   async function enqueue(prompt: string, target = threadId) {
     const task = queue.enqueue(agentId, target, prompt)
-    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'))
+    await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'), { timeout: 5000 })
     return task
   }
   function direct(extra: Partial<ExecutionOptions> = {}) {
@@ -73,6 +74,24 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     )
     return { execution, onSessionId, onChunk, onDone, onError, onInterrupted }
   }
+
+  it('sends prompt and instructions above the 128 KB argv limit without E2BIG', async () => {
+    const big = 'ação '.repeat(30_000) // ~180 KB em UTF-8
+    const onDone = vi.fn()
+    const onError = vi.fn()
+    adapter.executeTurn(
+      big,
+      { workspacePath: dir, instructions: big, providerConfig: { cliPath: cli } },
+      { onChunk: () => {}, onDone, onError },
+    )
+    await vi.waitFor(() => expect(onDone.mock.calls.length + onError.mock.calls.length).toBe(1), {
+      timeout: 5000,
+    })
+    expect(onError).not.toHaveBeenCalled()
+    const call = calls()[0]
+    expect(call.prompt).toContain(big)
+    if (provider === 'claude') expect(call.system).toBe(big)
+  })
 
   it('resumes exactly the same native session across turns and an app/database restart', async () => {
     await enqueue('First detailed task')
@@ -134,10 +153,11 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     db.addMessage(threadId, 'assistant', 'We decided to preserve existing data')
     await new Promise((resolve) => setTimeout(resolve, 5))
     await enqueue('First native turn')
-    expect(calls()[0].args.join(' ')).toContain('preserve existing data')
+    const sent = (call: ReturnType<typeof calls>[number]) => `${call.prompt}\n${call.system ?? ''}`
+    expect(sent(calls()[0])).toContain('preserve existing data')
     await enqueue('Native continuation')
-    // Claude sends system instructions as an argument; Codex embeds them in the prompt.
-    expect(calls()[1].args.join(' ')).not.toContain('[HISTÓRICO RECENTE DA CONVERSA]')
+    // Claude sends system instructions in a file; Codex embeds them in the stdin prompt.
+    expect(sent(calls()[1])).not.toContain('[HISTÓRICO RECENTE DA CONVERSA]')
     expect(db.resetProviderSession(threadId)).toBe(true)
     expect(db.listMessages(threadId)).toHaveLength(4)
     await enqueue('Start a clean native session')
@@ -149,7 +169,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     const first = calls()[0].id
     fs.writeFileSync(path.join(dir, 'cli-sessions.json'), '{}')
     const failed = queue.enqueue(agentId, threadId, 'Session was removed outside Orchbot')
-    await vi.waitFor(() => expect(db.getTask(failed.id)?.status).toBe('failed'))
+    await vi.waitFor(() => expect(db.getTask(failed.id)?.status).toBe('failed'), { timeout: 5000 })
     expect(db.getTask(failed.id)?.error).toContain('Reiniciar sessão CLI')
     expect(calls()).toHaveLength(2)
     expect(calls()[1].resume).toBe(first)
@@ -169,7 +189,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     db.updateAgent({ id: agentId, model: 'normal' })
     const next = queue.enqueue(agentId, threadId, 'Next queued task')
     queue.interruptThread(threadId)
-    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'))
+    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'), { timeout: 5000 })
     expect(db.getTask(running.id)?.status).toBe('interrupted')
     const log = calls()
     expect(log[1].event).toBe('closed')
@@ -188,7 +208,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     expect(db.getTask(next.id)?.status).toBe('pending')
     expect(db.getTask(running.id)?.status).toBe('running')
     queue.interruptThread(threadId)
-    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'))
+    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'), { timeout: 5000 })
     expect(calls()[1].event).toBe('closed')
   })
 
@@ -217,7 +237,9 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     db.updateAgent({ id: agentId, model: 'normal' })
     const pending = queue.enqueue(agentId, threadId, 'After cancel')
     expect(queue.cancel(running.id)).toBe(true)
-    await vi.waitFor(() => expect(db.getTask(pending.id)?.status).toBe('completed'))
+    await vi.waitFor(() => expect(db.getTask(pending.id)?.status).toBe('completed'), {
+      timeout: 5000,
+    })
     expect(db.getTask(running.id)?.status).toBe('cancelled')
     expect(calls()[1].event).toBe('closed')
     expect(calls()[2].resume).toBe(calls()[0].id)

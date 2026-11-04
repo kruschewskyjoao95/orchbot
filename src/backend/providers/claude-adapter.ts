@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import { tmpdir } from 'node:os'
+import path from 'node:path'
 import type { ProviderInfo, SupportedProvider } from '../../shared/types'
 import { claudeMcp } from '../mcp/mcp-launch'
 import { getCatalogEntry } from './catalog'
@@ -72,10 +74,52 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (options.resumeSessionId) args.push('--resume', options.resumeSessionId)
     if (options.model) args.push('--model', options.model)
     if (options.providerConfig?.effort) args.push('--effort', options.providerConfig.effort)
-    if (options.instructions) args.push('--append-system-prompt', options.instructions)
+    // Instruções em arquivo e prompt por stdin: o argv tem limite de 128 KB por argumento (E2BIG).
+    let instructionsDir: string | undefined
+    if (options.instructions) {
+      try {
+        instructionsDir = fs.mkdtempSync(path.join(tmpdir(), 'orchbot-claude-'))
+        const file = path.join(instructionsDir, 'instructions.md')
+        fs.writeFileSync(file, options.instructions, { mode: 0o600 })
+        args.push('--append-system-prompt-file', file)
+      } catch {
+        instructionsDir = undefined
+        args.push('--append-system-prompt', options.instructions)
+      }
+    }
+    const cleanup = () => {
+      if (instructionsDir) fs.rmSync(instructionsDir, { recursive: true, force: true })
+    }
+    const done: ExecutionCallbacks = {
+      ...callbacks,
+      onDone: (text) => {
+        cleanup()
+        callbacks.onDone(text)
+      },
+      onError: (error) => {
+        cleanup()
+        callbacks.onError(error)
+      },
+      onInterrupted: () => {
+        cleanup()
+        callbacks.onInterrupted?.()
+      },
+    }
+    for (const dir of options.extraDirs ?? []) args.push('--add-dir', dir)
     const servers = options.providerConfig?.mcpServers
     if (servers?.length) args.push(...claudeMcp(servers).args)
-    args.push('--', prompt)
-    return runSessionCli('claude', args, options, callbacks)
+    if (options.permission) {
+      // O CLI pergunta ao host por stdin/stdout; manual ignora o modo padrão da conta (ex.: auto).
+      args.push(
+        '--input-format',
+        'stream-json',
+        '--permission-prompt-tool',
+        'stdio',
+        '--permission-mode',
+        'manual',
+      )
+      return runSessionCli('claude', args, options, done, prompt)
+    }
+    return runSessionCli('claude', args, options, done, undefined, prompt)
   }
 }

@@ -1,14 +1,18 @@
 import { tmpdir } from 'node:os'
 import { contextWindowFor, estimateTokens } from '../../shared/tokens'
 import type { Agent, Message } from '../../shared/types'
+import { isForeman } from '../orchestration/foreman'
 import type { ProviderAdapter, ProviderRuntimeConfig, TurnUsage } from '../providers/types'
+import { slugify } from '../skills/skill-service'
 import type { OrchbotDatabase } from '../storage/db'
+import { curatorPrompt, isProcedure, parseCuratorPlan } from './curator'
 import { type MemoryDirective, buildMemoryInstructions } from './memory-protocol'
 
 /** Compacta ao passar desta fração da janela do modelo. */
 export const COMPACT_AT = 0.7
 const KEEP_RECENT = 6
-const REVIEW_EVERY_TURNS = 8
+/** Mensagens que o curador lê: a última troca e um pouco de contexto. */
+const REVIEW_WINDOW = 4
 const MAX_MEMORIES_IN_PROMPT = 30
 const short = (id: string) => id.slice(0, 8)
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
@@ -19,7 +23,9 @@ type Ctx = { agent: Agent; adapter: ProviderAdapter; config: ProviderRuntimeConf
 interface ReviewResult {
   status: 'ok' | 'failed'
   added: number
+  updated: number
   removed: number
+  skill?: string
   tokens?: number
 }
 
@@ -27,23 +33,31 @@ function describeReview(r: ReviewResult): string {
   const cost = r.tokens ? ` (${r.tokens} tokens)` : ''
   if (r.status === 'failed')
     return `🧠 A revisão de memórias não concluiu: o modelo não respondeu ou devolveu algo inválido${cost}.`
-  if (r.added === 0 && r.removed === 0) return `🧠 Memórias revisadas: nada novo${cost}.`
-  return `🧠 Memórias revisadas: +${r.added} nova(s), −${r.removed} removida(s)${cost}.`
+  if (r.added === 0 && r.updated === 0 && r.removed === 0 && !r.skill)
+    return `🧠 Memórias revisadas: nada novo${cost}.`
+  const parts = [`+${r.added} nova(s)`, `−${r.removed} removida(s)`]
+  if (r.updated > 0) parts.splice(1, 0, `${r.updated} atualizada(s)`)
+  const skill = r.skill ? ` Proposta de skill: ${r.skill}.` : ''
+  return `🧠 Memórias revisadas: ${parts.join(', ')}${cost}.${skill}`
 }
 
 export class MemoryService {
-  private turns = new Map<string, number>()
   private reviewing = new Set<string>()
 
   constructor(private db: OrchbotDatabase) {}
 
   /** Instruções + memórias guardadas do agente, para o prompt de cada turno. */
   public contextSections(agentId: string): string[] {
+    if (isForeman(this.db.getAgent(agentId))) {
+      return [
+        '[MEMÓRIA] Você não guarda preferência pessoal. Fato da empresa vai para o cérebro do projeto, com [[BRAIN:write]].',
+      ]
+    }
     const memories = this.db.listMemories(agentId, MAX_MEMORIES_IN_PROMPT)
     const sections = [buildMemoryInstructions()]
     if (memories.length > 0)
       sections.push(
-        `[MEMÓRIAS DO AGENTE]\n${memories.map((m) => `- (${short(m.id)}) ${clip(oneLine(m.text), 400)}`).join('\n')}`,
+        `[MEMÓRIAS DO AGENTE]\n${memories.map((m) => `- (${short(m.id)}) [${m.kind === 'task' ? 'tarefa' : 'preferência'}] ${clip(oneLine(m.text), 400)}`).join('\n')}`,
       )
     return sections
   }
@@ -54,8 +68,18 @@ export class MemoryService {
     for (const d of directives) {
       const label = `${d.kind.toLowerCase()}:${d.action}`
       if (d.kind === 'MEMORY' && d.action === 'remember') {
-        this.db.addMemory(agentId, d.body)
-        out.push(`[${label}] memorizado.`)
+        if (isForeman(this.db.getAgent(agentId))) {
+          out.push(
+            `[${label}] recusado: o coordenador não guarda preferência pessoal. Fato da empresa vai para [[BRAIN:write]].`,
+          )
+        } else if (isProcedure(d.body)) {
+          out.push(
+            `[${label}] não memorizado: procedimento vai para [[SKILL:create]], como proposta.`,
+          )
+        } else {
+          this.db.addMemory(agentId, d.body)
+          out.push(`[${label}] memorizado.`)
+        }
       } else if (d.kind === 'MEMORY' && d.action === 'forget') {
         out.push(
           `[${label}] ${this.db.deleteMemory(agentId, d.body) ? 'esquecido.' : 'id não encontrado ou ambíguo.'}`,
@@ -192,23 +216,26 @@ export class MemoryService {
   }
 
   /**
-   * A cada N turnos, pede ao próprio modelo para atualizar as memórias (não bloqueia a fila).
-   * `onResult` recebe uma linha para a conversa: a revisão gasta uma chamada ao modelo e precisa aparecer.
+   * Curador depois do turno: pede ao modelo, num passo próprio, o que muda na memória (não bloqueia a fila).
+   * Se uma revisão do mesmo robô ainda roda, esta é pulada; a próxima lê a mesma janela de mensagens.
+   * `onResult` recebe uma linha para a conversa quando algo mudou ou falhou: a revisão gasta uma chamada.
    */
   public maybeReview(ctx: Ctx, threadId: string, onResult?: (notice: string) => void): void {
+    if (isForeman(ctx.agent)) return
     const id = ctx.agent.id
-    const n = (this.turns.get(id) ?? 0) + 1
-    this.turns.set(id, n)
-    if (n % REVIEW_EVERY_TURNS !== 0 || this.reviewing.has(id)) return
+    if (this.reviewing.has(id)) return
     this.reviewing.add(id)
     void this.review(ctx, threadId)
-      .then((r) => r && onResult?.(describeReview(r)))
+      .then((r) => {
+        const quiet = r?.status === 'ok' && !r.added && !r.updated && !r.removed && !r.skill
+        if (r && !quiet) onResult?.(describeReview(r))
+      })
       .finally(() => this.reviewing.delete(id))
   }
 
   private async review(ctx: Ctx, threadId: string): Promise<ReviewResult | null> {
     if (!this.db.isOpen()) return null
-    const recent = this.activeMessages(threadId, '9999').slice(-12)
+    const recent = this.activeMessages(threadId, '9999').slice(-REVIEW_WINDOW)
     if (recent.length === 0) return null
     const existing = this.db.listMemories(ctx.agent.id, MAX_MEMORIES_IN_PROMPT)
     let tokens: number | undefined
@@ -216,35 +243,46 @@ export class MemoryService {
       ctx.adapter,
       ctx.config,
       ctx.agent.model,
-      [
-        'Você revisa a memória de longo prazo de um agente. Dadas as memórias atuais e a conversa recente, devolva SOMENTE JSON:',
-        '{"add":["fato durável"],"forget":["id de memória obsoleta ou duplicada"]}',
-        'Só fatos úteis no futuro (preferências, decisões, convenções). Nada de senhas, chaves ou segredos. Máx. 5 itens em add. Listas vazias se nada mudou.',
-        `\nMemórias atuais:\n${existing.map((m) => `(${short(m.id)}) ${clip(oneLine(m.text), 300)}`).join('\n') || '(nenhuma)'}`,
-        `\nConversa recente:\n${recent.map((m) => `[${m.role}] ${clip(oneLine(m.text), 600)}`).join('\n')}`,
-      ].join('\n'),
+      curatorPrompt(
+        existing
+          .map(
+            (m) =>
+              `(${short(m.id)}) [${m.kind === 'task' ? 'tarefa' : 'preferência'}] ${clip(oneLine(m.text), 300)}`,
+          )
+          .join('\n'),
+        recent.map((m) => `[${m.role}] ${clip(oneLine(m.text), 600)}`).join('\n'),
+      ),
       90_000,
       (u) => {
         tokens = u.inputTokens + u.outputTokens
       },
     )
-    const json = raw?.match(/\{[\s\S]*\}/)?.[0]
-    if (!json || !this.db.isOpen()) return { status: 'failed', added: 0, removed: 0, tokens }
-    try {
-      const plan = JSON.parse(json) as { add?: unknown; forget?: unknown }
-      const strings = (v: unknown) =>
-        Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-      const before = this.db.listMemories(ctx.agent.id, 10_000).length
-      for (const text of strings(plan.add).slice(0, 5))
-        if (text.trim()) this.db.addMemory(ctx.agent.id, text)
-      const added = this.db.listMemories(ctx.agent.id, 10_000).length - before
-      let removed = 0
-      for (const id of strings(plan.forget).slice(0, 5))
-        if (this.db.deleteMemory(ctx.agent.id, id)) removed++
-      return { status: 'ok', added, removed, tokens }
-    } catch {
-      return { status: 'failed', added: 0, removed: 0, tokens }
+    if (!raw || !this.db.isOpen())
+      return { status: 'failed', added: 0, updated: 0, removed: 0, tokens }
+    const plan = parseCuratorPlan(raw)
+    if (!plan) return { status: 'failed', added: 0, updated: 0, removed: 0, tokens }
+    const before = this.db.listMemories(ctx.agent.id, 10_000).length
+    if (plan.fact) this.db.addMemory(ctx.agent.id, plan.fact.text, plan.fact.kind)
+    const added = this.db.listMemories(ctx.agent.id, 10_000).length - before
+    const updated =
+      plan.update && this.db.updateMemory(ctx.agent.id, plan.update.id, plan.update.text) ? 1 : 0
+    let removed = 0
+    for (const id of plan.forget) if (this.db.deleteMemory(ctx.agent.id, id)) removed++
+    let skill: string | undefined
+    if (plan.skill) {
+      try {
+        skill = this.db.createSkillProposal({
+          agentId: ctx.agent.id,
+          slug: slugify(plan.skill.slug),
+          name: plan.skill.slug,
+          description: plan.skill.description,
+          body: plan.skill.body,
+        }).slug
+      } catch {
+        skill = undefined
+      }
     }
+    return { status: 'ok', added, updated, removed, skill, tokens }
   }
 
   private oneShot({ agent, adapter, config }: Ctx, prompt: string, timeoutMs = 90_000) {

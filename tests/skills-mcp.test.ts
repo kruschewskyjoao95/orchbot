@@ -78,14 +78,27 @@ describe('skills locais', () => {
 
   it('agente cria, carrega, revisa e instala só o que é dele', () => {
     const run = (text: string) => svc.run(agent, parseSkillDirectives(text))
-    expect(
-      run('[[SKILL:create]] Deploy Seguro :: Como publicar\n1. rode os testes [[/SKILL]]')[0],
-    ).toContain('criada e ativada')
+    const created = run(
+      '[[SKILL:create]] Deploy Seguro :: Como publicar\n1. rode os testes [[/SKILL]]',
+    )[0]
+    expect(created).toContain('proposta')
+    expect(created).toContain('aceitar')
+    expect(db.listAgentSkills(agent.id)).toEqual([])
+    expect(svc.list()).toEqual([])
+    const [proposal] = db.listSkillProposals()
+    expect(proposal.slug).toBe('deploy-seguro')
+    svc.decideProposal(proposal.id, true)
     expect(db.listAgentSkills(agent.id)).toEqual(['deploy-seguro'])
+    expect(() => svc.decideProposal(proposal.id, false)).toThrow('já foi respondida')
     expect(run('[[SKILL:load]] deploy-seguro [[/SKILL]]')[0]).toContain('1. rode os testes')
     expect(
       run('[[SKILL:revise]] deploy-seguro :: Publicar\n1. testes\n2. tag [[/SKILL]]')[0],
-    ).toContain('v2')
+    ).toContain('revisão')
+    expect(svc.get('deploy-seguro').version).toBe(1)
+    expect(run('[[SKILL:create]] deploy-seguro :: x\ny [[/SKILL]]')[0]).toContain('já existe')
+    const [revision] = db.listSkillProposals()
+    svc.decideProposal(revision.id, true)
+    expect(svc.get('deploy-seguro').version).toBe(2)
     svc.create({ name: 'Alheia', description: 'd', body: 'b' })
     expect(run('[[SKILL:load]] alheia [[/SKILL]]')[0]).toContain('não está ativa')
     expect(run('[[SKILL:revise]] alheia :: x\ny [[/SKILL]]')[0]).toContain('não está ativa')
@@ -94,7 +107,11 @@ describe('skills locais', () => {
     const local = path.join(tmp, 'ws', 'pasta')
     fs.mkdirSync(local)
     fs.writeFileSync(path.join(local, 'SKILL.md'), '---\nname: local\ndescription: d\n---\ncorpo')
-    expect(run('[[SKILL:install]] pasta [[/SKILL]]')[0]).toContain('instalada')
+    expect(run('[[SKILL:install]] pasta [[/SKILL]]')[0]).toContain('proposta')
+    expect(svc.list().some((x) => x.slug === 'local')).toBe(false)
+    const [install] = db.listSkillProposals()
+    svc.decideProposal(install.id, true)
+    expect(db.listAgentSkills(agent.id)).toContain('local')
     expect(parseSkillFile('sem cabeçalho').body).toBe('sem cabeçalho')
   })
 })

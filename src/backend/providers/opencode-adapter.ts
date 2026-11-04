@@ -51,7 +51,13 @@ export class OpenCodeAdapter implements ProviderAdapter {
         buildArgs: (p, opts) => {
           // CLI real: opencode run -m <provider/model> --format json <mensagem>
           const args = ['run', '--format', 'json']
-          if (opts.model) args.push('-m', opts.model)
+          const effort = opts.providerConfig?.effort
+          // opencode recebe o esforço como variante do modelo: provider/model#variant
+          if (opts.model)
+            args.push(
+              '-m',
+              effort && !opts.model.includes('#') ? `${opts.model}#${effort}` : opts.model,
+            )
           args.push(withInstructions(p, opts.instructions))
           return args
         },

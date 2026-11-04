@@ -82,6 +82,9 @@ describe('Modo de Autonomia & Failover Automático de Cota', () => {
     )
     expect(isQuotaOrRateLimitError('resource_exhausted: Tokens per min exceeded')).toBe(true)
     expect(isQuotaOrRateLimitError('500 Internal Server Error')).toBe(false)
+    expect(isQuotaOrRateLimitError('Overloaded, try again')).toBe(false)
+    expect(isQuotaOrRateLimitError('Capacity exceeded')).toBe(false)
+    expect(isQuotaOrRateLimitError('request id 14290 failed')).toBe(false)
     expect(isQuotaOrRateLimitError('SyntaxError: Unexpected token in JSON')).toBe(false)
     expect(isQuotaOrRateLimitError('')).toBe(false)
   })
@@ -206,7 +209,7 @@ describe('Modo de Autonomia & Failover Automático de Cota', () => {
 
     expect(capturedInstructions).toContain('NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO')
     expect(capturedInstructions).toContain(
-      'Peça confirmação expressa ao usuário antes de qualquer clique no navegador',
+      'o Orchbot abre um card e só executa depois que a pessoa aprovar',
     )
   })
 })

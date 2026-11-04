@@ -37,6 +37,7 @@ export class KimiAdapter implements ProviderAdapter {
             'stream-json',
           ]
           if (opts.model) args.push('-m', opts.model)
+          for (const dir of opts.extraDirs ?? []) args.push('--add-dir', dir)
           return args
         },
       },

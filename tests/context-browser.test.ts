@@ -44,6 +44,7 @@ describe('Economia de tokens — contexto da conversa', () => {
     const rules = 'x'.repeat(5000)
     expect(capRulesContent(rules, 'economico').length).toBeLessThan(1400)
     expect(capRulesContent(rules, 'completo')).toBe(rules)
+    expect(capRulesContent('x'.repeat(150_000), 'completo').length).toBeLessThan(61_000)
   })
 
   it('persiste modo de contexto e acesso ao navegador do robô', () => {

@@ -32,6 +32,9 @@ export class CopilotAdapter implements ProviderAdapter {
           // CLI real: copilot -p <prompt> --model <id> --allow-all-tools (headless)
           const args = ['-p', withInstructions(p, opts.instructions), '--allow-all-tools']
           if (opts.model && opts.model !== 'auto') args.push('--model', opts.model)
+          for (const dir of opts.extraDirs ?? []) args.push('--add-dir', dir)
+          if (opts.providerConfig?.effort)
+            args.push('--reasoning-effort', opts.providerConfig.effort)
           return args
         },
       },

@@ -5,6 +5,7 @@ import type {
   McpServerInfo,
   SkillCatalogEntry,
   SkillInfo,
+  SkillProposal,
 } from '../../shared/types'
 
 const clean = (e: unknown) =>
@@ -26,6 +27,7 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   const [info, setInfo] = createSignal('')
 
   const [skills, setSkills] = createSignal<SkillInfo[]>([])
+  const [proposals, setProposals] = createSignal<SkillProposal[]>([])
   const [catalog, setCatalog] = createSignal<SkillCatalogEntry[]>([])
   const [active, setActive] = createSignal<string[]>([])
   const [editing, setEditing] = createSignal<{
@@ -67,6 +69,7 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   }
   const loadAll = async () => {
     setSkills(await window.orchbot.listSkills())
+    setProposals(await window.orchbot.listSkillProposals())
     setCatalog(await window.orchbot.getSkillCatalog())
     setServers(await window.orchbot.listMcpServers())
   }
@@ -224,6 +227,46 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
 
       <div class="skills-body">
         <Show when={tab() === 'skills'}>
+          <Show when={proposals().length > 0}>
+            <p class="skills-note">
+              Propostas de procedimento. A skill só entra na biblioteca quando você aceita.
+            </p>
+            <For each={proposals()}>
+              {(proposal) => (
+                <div class="skill-row">
+                  <div class="skill-main">
+                    <strong>{proposal.name}</strong> <code>{proposal.slug}</code>
+                    <p>{proposal.description}</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn-primary"
+                    onClick={() =>
+                      guard(async () => {
+                        await window.orchbot.decideSkillProposal(proposal.id, true)
+                        await loadAll()
+                        await loadAgentState()
+                      }, 'Skill aceita.')
+                    }
+                  >
+                    Aceitar
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    onClick={() =>
+                      guard(async () => {
+                        await window.orchbot.decideSkillProposal(proposal.id, false)
+                        await loadAll()
+                      })
+                    }
+                  >
+                    Recusar
+                  </button>
+                </div>
+              )}
+            </For>
+          </Show>
           <div class="skills-actions">
             <button
               type="button"
@@ -249,7 +292,7 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
             when={skills().length > 0}
             fallback={
               <p class="channels-empty">
-                Nenhuma skill ainda. Crie uma, instale do catálogo ou deixe um agente criar com
+                Nenhuma skill ainda. Crie uma, instale do catálogo ou aceite uma proposta de
                 [[SKILL:create]].
               </p>
             }

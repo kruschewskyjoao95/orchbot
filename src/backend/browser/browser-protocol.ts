@@ -10,6 +10,13 @@ export interface BrowserDirective {
 
 export const MAX_BROWSER_ROUNDS = 2
 
+/** Clique, preenchimento e fechar aba mudam a página. Abrir, inspecionar e screenshot são leitura. */
+const MUTATING_BROWSER = new Set<BrowserDirectiveAction>(['click', 'fill', 'close'])
+
+export function browserBatchNeedsApproval(directives: BrowserDirective[]): boolean {
+  return directives.some((directive) => MUTATING_BROWSER.has(directive.action))
+}
+
 const BLOCK_RE = /\[\[BROWSER:([a-z]+)\]\]([\s\S]*?)\[\[\/BROWSER\]\]/gi
 const KNOWN: BrowserDirectiveAction[] = ['open', 'inspect', 'click', 'fill', 'screenshot', 'close']
 

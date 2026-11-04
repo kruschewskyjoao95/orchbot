@@ -420,7 +420,13 @@ describe('pendências menores', () => {
         cb: { onUsage?: (u: unknown) => void; onDone: (t: string) => void },
       ) => {
         cb.onUsage?.({ inputTokens: 900, outputTokens: 60 })
-        setTimeout(() => cb.onDone('{"add":["Usuário prefere respostas curtas"],"forget":[]}'), 5)
+        setTimeout(
+          () =>
+            cb.onDone(
+              '{"fact":{"text":"Usuário prefere respostas curtas","kind":"preference"},"forget":[]}',
+            ),
+          5,
+        )
         return { interrupt() {} }
       },
     }
