@@ -74,7 +74,10 @@ export function runStreamingCli(
   })
 
   child.on('close', (code) => {
-    if (isInterrupted) return
+    if (isInterrupted) {
+      callbacks.onInterrupted?.()
+      return
+    }
     if (buffer.trim() && spec.mode === 'lines-json') {
       const chunk = parseStreamJsonLine(buffer, state)
       if (chunk) callbacks.onChunk(chunk, state.fullText)

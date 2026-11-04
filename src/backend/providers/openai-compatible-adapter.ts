@@ -228,6 +228,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         if (!cancel.signal.aborted) callbacks.onDone(fullText)
       } catch (error) {
         if (!cancel.signal.aborted) callbacks.onError(apiError(error, config))
+      } finally {
+        if (cancel.signal.aborted) callbacks.onInterrupted?.()
       }
     })
     return { interrupt: () => cancel.abort() }

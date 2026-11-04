@@ -343,6 +343,7 @@ export class AcpAdapter implements ProviderAdapter {
       } finally {
         permissions.abort()
         agent?.close()
+        if (interrupted) callbacks.onInterrupted?.()
       }
     })
     return {
