@@ -5,6 +5,54 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
+/** stderr do processo. Um clique que falha não pode virar "tentado". */
+function commandFailure(err: unknown): string {
+  const stderr =
+    err && typeof err === 'object' && 'stderr' in err
+      ? String((err as { stderr?: unknown }).stderr ?? '').trim()
+      : ''
+  const message = err instanceof Error ? err.message : String(err)
+  return stderr || message
+}
+
+const SHELL_META = /[;|&`]/
+const SHELLS = new Set([
+  'sh',
+  'bash',
+  'dash',
+  'zsh',
+  'fish',
+  'ksh',
+  'csh',
+  'tcsh',
+  'rbash',
+  'busybox',
+])
+
+/** Separa nome e argumentos. Não interpreta a linha: metacaractere e shell são recusados. */
+export function openArgv(command: string): { file: string; args: string[] } {
+  const text = command.trim()
+  if (!text) throw new Error('Informe o aplicativo para abrir.')
+  if (SHELL_META.test(text)) {
+    throw new Error('Não abro isso: o texto tem metacaractere de shell (;, |, & ou crase).')
+  }
+  const parts = text.split(/\s+/)
+  const file = parts[0] ?? ''
+  const names = parts.map((part) => part.split(/[/\\]/).pop() ?? part)
+  if (names.some((name) => SHELLS.has(name))) {
+    throw new Error('Não abro um shell. Informe o nome do aplicativo.')
+  }
+  return { file, args: parts.slice(1) }
+}
+
+async function runTool(cmd: string, args: string[]): Promise<void> {
+  try {
+    await execFileAsync(cmd, args, { timeout: 8000 })
+  } catch (err: unknown) {
+    throw new Error(commandFailure(err))
+  }
+}
+
 export interface ComputerUseStatus {
   ready: boolean
   partial: boolean
@@ -126,35 +174,40 @@ export async function executeComputerAction(
     case 'apps':
       return listApps(status)
     case 'open': {
-      const app = String(args.app ?? args.target ?? '').trim()
-      if (!app) throw new Error('Informe o aplicativo/comando para abrir.')
-      const child = spawn(app, [], { shell: true, detached: true, stdio: 'ignore' })
+      const opened = openArgv(String(args.app ?? args.target ?? ''))
+      const child = spawn(opened.file, opened.args, {
+        shell: false,
+        detached: true,
+        stdio: 'ignore',
+      })
+      // Sem ouvir 'error', um app inexistente (ENOENT) derruba o processo principal.
+      await new Promise<void>((resolve, reject) => {
+        child.once('spawn', resolve)
+        child.once('error', (err) => reject(new Error(`Não abri ${opened.file}: ${err.message}`)))
+      })
       child.unref()
       return {
         action,
-        summary: `Aplicativo iniciado: ${app}. Aguarde e tire um screenshot para confirmar.`,
+        summary: `Aplicativo iniciado: ${opened.file}. Aguarde e tire um screenshot para confirmar.`,
       }
     }
     case 'click': {
       const x = Number(args.x)
       const y = Number(args.y)
       if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Coordenadas x/y inválidas.')
-      if (status.windowTool === 'hyprctl') {
-        await execFileAsync('hyprctl', ['dispatch', 'movecursor', String(x), String(y)], {
-          timeout: 8000,
-        })
-        await execFileAsync('hyprctl', ['dispatch', 'mouse', '272'], { timeout: 8000 }).catch(
-          () => {},
-        )
-        return { action, summary: `Clique tentado em ${x},${y} (Hyprland).` }
-      }
-      if (status.inputTool === 'xdotool') {
-        await execFileAsync('xdotool', ['mousemove', String(x), String(y), 'click', '1'], {
-          timeout: 8000,
-        })
+      // hyprctl dispatch mouse não é um dispatcher: move o cursor e o botão não desce.
+      const xs = String(x)
+      const ys = String(y)
+      if (await which('ydotool')) {
+        await runTool('ydotool', ['mousemove', '--absolute', '-x', xs, '-y', ys])
+        await runTool('ydotool', ['click', '0xC0'])
         return { action, summary: `Clique em ${x},${y}.` }
       }
-      throw new Error('Clique indisponível nesta sessão (sem hyprctl/xdotool).')
+      if (await which('xdotool')) {
+        await runTool('xdotool', ['mousemove', xs, ys, 'click', '1'])
+        return { action, summary: `Clique em ${x},${y}.` }
+      }
+      throw new Error('Clique indisponível nesta sessão (sem ydotool ou xdotool).')
     }
     case 'type': {
       const text = String(args.text ?? args.value ?? '')

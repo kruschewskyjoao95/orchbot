@@ -448,8 +448,12 @@ export interface TaskQueueItem {
   id: string
   agentId: string
   threadId: string
-  /** Quantas rodadas de navegador esta cadeia de tarefas já usou (limite anti-loop). */
+  /** Rodadas de navegador nesta cadeia. Memória e computador não entram aqui. */
   browserRounds?: number
+  /** Rodadas de computador nesta cadeia. */
+  computerRounds?: number
+  /** Rodadas de memória, skills, cérebro e agentes nesta cadeia. */
+  memoryRounds?: number
   /** Conversa do orquestrador que originou esta tarefa delegada (retorno do resultado). */
   originThreadId?: string
   originAgentId?: string

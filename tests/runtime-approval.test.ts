@@ -13,7 +13,7 @@ import type { AutonomyLevel } from '../src/shared/types'
 import { testSecretStorage } from './secret-storage-fixture'
 
 describe('o que precisa de aprovação', () => {
-  it('segura o lote inteiro quando há clique, preenchimento, fechar, shell, digitar ou tecla', () => {
+  it('segura o lote inteiro quando há clique, preenchimento, fechar, abrir app, digitar ou tecla', () => {
     expect(browserBatchNeedsApproval([{ action: 'open', target: 'https://x' }])).toBe(false)
     expect(browserBatchNeedsApproval([{ action: 'inspect' }])).toBe(false)
     expect(browserBatchNeedsApproval([{ action: 'screenshot' }])).toBe(false)
@@ -37,7 +37,7 @@ describe('o que precisa de aprovação', () => {
         kind: 'computer',
         directives: [{ action: 'open', target: 'firefox' }],
       }),
-    ).toContain('shell')
+    ).toContain('Abrir o aplicativo: firefox')
   })
 })
 
@@ -106,7 +106,7 @@ describe('aprovação no runtime, modo cauteloso', () => {
     expect(calls).toEqual([])
     const [approval] = db.listPendingApprovals()
     expect(approval.text).toContain('Clicar em 10, 20')
-    expect(approval.text).toContain('Abrir o app pelo shell: firefox')
+    expect(approval.text).toContain('Abrir o aplicativo: firefox')
     expect(approval.text).toContain('Listar janelas')
     expect(approval.payloadJson).toContain('"kind":"computer"')
     const visible = db.listMessages(thread).find((m) => m.role === 'assistant')

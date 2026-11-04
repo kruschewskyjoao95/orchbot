@@ -60,7 +60,7 @@ function describeBrowser(directive: BrowserDirective): string {
 function describeComputer(directive: ComputerDirective): string {
   switch (directive.action) {
     case 'open':
-      return `Abrir o app pelo shell: ${directive.target ?? ''}`
+      return `Abrir o aplicativo: ${directive.target ?? ''}`
     case 'click':
       return `Clicar em ${directive.x}, ${directive.y}`
     case 'type':

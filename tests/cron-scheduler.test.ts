@@ -109,6 +109,36 @@ describe('Agendamento & Tarefas em Background (Cron)', () => {
       expect(matchesDate('*/15 * * * *', date17min)).toBe(false)
     })
 
+    it('trata 7 como domingo no intervalo e combina dia do mês ou dia da semana', () => {
+      const at = (day: number, month = 10) => new Date(2026, month, day, 9, 0, 0)
+      const sunday = at(8)
+      const friday = at(6)
+      const saturday = at(7)
+      const thursday = at(5)
+
+      expect(matchesDate('0 9 * * 5-7', friday)).toBe(true)
+      expect(matchesDate('0 9 * * 5-7', saturday)).toBe(true)
+      expect(matchesDate('0 9 * * 5-7', sunday)).toBe(true)
+      expect(matchesDate('0 9 * * 5-7', thursday)).toBe(false)
+      expect(matchesDate('0 9 * * 7', sunday)).toBe(true)
+      expect(matchesDate('0 9 * * 1-5', sunday)).toBe(false)
+
+      // 1º de novembro de 2026 é domingo; dia 2 é segunda; 1º de dezembro é terça.
+      expect(matchesDate('0 9 1 * 1', at(1))).toBe(true)
+      expect(matchesDate('0 9 1 * 1', at(2))).toBe(true)
+      expect(matchesDate('0 9 1 * 1', at(4))).toBe(false)
+      expect(matchesDate('0 9 1 * 1', at(1, 11))).toBe(true)
+      // */2 conta como livre: dia ímpar E segunda (9 é segunda ímpar; 2 é segunda par; 3 é terça ímpar).
+      expect(matchesDate('0 9 */2 * 1', at(9))).toBe(true)
+      expect(matchesDate('0 9 */2 * 1', at(2))).toBe(false)
+      expect(matchesDate('0 9 */2 * 1', at(3))).toBe(false)
+      expect(matchesDate('0 9 1 * *', at(2))).toBe(false)
+      expect(matchesDate('0 9 * * 1', at(1, 11))).toBe(false)
+
+      const next = calculateNextRun('0 9 * * 5-7', new Date(2026, 10, 7, 10, 0, 0))
+      expect(next).toEqual(new Date(2026, 10, 8, 9, 0, 0))
+    })
+
     it('calcula o próximo horário de execução no futuro', () => {
       const base = new Date(2026, 10, 2, 8, 30, 0) // 08:30
       const nextRun = calculateNextRun('0 9 * * *', base)

@@ -1,8 +1,15 @@
 import type { BrowserPageContent, BrowserPageInput, BrowserPageLink } from '../../shared/types'
 
-const SECRET_PATTERNS = [
-  /((?:api[_-]?key|access[_-]?token|secret|password|bearer|auth[_-]?token)[\s=:'"]+)([A-Za-z0-9_\-\.]{8,})/gi,
-  /([A-Za-z0-9_\-\.]{24,})/g, // long token-like strings
+// Formato conhecido (rótulo, GitHub, AWS, JWT, Bearer). Sem "texto longo": caminho e hash ficam.
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [
+    /((?:api[_-]?key|access[_-]?token|secret|password|bearer|authorization)[\s=:'"]+)([A-Za-z0-9_\-\.]{6,})/gi,
+    '$1[REDACTED_SECRET]',
+  ],
+  [/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b/g, '[REDACTED_SECRET]'],
+  [/\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b/g, '[REDACTED_SECRET]'],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_SECRET]'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED_SECRET]'],
 ]
 
 export function sanitizeUrl(rawUrl: string): string {
@@ -38,11 +45,9 @@ export function sanitizeUrl(rawUrl: string): string {
 
 export function redactSecrets(text: string): string {
   let result = text
-  // Redação de pares chave-valor de credenciais conhecidas
-  result = result.replace(
-    /((?:api[_-]?key|access[_-]?token|secret|password|bearer|authorization)[\s=:'"]+)([A-Za-z0-9_\-\.]{6,})/gi,
-    '$1[REDACTED_SECRET]',
-  )
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    result = result.replace(pattern, replacement)
+  }
   return result
 }
 

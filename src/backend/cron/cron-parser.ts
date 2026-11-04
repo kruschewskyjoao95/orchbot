@@ -33,6 +33,22 @@ const FIELD_LIMITS: FieldLimits[] = [
   { min: 0, max: 7 }, // day of week (0 & 7 = Sunday)
 ]
 
+/** No dia da semana, 7 é domingo. O intervalo 5-7 também inclui o dia 0. */
+function inCronRange(
+  value: number,
+  start: number,
+  end: number,
+  step: number,
+  limits: FieldLimits,
+): boolean {
+  const hit = (v: number) => v >= start && v <= end && (v - start) % step === 0
+  if (hit(value)) return true
+  if (limits.max !== 7) return false
+  if (value === 0 && hit(7)) return true
+  if (value === 7 && hit(0)) return true
+  return false
+}
+
 export function matchesCronField(value: number, fieldExpr: string, limits: FieldLimits): boolean {
   if (fieldExpr === '*') return true
 
@@ -60,13 +76,11 @@ export function matchesCronField(value: number, fieldExpr: string, limits: Field
         }
       }
 
-      if (value >= start && value <= end && (value - start) % step === 0) {
-        return true
-      }
+      if (inCronRange(value, start, end, step, limits)) return true
     } else if (part.includes('-')) {
       // Range check, e.g. 1-5
       const [s, e] = part.split('-').map((n) => Number.parseInt(n, 10))
-      if (!Number.isNaN(s) && !Number.isNaN(e) && value >= s && value <= e) {
+      if (!Number.isNaN(s) && !Number.isNaN(e) && inCronRange(value, s, e, 1, limits)) {
         return true
       }
     } else {
@@ -117,11 +131,13 @@ export function matchesDate(cronExpr: string, date: Date): boolean {
 
   if (!matchesCronField(minute, fields[0], FIELD_LIMITS[0])) return false
   if (!matchesCronField(hour, fields[1], FIELD_LIMITS[1])) return false
-  if (!matchesCronField(dayOfMonth, fields[2], FIELD_LIMITS[2])) return false
   if (!matchesCronField(month, fields[3], FIELD_LIMITS[3])) return false
-  if (!matchesCronField(dayOfWeek, fields[4], FIELD_LIMITS[4])) return false
 
-  return true
+  const domOk = matchesCronField(dayOfMonth, fields[2], FIELD_LIMITS[2])
+  const dowOk = matchesCronField(dayOfWeek, fields[4], FIELD_LIMITS[4])
+  // Os dois restritos: um ou o outro. Campo que começa com * (inclusive */2) conta como livre, como no cron.
+  if (!fields[2].startsWith('*') && !fields[4].startsWith('*')) return domOk || dowOk
+  return domOk && dowOk
 }
 
 export function calculateNextRun(rawExpression: string, fromDate = new Date()): Date {

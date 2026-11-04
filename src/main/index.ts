@@ -13,7 +13,7 @@ import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { buildDiagnostics } from '../backend/diagnostics/diagnostics'
 import { MCP_PRESETS } from '../backend/mcp/presets'
-import { ensureForeman } from '../backend/orchestration/foreman'
+import { ensureForeman, isForeman } from '../backend/orchestration/foreman'
 import {
   accountStatus,
   profileLoginHint,
@@ -637,6 +637,8 @@ ${out.slice(-800)}`,
 
   ipcMain.handle('orchbot:delete-agent', async (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('ID inválido')
+    if (isForeman(database.getAgent(id))) throw new Error('O coordenador não sai da equipe.')
+    queue.stopAgent(id)
     await attachments.removeAgentAttachments(id)
     await browser.removeAgent(id)
     return database.deleteAgent(id)

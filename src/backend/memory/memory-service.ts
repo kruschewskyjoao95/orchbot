@@ -20,6 +20,12 @@ const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
 
 type Ctx = { agent: Agent; adapter: ProviderAdapter; config: ProviderRuntimeConfig }
 
+/** `ready` segura a gravação até a fila terminar as outras esperas do turno (por exemplo o git). */
+interface CompactOptions {
+  signal?: AbortSignal
+  ready?: Promise<void>
+}
+
 interface ReviewResult {
   status: 'ok' | 'failed'
   added: number
@@ -179,6 +185,7 @@ export class MemoryService {
     threadId: string,
     before: string,
     sessionScope?: string,
+    options?: CompactOptions,
   ): Promise<string | undefined> {
     const active = this.activeMessages(threadId, before)
     const { tokens, window } = this.contextUsage(threadId, ctx.agent.model, before, {
@@ -202,7 +209,13 @@ export class MemoryService {
         previous ? `\nResumo anterior:\n${previous}` : '',
         `\nConversa:\n${transcript}`,
       ].join('\n'),
+      90_000,
+      options?.signal,
     )
+    // Pausar ou cancelar no meio do resumo: não grava e não apaga a sessão nativa.
+    if (options?.signal?.aborted || !this.db.isOpen()) return undefined
+    if (options?.ready) await options.ready
+    if (options?.signal?.aborted || !this.db.isOpen()) return undefined
     // Fallback 100% local: resumo extrativo, sem chamar modelo.
     const summary =
       generated?.trim() ||
@@ -285,8 +298,13 @@ export class MemoryService {
     return { status: 'ok', added, updated, removed, skill, tokens }
   }
 
-  private oneShot({ agent, adapter, config }: Ctx, prompt: string, timeoutMs = 90_000) {
-    return runOneShot(adapter, config, agent.model, prompt, timeoutMs)
+  private oneShot(
+    { agent, adapter, config }: Ctx,
+    prompt: string,
+    timeoutMs = 90_000,
+    signal?: AbortSignal,
+  ) {
+    return runOneShot(adapter, config, agent.model, prompt, timeoutMs, undefined, signal)
   }
 }
 
@@ -298,20 +316,40 @@ export function runOneShot(
   prompt: string,
   timeoutMs = 90_000,
   onUsage?: (usage: TurnUsage) => void,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   return new Promise((resolve) => {
     let done = false
+    let execution: { interrupt: () => void } | undefined
     const finish = (value: string | null) => {
       if (done) return
       done = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       resolve(value)
     }
-    let execution: { interrupt: () => void } | undefined
+    // Fecha primeiro: um interrupt() que entregue a resposta no mesmo instante não pode gravar o resumo.
+    const onAbort = () => {
+      finish(null)
+      try {
+        execution?.interrupt()
+      } catch {
+        // o processo do resumo já pode ter saído
+      }
+    }
     const timer = setTimeout(() => {
-      execution?.interrupt()
+      try {
+        execution?.interrupt()
+      } catch {
+        // o processo do resumo já pode ter saído
+      }
       finish(null)
     }, timeoutMs)
+    if (signal?.aborted) {
+      finish(null)
+      return
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
     try {
       execution = adapter.executeTurn(
         prompt,

@@ -173,4 +173,139 @@ describe('Robô abre o navegador durante o turno', () => {
     expect(calls.map((c) => c.tool)).toEqual(['orchbot_browser.open', 'orchbot_browser.inspect'])
     queue.close()
   })
+
+  it('segura o próximo pedido até o resultado da página entrar na frente', async () => {
+    const agent = db.createAgent({
+      name: 'Ads Analyst',
+      description: 'Analisa métricas de Google Ads',
+      provider: 'antigravity',
+      model: 'fake',
+      workspacePath: tmpDir,
+      contextMode: 'economico',
+      browserAccess: true,
+    })
+    const prompts: string[] = []
+    let finishFirst: (() => void) | undefined
+    const adapter: ProviderAdapter = {
+      id: 'antigravity' as SupportedProvider,
+      name: 'fake',
+      checkAvailability: async () => ({ available: true }),
+      executeTurn: (prompt, _options, callbacks) => {
+        prompts.push(prompt)
+        if (prompt.includes('[RESULTADO DO NAVEGADOR]')) {
+          setTimeout(() => callbacks.onDone('Vi 9 cliques no painel.'), 0)
+        } else if (prompts.length === 1) {
+          finishFirst = () => callbacks.onDone('Vou olhar.\n[[BROWSER:inspect]] [[/BROWSER]]')
+        } else {
+          setTimeout(() => callbacks.onDone(`Resposta de: ${prompt}`), 0)
+        }
+        return { interrupt: () => {} }
+      },
+    }
+    const registry = new ProviderRegistry()
+    registry.registerAdapter(adapter)
+    const queue = new QueueManager(db, registry, {})
+    let releaseBrowser: () => void = () => {}
+    const browserGate = new Promise<void>((resolve) => {
+      releaseBrowser = resolve
+    })
+    queue.setBrowserExecutor(async () => {
+      await browserGate
+      return {
+        title: 'Painel',
+        url: 'https://ads.example',
+        textSummary: 'cliques 9',
+        links: [],
+        inputs: [],
+      }
+    })
+
+    const thread = db.listThreads(agent.id)[0]
+    if (!thread) throw new Error('thread ausente')
+    queue.enqueue(agent.id, thread.id, 'Olhe o painel')
+    await vi.waitFor(() => expect(finishFirst).toBeTypeOf('function'))
+    queue.enqueue(agent.id, thread.id, 'Pedido que já estava na fila')
+    finishFirst?.()
+    queue.enqueue(agent.id, thread.id, 'Mensagem no meio do clique')
+
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(prompts).toEqual(['Olhe o painel'])
+
+    releaseBrowser()
+    await vi.waitFor(() => expect(prompts).toHaveLength(4), { timeout: 8000 })
+    expect(prompts[1]).toContain('[RESULTADO DO NAVEGADOR]')
+    expect(prompts[1]).toContain('cliques 9')
+    expect(prompts[2]).toBe('Pedido que já estava na fila')
+    expect(prompts[3]).toBe('Mensagem no meio do clique')
+    queue.close()
+  })
+
+  it('quatro passos no navegador rodam; o quinto volta no resultado', async () => {
+    const agent = db.createAgent({
+      name: 'Ads Analyst',
+      description: 'Analisa métricas',
+      provider: 'antigravity',
+      model: 'fake',
+      workspacePath: tmpDir,
+      browserAccess: true,
+    })
+    const prompts: string[] = []
+    const adapter: ProviderAdapter = {
+      id: 'antigravity' as SupportedProvider,
+      name: 'fake',
+      checkAvailability: async () => ({ available: true }),
+      executeTurn: (prompt, _options, callbacks) => {
+        prompts.push(prompt)
+        const seen = prompts.filter((item) => item.includes('[RESULTADO DO NAVEGADOR]')).length
+        const reply = prompt.includes('Limite de')
+          ? 'Parei no limite.'
+          : seen < 4
+            ? '[[BROWSER:inspect]] [[/BROWSER]]'
+            : '[[BROWSER:click]] #enviar [[/BROWSER]]'
+        setTimeout(() => callbacks.onDone(reply), 0)
+        return { interrupt: () => {} }
+      },
+    }
+    const registry = new ProviderRegistry()
+    registry.registerAdapter(adapter)
+    const queue = new QueueManager(db, registry, {})
+    const calls: string[] = []
+    queue.setBrowserExecutor(async (_id, toolName) => {
+      calls.push(toolName)
+      return {
+        title: 'Painel',
+        url: 'https://ads.example',
+        textSummary: 'ok',
+        links: [],
+        inputs: [],
+      }
+    })
+    const thread = db.listThreads(agent.id)[0]
+    if (!thread) throw new Error('thread ausente')
+    queue.enqueue(agent.id, thread.id, 'leia a página em quatro passos')
+
+    await vi.waitFor(
+      () => {
+        expect(db.listMessages(thread.id).some((m) => m.text.includes('Parei no limite.'))).toBe(
+          true,
+        )
+      },
+      { timeout: 8000, interval: 20 },
+    )
+    expect(calls).toEqual([
+      'orchbot_browser.inspect',
+      'orchbot_browser.inspect',
+      'orchbot_browser.inspect',
+      'orchbot_browser.inspect',
+    ])
+    expect(
+      prompts.some(
+        (prompt) =>
+          prompt.includes('[RESULTADO DO NAVEGADOR]') &&
+          prompt.includes('Limite de 4 rodadas no navegador') &&
+          prompt.includes('Este comando não rodou.'),
+      ),
+    ).toBe(true)
+    queue.close()
+  })
 })

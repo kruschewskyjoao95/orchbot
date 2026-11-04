@@ -30,6 +30,30 @@ describe('Browser Sanitizer & Security', () => {
     expect(redacted).toContain('[REDACTED_SECRET]')
   })
 
+  it('mascara token conhecido solto e deixa caminho e hash', () => {
+    const github = `ghp_${'a'.repeat(36)}`
+    const fine = `github_pat_${'A'.repeat(22)}_${'b'.repeat(59)}`
+    const aws = 'AKIAIOSFODNN7EXAMPLE'
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
+    const path = 'src/backend/browser/sanitizer.ts'
+    const hash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    const text = `página ${github} ${fine} chave ${aws} sessão ${jwt} arquivo ${path} commit ${hash}`
+
+    const redacted = redactSecrets(text)
+    expect(redacted).not.toContain(github)
+    expect(redacted).not.toContain(fine)
+    expect(redacted).not.toContain(aws)
+    expect(redacted).not.toContain('eyJhbGci')
+    expect(redacted).toContain(path)
+    expect(redacted).toContain(hash)
+    expect(redacted).toContain('[REDACTED_SECRET]')
+
+    const page = sanitizeHtmlToText(`<p>token ${github}</p>`)
+    expect(page).not.toContain(github)
+    expect(page).toContain('[REDACTED_SECRET]')
+  })
+
   it('remove scripts, tags perigosas e normaliza texto HTML', () => {
     const dirtyHtml = `
       <html>
