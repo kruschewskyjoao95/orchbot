@@ -7,17 +7,21 @@ import { CodexAdapter } from '../src/backend/providers/codex-adapter'
 import { CopilotAdapter } from '../src/backend/providers/copilot-adapter'
 import { OpenCodeAdapter } from '../src/backend/providers/opencode-adapter'
 import { PiAdapter } from '../src/backend/providers/pi-adapter'
-import type { ProviderAdapter } from '../src/backend/providers/types'
+import type { ProviderAdapter, ProviderRuntimeConfig } from '../src/backend/providers/types'
 
 const cli = fileURLToPath(new URL('./fixtures/args-cli.mjs', import.meta.url))
 
-async function argsFor(adapter: ProviderAdapter, model: string): Promise<string[]> {
+async function argsFor(
+  adapter: ProviderAdapter,
+  model: string,
+  effort: ProviderRuntimeConfig['effort'] = 'high',
+): Promise<string[]> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orchbot-effort-'))
   try {
     await new Promise<void>((resolve) =>
       adapter.executeTurn(
         'oi',
-        { workspacePath: dir, model, providerConfig: { cliPath: cli, effort: 'high' } },
+        { workspacePath: dir, model, providerConfig: { cliPath: cli, effort } },
         {
           onChunk: () => {},
           onDone: () => resolve(),
@@ -33,6 +37,11 @@ async function argsFor(adapter: ProviderAdapter, model: string): Promise<string[
 }
 
 describe('nível de raciocínio chega a cada CLI', () => {
+  it('envia ultra ao Codex sem converter o nível escolhido', async () => {
+    expect(await argsFor(new CodexAdapter(), 'gpt-6-astra', 'ultra')).toContain(
+      'model_reasoning_effort="ultra"',
+    )
+  })
   it.each([
     ['codex', new CodexAdapter(), 'gpt-6.1-sol', ['-c', 'model_reasoning_effort="high"']],
     ['pi', new PiAdapter(), 'claude-sonnet-5-5', ['--thinking', 'high']],

@@ -155,8 +155,8 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:update-connection', input),
   testConnection: (providerId: SupportedProvider) =>
     ipcRenderer.invoke('orchbot:test-connection', providerId),
-  discoverModels: (providerId: SupportedProvider) =>
-    ipcRenderer.invoke('orchbot:discover-models', providerId),
+  discoverModels: (providerId: SupportedProvider, accountId?: string) =>
+    ipcRenderer.invoke('orchbot:discover-models', providerId, accountId),
   searchProjectMemory: (agentId: string, query: string) =>
     ipcRenderer.invoke('orchbot:search-project-memory', { agentId, query }),
   getConsent: () => ipcRenderer.invoke('orchbot:get-consent'),

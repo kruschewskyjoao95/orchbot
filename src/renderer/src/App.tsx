@@ -2,6 +2,7 @@ import { type Component, For, Show, createEffect, createSignal, onCleanup, onMou
 import { describeCron } from '../../backend/cron/cron-parser'
 import { isForeman } from '../../backend/orchestration/foreman'
 import { CUSTOM_PROVIDER_PRESETS, isCustomProvider } from '../../shared/custom-providers'
+import { modelEffortOptions } from '../../shared/model-efforts'
 import { providerStatusLabel } from '../../shared/provider-status'
 import type {
   Agent,
@@ -23,6 +24,7 @@ import type {
   ProviderConnection,
   ProviderEffort,
   ProviderInfo,
+  ProviderModelInfo,
   ProviderUpdateInfo,
   ScheduledTask,
   ScheduledTaskType,
@@ -49,6 +51,7 @@ import {
   ManagedCliControls,
   ThemeApplier,
 } from './Distribution'
+import { ModelPicker } from './ModelPicker'
 import { ProviderAccounts } from './ProviderAccounts'
 import { SkillsPlugins } from './SkillsPlugins'
 import {
@@ -100,16 +103,6 @@ export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
   kimi: '🌙',
   acp: '🔌',
 }
-
-// Nível de raciocínio ("esforço"): mesmos nomes em todas as telas.
-const EFFORT_OPTIONS: [ProviderEffort | '', string][] = [
-  ['', 'Padrão'],
-  ['low', 'Baixo'],
-  ['medium', 'Médio'],
-  ['high', 'Alto'],
-  ['xhigh', 'Muito alto'],
-  ['max', 'Máximo'],
-]
 
 const BOARD_SUGGESTIONS = [
   {
@@ -555,6 +548,73 @@ export const App: Component = () => {
 
   // Conexões e Provedores signals
   const [connections, setConnections] = createSignal<ProviderConnection[]>([])
+  const [modelCatalogs, setModelCatalogs] = createSignal<Record<string, ProviderModelInfo[]>>({})
+  const pendingCatalogs = new Map<string, Promise<void>>()
+  const [catalogWarnings, setCatalogWarnings] = createSignal<Record<string, string>>({})
+  let catalogGeneration = 0
+  const catalogKey = (id: string, accountId?: string) => `${id}:${accountId ?? ''}`
+  const modelsFor = (id: SupportedProvider, accountId?: string) => {
+    const catalog = modelCatalogs()[catalogKey(id, accountId)]
+    return catalog?.length
+      ? catalog.map((model) => model.id)
+      : (connections().find((c) => c.providerId === id)?.models ?? [])
+  }
+  const effortsFor = (
+    id: SupportedProvider,
+    model: string,
+    accountId?: string,
+  ): [ProviderEffort | '', string][] => {
+    if (connections().find((connection) => connection.providerId === id)?.supportsEffort === false)
+      return [['', 'Padrão']]
+    return modelEffortOptions(model, modelCatalogs()[catalogKey(id, accountId)])
+  }
+
+  const loadModelCatalog = (
+    id: SupportedProvider,
+    accountId?: string,
+    force = false,
+  ): Promise<void> => {
+    const key = catalogKey(id, accountId)
+    const pending = pendingCatalogs.get(key)
+    if (pending) return pending
+    if (!force && modelCatalogs()[key]) return Promise.resolve()
+    const generation = catalogGeneration
+    const request = window.orchbot
+      .discoverModels(id, accountId)
+      .then((result) => {
+        if (generation !== catalogGeneration) return
+        setCatalogWarnings((prev) => ({
+          ...prev,
+          [key]: result.source === 'cache' || result.source === 'catalog' ? result.message : '',
+        }))
+        setModelCatalogs((prev) => ({
+          ...prev,
+          [key]: result.catalog ?? result.models.map((id) => ({ id })),
+        }))
+        if (!accountId) {
+          setDiscoverMessage((prev) => ({ ...prev, [id]: result.message }))
+        }
+      })
+      .catch((error: unknown) => {
+        if (generation !== catalogGeneration) return
+        setCatalogWarnings((prev) => ({
+          ...prev,
+          [key]: error instanceof Error ? error.message : String(error),
+        }))
+        setModelCatalogs((prev) => ({ ...prev, [key]: [] }))
+        if (!accountId)
+          setDiscoverMessage((prev) => ({
+            ...prev,
+            [id]: error instanceof Error ? error.message : String(error),
+          }))
+      })
+      .finally(() => {
+        if (pendingCatalogs.get(key) === request) pendingCatalogs.delete(key)
+      })
+    pendingCatalogs.set(key, request)
+    return request
+  }
+
   const [providerAccounts, setProviderAccounts] = createSignal<Record<string, ProviderAccount[]>>(
     {},
   )
@@ -620,7 +680,6 @@ export const App: Component = () => {
     }
   }
   const [configProviderId, setConfigProviderId] = createSignal<SupportedProvider | null>(null)
-  const [discoveredModels, setDiscoveredModels] = createSignal<Record<string, string[]>>({})
   const [discoveringProvider, setDiscoveringProvider] = createSignal<string | null>(null)
   const [discoverMessage, setDiscoverMessage] = createSignal<Record<string, string>>({})
   const [showApiKeys, setShowApiKeys] = createSignal<Record<string, boolean>>({})
@@ -986,6 +1045,12 @@ export const App: Component = () => {
         if (connections().length === 0) setConnections(await window.orchbot.listConnections())
         const list = await window.orchbot.getConnections()
         setConnections(list)
+        catalogGeneration++
+        pendingCatalogs.clear()
+        setModelCatalogs({})
+        for (const connection of list) {
+          if (connection.enabled) void loadModelCatalog(connection.providerId)
+        }
         const accountLists = await Promise.all(
           list.map(
             async (connection) =>
@@ -1574,9 +1639,7 @@ export const App: Component = () => {
     if (!window.orchbot) return
     setDiscoveringProvider(providerId)
     try {
-      const res = await window.orchbot.discoverModels(providerId)
-      setDiscoveredModels((prev) => ({ ...prev, [providerId]: res.models }))
-      setDiscoverMessage((prev) => ({ ...prev, [providerId]: res.message }))
+      await loadModelCatalog(providerId, undefined, true)
     } catch (err: unknown) {
       setDiscoverMessage((prev) => ({
         ...prev,
@@ -1647,9 +1710,20 @@ export const App: Component = () => {
   const handleSwitchModelMidChat = async (agentId: string, newModel: string) => {
     try {
       if (window.orchbot) {
+        const agent = agents().find((item) => item.id === agentId)
+        const info =
+          agent &&
+          modelCatalogs()[catalogKey(agent.provider, agent.accountId)]?.find(
+            (item) => item.id === newModel,
+          )
+        const effort = agent?.effort
         const updated = await window.orchbot.updateAgent({
           id: agentId,
           model: newModel,
+          effort:
+            effort && info?.supportedEfforts && !info.supportedEfforts.includes(effort)
+              ? (info.defaultEffort ?? info.supportedEfforts[0] ?? null)
+              : effort,
         })
         setAgents((prev) => prev.map((a) => (a.id === agentId ? updated : a)))
       }
@@ -2637,6 +2711,7 @@ export const App: Component = () => {
           active: selectedAgentId() === agent.id && activeSection() === 'agents',
         }}
         onClick={() => openAgent(agent.id)}
+        title={agent.name}
       >
         <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
           {agent.avatar || initialsOf(agent.name)}
@@ -2666,6 +2741,28 @@ export const App: Component = () => {
       </button>
     )
   }
+
+  createEffect(() => {
+    const agent = currentAgent()
+    if (agent && connections().some((c) => c.providerId === agent.provider && c.enabled))
+      void loadModelCatalog(agent.provider, agent.accountId)
+  })
+
+  createEffect(() => {
+    if (showModal() && connections().some((c) => c.providerId === provider() && c.enabled))
+      void loadModelCatalog(provider(), newAccountId() || undefined)
+  })
+
+  createEffect(() => {
+    const selected = agentEffort()
+    if (
+      selected &&
+      !effortsFor(provider(), model(), newAccountId() || undefined).some(
+        ([value]) => value === selected,
+      )
+    )
+      setAgentEffort('')
+  })
 
   return (
     <div class="app-container" style={{ zoom: settings().uiScale / 100 }}>
@@ -3255,27 +3352,58 @@ export const App: Component = () => {
                                           >
                                             Modelo Padrão
                                           </label>
-                                          <input
+                                          <ModelPicker
                                             id={`conn-model-${conn.providerId}`}
-                                            list={`conn-models-${conn.providerId}`}
+                                            models={modelsFor(conn.providerId)}
                                             class="connection-input"
                                             value={draft().defaultModel ?? conn.defaultModel}
-                                            onInput={(e) =>
+                                            onChange={(value) =>
                                               updateDraftField(
                                                 conn.providerId,
                                                 'defaultModel',
-                                                e.currentTarget.value,
+                                                value,
                                               )
                                             }
-                                            placeholder="Selecione na lista ou digite qualquer modelo..."
                                             disabled={!conn.enabled}
                                           />
-                                          <datalist id={`conn-models-${conn.providerId}`}>
-                                            <For each={conn.models}>
-                                              {(m) => <option value={m} />}
-                                            </For>
-                                          </datalist>
                                         </div>
+                                        <Show when={conn.supportsEffort}>
+                                          <div class="connection-field">
+                                            <label
+                                              class="connection-field-label"
+                                              for={`conn-effort-${conn.providerId}`}
+                                            >
+                                              Raciocínio
+                                            </label>
+                                            <select
+                                              id={`conn-effort-${conn.providerId}`}
+                                              class="connection-input"
+                                              value={draft().effort ?? conn.effort ?? ''}
+                                              disabled={!conn.enabled}
+                                              onChange={(e) =>
+                                                updateDraftField(
+                                                  conn.providerId,
+                                                  'effort',
+                                                  e.currentTarget.value,
+                                                )
+                                              }
+                                            >
+                                              <option value="" disabled>
+                                                Padrão do provedor
+                                              </option>
+                                              <For
+                                                each={effortsFor(
+                                                  conn.providerId,
+                                                  draft().defaultModel ?? conn.defaultModel,
+                                                ).slice(1)}
+                                              >
+                                                {([value, label]) => (
+                                                  <option value={value}>{label}</option>
+                                                )}
+                                              </For>
+                                            </select>
+                                          </div>
+                                        </Show>
 
                                         <div class="connection-field">
                                           <label
@@ -4465,7 +4593,7 @@ export const App: Component = () => {
                       class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
                       onClick={() => setMainViewMode('chat')}
                     >
-                      💬 Conversa
+                      Conversa
                     </button>
                     <button
                       type="button"
@@ -4476,7 +4604,7 @@ export const App: Component = () => {
                         if (a) loadBrowserTabs(a.id)
                       }}
                     >
-                      🌐 Ver Internet {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
+                      Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
                     </button>
                   </div>
 
@@ -4784,46 +4912,23 @@ export const App: Component = () => {
 
                           <div class="midchat-field">
                             <span class="midchat-label">Modelo do Cérebro:</span>
-                            <input
-                              list={`midchat-models-${agent().id}`}
+                            <ModelPicker
+                              models={modelsFor(agent().provider, agent().accountId)}
+                              message={
+                                catalogWarnings()[catalogKey(agent().provider, agent().accountId)]
+                              }
+                              onRefresh={() =>
+                                loadModelCatalog(agent().provider, agent().accountId, true)
+                              }
                               class="chat-model-select"
                               value={agent().model}
-                              onChange={(e) =>
-                                handleSwitchModelMidChat(agent().id, e.currentTarget.value)
-                              }
-                              placeholder="Modelo..."
+                              onChange={(value) => handleSwitchModelMidChat(agent().id, value)}
                               style={{
                                 width: '160px',
                                 padding: '4px 8px',
                                 'font-size': '12px',
                               }}
                             />
-                            <datalist id={`midchat-models-${agent().id}`}>
-                              <For
-                                each={
-                                  connections().find((c) => c.providerId === agent().provider)
-                                    ?.models || [agent().model]
-                                }
-                              >
-                                {(m) => <option value={m} />}
-                              </For>
-                            </datalist>
-                          </div>
-
-                          <div class="midchat-field">
-                            <span class="midchat-label">Papel na equipe:</span>
-                            <select
-                              class="chat-autonomy-select"
-                              value={agent().role ?? 'worker'}
-                              onChange={(e) =>
-                                handleSwitchRole(agent().id, e.currentTarget.value as AgentRole)
-                              }
-                            >
-                              <option value="worker">🛠️ Especialista (faz o trabalho)</option>
-                              <option value="orchestrator">
-                                👑 Líder Coordenador (divide tarefas)
-                              </option>
-                            </select>
                           </div>
 
                           <div class="midchat-field">
@@ -4838,9 +4943,30 @@ export const App: Component = () => {
                                 )
                               }
                             >
-                              <For each={EFFORT_OPTIONS}>
+                              <For
+                                each={effortsFor(
+                                  agent().provider,
+                                  agent().model,
+                                  agent().accountId,
+                                )}
+                              >
                                 {([value, label]) => <option value={value}>{label}</option>}
                               </For>
+                            </select>
+                          </div>
+                          <div class="midchat-field">
+                            <span class="midchat-label">Papel na equipe:</span>
+                            <select
+                              class="chat-autonomy-select"
+                              value={agent().role ?? 'worker'}
+                              onChange={(e) =>
+                                handleSwitchRole(agent().id, e.currentTarget.value as AgentRole)
+                              }
+                            >
+                              <option value="worker">🛠️ Especialista (faz o trabalho)</option>
+                              <option value="orchestrator">
+                                👑 Líder Coordenador (divide tarefas)
+                              </option>
                             </select>
                           </div>
 
@@ -5223,7 +5349,7 @@ export const App: Component = () => {
                       {/* Chips rápidos para chamar colegas */}
                       <div class="composer-quick-chips">
                         <Show when={otherAgents().length > 0}>
-                          <span class="composer-chip-label">Pedir ajuda a outro colega:</span>
+                          <span class="composer-chip-label">Equipe</span>
                           <For each={otherAgents().slice(0, 5)}>
                             {(teammate) => (
                               <button
@@ -5243,7 +5369,7 @@ export const App: Component = () => {
                           onClick={() => setActiveSection('board')}
                           title="Voltar para a Central da Equipe"
                         >
-                          🏠 Central da Equipe
+                          Central da Equipe
                         </button>
                       </div>
 
@@ -5271,7 +5397,8 @@ export const App: Component = () => {
 
                       <textarea
                         class="chat-textarea"
-                        placeholder={`Escreva aqui para ${agent().name}... (Aperte Enter para enviar)`}
+                        placeholder={`Mensagem para ${agent().name}…`}
+                        aria-label={`Mensagem para ${agent().name}`}
                         value={inputText()}
                         onInput={(e) => setInputText(e.currentTarget.value)}
                         onKeyDown={handleKeyDown}
@@ -5283,8 +5410,9 @@ export const App: Component = () => {
                             class="btn-outline"
                             onClick={handleSelectFiles}
                             title="Enviar um arquivo ou imagem junto com sua mensagem"
+                            aria-label="Anexar arquivo"
                           >
-                            📎 Enviar Arquivo
+                            <RailIcon name="link" />
                           </button>
 
                           <button
@@ -5301,8 +5429,8 @@ export const App: Component = () => {
                             title="Clique para escolher se o assistente faz tudo sozinho ou pede sua permissão antes"
                           >
                             {(agent().autonomyLevel || 'autonomous') === 'cautious'
-                              ? '🛡️ Modo Cuidadoso (pede confirmação)'
-                              : '⚡ Modo Automático (faz sozinho)'}
+                              ? 'Pedir confirmação'
+                              : 'Automático'}
                           </button>
 
                           <button
@@ -5326,7 +5454,13 @@ export const App: Component = () => {
                                 )
                               }
                             >
-                              <For each={EFFORT_OPTIONS}>
+                              <For
+                                each={effortsFor(
+                                  agent().provider,
+                                  agent().model,
+                                  agent().accountId,
+                                )}
+                              >
                                 {([value, label]) => <option value={value}>{label}</option>}
                               </For>
                             </select>
@@ -5344,7 +5478,7 @@ export const App: Component = () => {
                             class="btn-primary btn-send-msg"
                             disabled={!inputText().trim() && stagedFiles().length === 0}
                           >
-                            Enviar Mensagem ↵
+                            Enviar
                           </button>
                         </div>
                       </div>
@@ -6049,8 +6183,7 @@ export const App: Component = () => {
       <Show when={configConnection()}>
         {(conn) => {
           const draft = () => connectionDrafts()[conn().providerId] || {}
-          const models = () =>
-            discoveredModels()[conn().providerId] || conn().discoveredModels || conn().models
+          const models = () => modelsFor(conn().providerId)
           return (
             <dialog
               class="modal-overlay"
@@ -6176,18 +6309,14 @@ export const App: Component = () => {
 
                   <div class="form-group">
                     <label for="cfg-model">Modelo padrão</label>
-                    <input
+                    <ModelPicker
                       id="cfg-model"
-                      list="cfg-models-list"
+                      models={models()}
                       value={draft().defaultModel ?? conn().defaultModel}
-                      onInput={(e) =>
-                        updateDraftField(conn().providerId, 'defaultModel', e.currentTarget.value)
+                      onChange={(value) =>
+                        updateDraftField(conn().providerId, 'defaultModel', value)
                       }
-                      placeholder="Selecione ou digite um modelo..."
                     />
-                    <datalist id="cfg-models-list">
-                      <For each={models()}>{(m) => <option value={m} />}</For>
-                    </datalist>
                     <div
                       style={{
                         display: 'flex',
@@ -6232,7 +6361,12 @@ export const App: Component = () => {
                           )
                         }
                       >
-                        <For each={EFFORT_OPTIONS.slice(1)}>
+                        <For
+                          each={effortsFor(
+                            conn().providerId,
+                            draft().defaultModel ?? conn().defaultModel,
+                          ).slice(1)}
+                        >
                           {([value, label]) => <option value={value}>{label}</option>}
                         </For>
                       </select>
@@ -6663,23 +6797,27 @@ export const App: Component = () => {
                 </div>
                 <div class="form-group">
                   <label for="agent-model">Modelo</label>
-                  <input
+                  <ModelPicker
                     id="agent-model"
-                    type="text"
-                    list="agent-model-options"
+                    models={modelsFor(provider(), newAccountId() || undefined)}
+                    message={catalogWarnings()[catalogKey(provider(), newAccountId() || undefined)]}
+                    onRefresh={() =>
+                      loadModelCatalog(provider(), newAccountId() || undefined, true)
+                    }
                     value={model()}
-                    onInput={(e) => setModel(e.currentTarget.value)}
-                    required
+                    onChange={setModel}
                   />
-                  <datalist id="agent-model-options">
-                    <For
-                      each={
-                        connections().find((c) => c.providerId === provider())?.models || [model()]
-                      }
-                    >
-                      {(m) => <option value={m} />}
+
+                  <label for="agent-effort">Esforço de raciocínio</label>
+                  <select
+                    id="agent-effort"
+                    value={agentEffort()}
+                    onChange={(e) => setAgentEffort(e.currentTarget.value as ProviderEffort | '')}
+                  >
+                    <For each={effortsFor(provider(), model(), newAccountId() || undefined)}>
+                      {([value, label]) => <option value={value}>{label}</option>}
                     </For>
-                  </datalist>
+                  </select>
                 </div>
               </div>
 
@@ -6820,19 +6958,6 @@ export const App: Component = () => {
                     <option value="economico">💰 Econômico — resumo + últimas 4 mensagens</option>
                     <option value="padrao">Padrão — resumo + últimas 10 mensagens</option>
                     <option value="completo">Completo — histórico amplo (mais tokens)</option>
-                  </select>
-                </div>
-
-                <div class="form-group">
-                  <label for="agent-effort">Esforço de raciocínio</label>
-                  <select
-                    id="agent-effort"
-                    value={agentEffort()}
-                    onChange={(e) => setAgentEffort(e.currentTarget.value as ProviderEffort | '')}
-                  >
-                    <For each={EFFORT_OPTIONS}>
-                      {([value, label]) => <option value={value}>{label}</option>}
-                    </For>
                   </select>
                 </div>
 

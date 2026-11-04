@@ -784,39 +784,58 @@ ${out.slice(-800)}`,
     testAccount(providerId),
   )
 
-  ipcMain.handle('orchbot:discover-models', async (_event, providerId: SupportedProvider) => {
-    const conn = database.getConnection(providerId)
-    const entry = getCatalogEntry(providerId)
-    if (!conn) {
-      return { models: [], source: 'catalog' as const, message: 'Provedor não encontrado.' }
-    }
-    const adapter = providerRegistry.getAdapter(providerId)
-    if (adapter.discoverModels) {
-      const { config } = resolveAccountRuntime(database, providerId)
-      const models = await adapter.discoverModels(config)
-
-      const fromCli =
-        models.length > 0 && JSON.stringify(models) !== JSON.stringify(entry?.models ?? conn.models)
-      return {
-        models,
-        source: isCustomProvider(providerId)
-          ? ('api' as const)
-          : fromCli
-            ? ('cli' as const)
-            : ('catalog' as const),
-        message: isCustomProvider(providerId)
-          ? `${models.length} modelos retornados pela API.`
-          : fromCli
-            ? `${models.length} modelos descobertos via CLI "${conn.cliPath || entry?.cliCommand || conn.name}".`
-            : 'CLI indisponível para descoberta; usando catálogo local.',
+  ipcMain.handle(
+    'orchbot:discover-models',
+    async (_event, providerId: SupportedProvider, accountId?: string) => {
+      const conn = database.getConnection(providerId)
+      const entry = getCatalogEntry(providerId)
+      if (!conn) {
+        return { models: [], source: 'catalog' as const, message: 'Provedor não encontrado.' }
       }
-    }
-    return {
-      models: [...(entry?.models ?? conn.models)],
-      source: 'catalog' as const,
-      message: 'Este provedor não suporta descoberta via CLI; usando catálogo local.',
-    }
-  })
+      const adapter = providerRegistry.getAdapter(providerId)
+      if (adapter.discoverModelCatalog) {
+        const { config } = resolveAccountRuntime(database, providerId, accountId)
+        const result = await adapter.discoverModelCatalog(config)
+        return {
+          models: result.models.map((model) => model.id),
+          catalog: result.models,
+          source: result.source,
+          message:
+            result.source === 'cli'
+              ? `${result.models.length} modelos e suas capacidades retornados pelo CLI da conta selecionada.`
+              : result.source === 'cache'
+                ? 'Consulta ao CLI indisponível; usando o cache do perfil selecionado.'
+                : 'Consulta ao CLI indisponível; usando catálogo local. Tente atualizar a lista.',
+        }
+      }
+      if (adapter.discoverModels) {
+        const { config } = resolveAccountRuntime(database, providerId, accountId)
+        const models = await adapter.discoverModels(config)
+
+        const fromCli =
+          models.length > 0 &&
+          JSON.stringify(models) !== JSON.stringify(entry?.models ?? conn.models)
+        return {
+          models,
+          source: isCustomProvider(providerId)
+            ? ('api' as const)
+            : fromCli
+              ? ('cli' as const)
+              : ('catalog' as const),
+          message: isCustomProvider(providerId)
+            ? `${models.length} modelos retornados pela API.`
+            : fromCli
+              ? `${models.length} modelos descobertos via CLI "${conn.cliPath || entry?.cliCommand || conn.name}".`
+              : 'CLI indisponível para descoberta; usando catálogo local.',
+        }
+      }
+      return {
+        models: [...(entry?.models ?? conn.models)],
+        source: 'catalog' as const,
+        message: 'Este provedor não suporta descoberta via CLI; usando catálogo local.',
+      }
+    },
+  )
 
   // --- Primeiro uso, diagnósticos, runtimes locais, temas, CLIs gerenciados e atualização do app ---
   const consented = () => {

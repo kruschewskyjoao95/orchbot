@@ -4,6 +4,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { isCustomProvider, validateCustomProviderInput } from '../../shared/custom-providers'
 import { tokensFromChars } from '../../shared/tokens'
+import { isProviderEffort } from '../../shared/types'
 import {
   type AppSettings,
   DEFAULT_APP_SETTINGS,
@@ -149,9 +150,7 @@ function parseCustomConfig(raw: string | null | undefined): ConnectionCustomConf
           ? parsed.cliArgs
           : undefined,
       apiKeyEnv: typeof parsed.apiKeyEnv === 'string' ? parsed.apiKeyEnv : undefined,
-      effort: (['low', 'medium', 'high', 'xhigh', 'max'] as const).includes(
-        parsed.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
-      )
+      effort: isProviderEffort(parsed.effort)
         ? (parsed.effort as ProviderConnection['effort'])
         : undefined,
     }

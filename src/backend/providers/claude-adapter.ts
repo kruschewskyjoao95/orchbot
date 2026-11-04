@@ -1,11 +1,11 @@
-import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import type { ProviderInfo, SupportedProvider } from '../../shared/types'
+import type { ProviderInfo, ProviderModelCatalog, SupportedProvider } from '../../shared/types'
 import { claudeMcp } from '../mcp/mcp-launch'
 import { getCatalogEntry } from './catalog'
-import { buildProviderEnv, checkCliAvailability, resolveCliCommand } from './cli-utils'
+import { checkCliAvailability } from './cli-utils'
+import { probeModelCatalog } from './model-discovery'
 import { runSessionCli } from './session-cli'
 import type {
   ActiveExecution,
@@ -25,44 +25,14 @@ export class ClaudeAdapter implements ProviderAdapter {
   }
 
   public async discoverModels(config?: ProviderRuntimeConfig): Promise<string[]> {
-    // O Claude Code responde à requisição "initialize" do protocolo stream-json com os modelos da conta
-    // (mesma fonte do supportedModels() do Agent SDK); funciona com assinatura, sem chave de API.
-    const entry = getCatalogEntry('claude')
-    const fromCli = await new Promise<string[]>((resolve) => {
-      const child = spawn(
-        resolveCliCommand(entry.cliCommand, config?.cliPath),
-        ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
-        { cwd: tmpdir(), env: buildProviderEnv(config), stdio: ['pipe', 'pipe', 'ignore'] },
-      )
-      let buf = ''
-      const done = (models: string[]) => {
-        clearTimeout(timer)
-        child.kill()
-        resolve(models)
-      }
-      const timer = setTimeout(() => done([]), 20000)
-      child.on('error', () => done([]))
-      child.on('close', () => done([]))
-      child.stdout.on('data', (chunk) => {
-        buf += chunk
-        for (const line of buf.split('\n')) {
-          if (!line.includes('"control_response"')) continue
-          try {
-            const models = JSON.parse(line).response?.response?.models as
-              | { value: string; resolvedModel?: string }[]
-              | undefined
-            return done([
-              ...new Set((models ?? []).filter((m) => m.value !== 'default').map((m) => m.value)),
-            ])
-          } catch {}
-        }
-      })
-      child.stdout.setEncoding('utf8')
-      child.stdin.write(
-        '{"request_id":"models","type":"control_request","request":{"subtype":"initialize"}}\n',
-      )
-    })
-    return fromCli.length > 0 ? fromCli : [...entry.models]
+    return (await this.discoverModelCatalog(config)).models.map((model) => model.id)
+  }
+
+  public async discoverModelCatalog(config?: ProviderRuntimeConfig): Promise<ProviderModelCatalog> {
+    const models = await probeModelCatalog('claude', config)
+    return models.length
+      ? { models, source: 'cli' }
+      : { models: getCatalogEntry('claude').models.map((id) => ({ id })), source: 'catalog' }
   }
 
   public executeTurn(
