@@ -1,5 +1,10 @@
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
-import type { ProviderEffort, ProviderInfo, SupportedProvider } from '../../shared/types'
+import type {
+  ProviderEffort,
+  ProviderInfo,
+  ProviderModelCatalog,
+  SupportedProvider,
+} from '../../shared/types'
 
 /** Servidor MCP já com segredos abertos, pronto para virar flags do CLI. */
 export interface McpLaunchServer {
@@ -88,5 +93,6 @@ export interface ProviderAdapter {
     options: ExecutionOptions,
     callbacks: ExecutionCallbacks,
   ): ActiveExecution
+  discoverModelCatalog?(config?: ProviderRuntimeConfig): Promise<ProviderModelCatalog>
   discoverModels?(config?: ProviderRuntimeConfig): Promise<string[]>
 }

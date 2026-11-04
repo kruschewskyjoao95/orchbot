@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import type { ProviderInfo, SupportedProvider } from '../../shared/types'
+import type { ProviderInfo, ProviderModelCatalog, SupportedProvider } from '../../shared/types'
 import { codexMcp } from '../mcp/mcp-launch'
 import { getCatalogEntry } from './catalog'
 import { checkCliAvailability } from './cli-utils'
+import { parseProviderModels, probeModelCatalog } from './model-discovery'
 import { runSessionCli } from './session-cli'
 import type {
   ActiveExecution,
@@ -24,17 +25,23 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   public async discoverModels(config?: ProviderRuntimeConfig): Promise<string[]> {
-    // O próprio Codex mantém a lista de modelos da conta em models_cache.json.
-    const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+    return (await this.discoverModelCatalog(config)).models.map((model) => model.id)
+  }
+
+  public async discoverModelCatalog(config?: ProviderRuntimeConfig): Promise<ProviderModelCatalog> {
+    const live = await probeModelCatalog('codex', config)
+    if (live.length) return { models: live, source: 'cli' }
+    const home =
+      config?.cliProfile?.directory || process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
     try {
       const data = JSON.parse(await readFile(path.join(home, 'models_cache.json'), 'utf8'))
-      const slugs = (data.models as { slug: string; visibility?: string; priority?: number }[])
-        .filter((m) => m.visibility === 'list')
-        .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99))
-        .map((m) => m.slug)
-      if (slugs.length > 0) return slugs
+      const rows = Array.isArray(data.models)
+        ? data.models.filter((m: { visibility?: string }) => m.visibility === 'list')
+        : []
+      const models = parseProviderModels(rows)
+      if (models.length) return { models, source: 'cache' }
     } catch {}
-    return [...getCatalogEntry('codex').models]
+    return { models: getCatalogEntry('codex').models.map((id) => ({ id })), source: 'catalog' }
   }
 
   public executeTurn(

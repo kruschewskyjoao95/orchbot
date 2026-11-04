@@ -28,7 +28,23 @@ export const SUPPORTED_PROVIDERS: BuiltinProvider[] = [
   'acp',
 ]
 
-export type ProviderEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ProviderEffort = string
+
+export function isProviderEffort(value: unknown): value is ProviderEffort {
+  return typeof value === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(value)
+}
+
+export interface ProviderModelInfo {
+  id: string
+  displayName?: string
+  supportedEfforts?: ProviderEffort[]
+  defaultEffort?: ProviderEffort
+}
+
+export interface ProviderModelCatalog {
+  models: ProviderModelInfo[]
+  source: 'cli' | 'cache' | 'catalog'
+}
 
 export type ProviderReadiness =
   | 'ready'
@@ -672,7 +688,13 @@ export interface OrchbotApi {
   ) => Promise<{ success: boolean; message: string; status?: ProviderInfo }>
   discoverModels: (
     providerId: SupportedProvider,
-  ) => Promise<{ models: string[]; source: 'cli' | 'catalog' | 'api'; message: string }>
+    accountId?: string,
+  ) => Promise<{
+    models: string[]
+    catalog?: ProviderModelInfo[]
+    source: 'cli' | 'cache' | 'catalog' | 'api'
+    message: string
+  }>
   searchProjectMemory: (agentId: string, query: string) => Promise<SearchResultGroup>
   getConsent: () => Promise<{ accepted: boolean; version: number }>
   acceptConsent: () => Promise<boolean>
@@ -1056,9 +1078,7 @@ export function validateCreateAgentInput(
       typeof projectId === 'string' && projectId.trim().length > 0 ? projectId.trim() : undefined,
     provider: provider as SupportedProvider,
     model: model.trim(),
-    effort: (['low', 'medium', 'high', 'xhigh', 'max'] as const).includes(effort as ProviderEffort)
-      ? (effort as ProviderEffort)
-      : undefined,
+    effort: isProviderEffort(effort) ? (effort as ProviderEffort) : undefined,
     instructions: typeof instructions === 'string' ? instructions.trim() : '',
     workspacePath: workspacePath.trim(),
     contextMode: contextMode === 'economico' || contextMode === 'completo' ? contextMode : 'padrao',
