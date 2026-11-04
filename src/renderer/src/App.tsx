@@ -1,9 +1,18 @@
-import { type Component, For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
+import {
+  type Component,
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+} from 'solid-js'
 import { describeCron } from '../../backend/cron/cron-parser'
 import { isForeman } from '../../backend/orchestration/foreman'
 import { CUSTOM_PROVIDER_PRESETS, isCustomProvider } from '../../shared/custom-providers'
 import { modelEffortOptions } from '../../shared/model-efforts'
-import { providerStatusLabel } from '../../shared/provider-status'
+import { principalConnection, providerStatusLabel } from '../../shared/provider-status'
 import type {
   Agent,
   AgentDraft,
@@ -51,6 +60,7 @@ import {
   ManagedCliControls,
   ThemeApplier,
 } from './Distribution'
+import { MessageText } from './MessageText'
 import { ModelPicker } from './ModelPicker'
 import { ProviderAccounts } from './ProviderAccounts'
 import { SkillsPlugins } from './SkillsPlugins'
@@ -61,6 +71,7 @@ import {
   stateFromQueue,
   stateFromTask,
 } from './agent-state'
+import { focusDialog } from './dialog-focus'
 import {
   COWORKER_TEMPLATES,
   type CoworkerTemplate,
@@ -88,20 +99,6 @@ export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
   pi: 'claude-sonnet-5-5',
   kimi: 'kimi-k2',
   acp: 'auto',
-}
-
-export const PROVIDER_ICONS: Record<SupportedProvider, string> = {
-  codex: '🟢',
-  claude: '🟣',
-  grok: '⚡',
-  gemini: '🔷',
-  muse: '✨',
-  antigravity: '🪐',
-  opencode: '🧩',
-  copilot: '🐙',
-  pi: '🥧',
-  kimi: '🌙',
-  acp: '🔌',
 }
 
 const BOARD_SUGGESTIONS = [
@@ -193,6 +190,14 @@ const RailIcon: Component<{
     | 'gear'
     | 'close'
     | 'search'
+    | 'brain'
+    | 'trash'
+    | 'users'
+    | 'folder'
+    | 'chevron-left'
+    | 'chevron-right'
+    | 'send'
+    | 'sparkles'
 }> = (props) => (
   <svg
     class="rail-icon"
@@ -245,6 +250,35 @@ const RailIcon: Component<{
     <Show when={props.name === 'search'}>
       <circle cx="11" cy="11" r="6" />
       <path d="M20 20l-3.5-3.5" />
+    </Show>
+    <Show when={props.name === 'brain'}>
+      <path d="M9.5 2a2.5 2.5 0 0 1 2.5 2.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-5.04z" />
+      <path d="M14.5 2a2.5 2.5 0 0 0-2.5 2.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-5.04z" />
+    </Show>
+    <Show when={props.name === 'trash'}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </Show>
+    <Show when={props.name === 'users'}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </Show>
+    <Show when={props.name === 'folder'}>
+      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z" />
+    </Show>
+    <Show when={props.name === 'chevron-left'}>
+      <path d="M15 18l-6-6 6-6" />
+    </Show>
+    <Show when={props.name === 'chevron-right'}>
+      <path d="M9 18l6-6-6-6" />
+    </Show>
+    <Show when={props.name === 'send'}>
+      <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+    </Show>
+    <Show when={props.name === 'sparkles'}>
+      <path d="m12 3 1.9 4.8 4.8 1.9-4.8 1.9L12 16.4l-1.9-4.8-4.8-1.9 4.8-1.9L12 3z" />
     </Show>
   </svg>
 )
@@ -316,10 +350,21 @@ function OverLimitCounter(props: { id: string; text: string }) {
 }
 
 export const App: Component = () => {
-  // Abre diretamente na Central da Equipe ('board') para visualização imediata e intuitiva.
   const [activeSection, setActiveSection] = createSignal<
     'board' | 'agents' | 'channels' | 'skills'
   >('board')
+  const [windowWidth, setWindowWidth] = createSignal(
+    typeof window !== 'undefined' ? window.innerWidth : 1200,
+  )
+  const [sidebarManualCompact, setSidebarManualCompact] = createSignal<boolean | null>(null)
+  const isSidebarCompact = createMemo(() => {
+    const manual = sidebarManualCompact()
+    if (manual !== null) return manual
+    return windowWidth() < 960
+  })
+  const toggleSidebarCompact = () => {
+    setSidebarManualCompact(!isSidebarCompact())
+  }
   const [instantHiringId, setInstantHiringId] = createSignal<string | null>(null)
   const [showCommandPalette, setShowCommandPalette] = createSignal(false)
   const [paletteQuery, setPaletteQuery] = createSignal('')
@@ -327,6 +372,9 @@ export const App: Component = () => {
   const [boardFilterProject, setBoardFilterProject] = createSignal<string>('all')
   const [boardForemanPrompt, setBoardForemanPrompt] = createSignal('')
   const [boardProviderId, setBoardProviderId] = createSignal('')
+  const [boardModel, setBoardModel] = createSignal('')
+  const [isCustomBoardModel, setIsCustomBoardModel] = createSignal(false)
+  const [boardEffort, setBoardEffort] = createSignal<ProviderEffort | ''>('')
   const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
   const [approvals, setApprovals] = createSignal<Approval[]>([])
   const [teamDraft, setTeamDraft] = createSignal<AgentDraft[] | null>(null)
@@ -430,6 +478,8 @@ export const App: Component = () => {
   const [settings, setSettings] = createSignal<AppSettings>({
     ...DEFAULT_APP_SETTINGS,
   })
+  // Evita abrir a escolha de provedores antes de saber se já foi feita.
+  const [settingsLoaded, setSettingsLoaded] = createSignal(false)
   // Configurações abrem por cima da tela atual (modal), então não são uma "seção".
   const [settingsOpen, setSettingsOpen] = createSignal(false)
   const [settingsPane, setSettingsPane] = createSignal<SettingsPaneId>('geral')
@@ -485,6 +535,7 @@ export const App: Component = () => {
   const loadSettings = async () => {
     try {
       if (window.orchbot) setSettings(await window.orchbot.getSettings())
+      setSettingsLoaded(true)
     } catch (err) {
       console.error('Erro ao carregar configurações:', err)
     }
@@ -637,6 +688,12 @@ export const App: Component = () => {
     >
   >({})
   const [selectedConnId, setSelectedConnId] = createSignal<string | null>(null)
+  const activeConnectionId = createMemo(
+    () =>
+      connections().find((c) => c.providerId === selectedConnId())?.providerId ??
+      principalConnection(connections(), settings().defaultProvider)?.providerId ??
+      connections()[0]?.providerId,
+  )
   const [showCustomProvider, setShowCustomProvider] = createSignal(false)
   const [customPreset, setCustomPreset] =
     createSignal<keyof typeof CUSTOM_PROVIDER_PRESETS>('custom')
@@ -742,6 +799,9 @@ export const App: Component = () => {
   const [isStreaming, setIsStreaming] = createSignal(false)
   const [streamingText, setStreamingText] = createSignal('')
   const [chatError, setChatError] = createSignal<string | null>(null)
+  const [mentionQuery, setMentionQuery] = createSignal<string | null>(null)
+  const [mentionSelectedIndex, setMentionSelectedIndex] = createSignal(0)
+  let chatTextareaRef: HTMLTextAreaElement | undefined
 
   // Modal signals
   const [showModal, setShowModal] = createSignal(false)
@@ -963,6 +1023,7 @@ export const App: Component = () => {
       agent.provider.toLowerCase().includes(query)
     )
   }
+  const foreman = createMemo(() => agents().find((a) => isForeman(a)))
   const coworkers = () => agents().filter((a) => !isForeman(a))
   const agentsOfProject = (projectId: string | null) =>
     coworkers().filter((a) => (a.projectId ?? null) === projectId && agentMatchesQuery(a))
@@ -1028,21 +1089,67 @@ export const App: Component = () => {
         (!agent.projectId || a.projectId === agent.projectId),
     )
 
-  const loadProviderStatuses = async () => {
+  const STATUS_CACHE_KEY = 'orchbot:provider-status'
+  const withStatus = (c: ProviderConnection, s: ProviderInfo): ProviderConnection => ({
+    ...c,
+    available: s.available,
+    version: s.version,
+    path: s.path,
+    authStatus: s.authStatus,
+    readiness: s.readiness,
+    loginHint: s.loginHint,
+    installHint: s.installHint ?? c.installHint,
+    error: s.error,
+  })
+  const readStatusCache = (): Partial<Record<string, ProviderInfo>> => {
     try {
-      if (window.orchbot) {
-        const statuses = await window.orchbot.getProviderStatus()
-        setProviderStatuses(statuses)
-      }
-    } catch (err) {
-      console.error('Erro ao verificar provedores:', err)
+      return JSON.parse(localStorage.getItem(STATUS_CACHE_KEY) ?? '{}')
+    } catch {
+      return {}
     }
+  }
+
+  // Um pedido por provedor: cada card atualiza quando o seu CLI responde, sem esperar o mais lento.
+  const loadProviderStatuses = async () => {
+    if (!window.orchbot) return
+    const ids = (connections().length ? connections() : await window.orchbot.listConnections()).map(
+      (c) => c.providerId,
+    )
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const { status } = await window.orchbot.testConnection(id)
+          if (!status) return
+          setProviderStatuses((prev) => ({ ...(prev ?? {}), [id]: status }) as typeof prev)
+          setConnections((prev) =>
+            prev.map((c) => (c.providerId === id ? withStatus(c, status) : c)),
+          )
+          try {
+            localStorage.setItem(
+              STATUS_CACHE_KEY,
+              JSON.stringify({ ...readStatusCache(), [id]: status }),
+            )
+          } catch {}
+        } catch (err) {
+          console.error('Erro ao verificar provedor:', id, err)
+        }
+      }),
+    )
   }
 
   const loadConnections = async () => {
     try {
       if (window.orchbot) {
-        if (connections().length === 0) setConnections(await window.orchbot.listConnections())
+        if (connections().length === 0) {
+          // Último status conhecido aparece na hora; os testes ao vivo corrigem em seguida.
+          const cached = readStatusCache()
+          const quick = await window.orchbot.listConnections()
+          setConnections(
+            quick.map((c) =>
+              cached[c.providerId] ? withStatus(c, cached[c.providerId] as ProviderInfo) : c,
+            ),
+          )
+        }
         const list = await window.orchbot.getConnections()
         setConnections(list)
         catalogGeneration++
@@ -1284,7 +1391,11 @@ export const App: Component = () => {
     const onMq = (e: MediaQueryListEvent) => setSystemDark(e.matches)
     mq?.addEventListener?.('change', onMq)
     onCleanup(() => mq?.removeEventListener?.('change', onMq))
+    const onResize = () => setWindowWidth(window.innerWidth)
+    window.addEventListener('resize', onResize)
+    onCleanup(() => window.removeEventListener('resize', onResize))
     const onGlobalShortcut = (event: KeyboardEvent) => {
+      if (document.querySelector('dialog[open]')) return
       const mod = event.ctrlKey || event.metaKey
       if (mod && (event.key.toLowerCase() === 'k' || event.key.toLowerCase() === 'p')) {
         event.preventDefault()
@@ -1531,6 +1642,62 @@ export const App: Component = () => {
     return tasks().filter((t) => t.status === 'pending' || t.status === 'running').length
   }
 
+  const filteredMentionAgents = createMemo(() => {
+    const q = mentionQuery()
+    if (q === null) return []
+    const others = otherAgents()
+    if (!q.trim()) return others
+    const lower = q.toLowerCase()
+    return others.filter(
+      (a) => a.name.toLowerCase().includes(lower) || Boolean(a.role?.toLowerCase().includes(lower)),
+    )
+  })
+
+  const updateMentionState = (textarea: HTMLTextAreaElement) => {
+    const pos = textarea.selectionStart ?? 0
+    const val = textarea.value
+    const beforeCursor = val.slice(0, pos)
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(beforeCursor)
+    if (match && otherAgents().length > 0) {
+      setMentionQuery(match[1])
+      setMentionSelectedIndex(0)
+    } else {
+      setMentionQuery(null)
+    }
+  }
+
+  const applyMention = (teammate: Agent) => {
+    const textarea = chatTextareaRef
+    const val = inputText()
+    const pos = textarea?.selectionStart ?? val.length
+    const beforeCursor = val.slice(0, pos)
+    const afterCursor = val.slice(pos)
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(beforeCursor)
+
+    const mentionText = teammate.name.includes(' ') ? `@"${teammate.name}" ` : `@${teammate.name} `
+
+    let newText: string
+    let newCursorPos: number
+    if (match) {
+      const atIndex = match.index + (match[0].startsWith('@') ? 0 : 1)
+      newText = val.slice(0, atIndex) + mentionText + afterCursor
+      newCursorPos = atIndex + mentionText.length
+    } else {
+      newText = (val ? `${val.trimEnd()} ` : '') + mentionText
+      newCursorPos = newText.length
+    }
+
+    setInputText(newText)
+    setMentionQuery(null)
+
+    setTimeout(() => {
+      if (chatTextareaRef) {
+        chatTextareaRef.focus()
+        chatTextareaRef.setSelectionRange(newCursorPos, newCursorPos)
+      }
+    }, 0)
+  }
+
   const handleProviderChange = (p: SupportedProvider) => {
     setProvider(p)
     const conn = connections().find((c) => c.providerId === p)
@@ -1542,6 +1709,10 @@ export const App: Component = () => {
   }
 
   const handleToggleConnection = async (conn: ProviderConnection, enabled: boolean) => {
+    // Marca na hora: recarregar as conexões testa todos os CLIs e leva segundos.
+    setConnections((prev) =>
+      prev.map((c) => (c.providerId === conn.providerId ? { ...c, enabled } : c)),
+    )
     try {
       if (window.orchbot) {
         await window.orchbot.updateConnection({
@@ -1553,6 +1724,7 @@ export const App: Component = () => {
       }
     } catch (err) {
       console.error('Erro ao alternar conexão:', err)
+      void loadConnections()
     }
   }
 
@@ -1756,12 +1928,11 @@ export const App: Component = () => {
     setInstructions(templateInstructions(tpl))
     setAutonomyLevel(tpl.autonomyLevel)
     if (tpl.effort) setAgentEffort(tpl.effort)
-    setDraftNote(`Modelo "${tpl.name}" aplicado. Ajuste se quiser e clique em Criar Agente.`)
+    setDraftNote(`Perfil "${tpl.name}" aplicado. Ajuste se quiser e clique em Criar agente.`)
   }
 
   const openNewAgent = (tpl?: CoworkerTemplate) => {
-    const enabled = connections().filter((c) => c.enabled)
-    const first = enabled.find((c) => c.readiness === 'ready') ?? enabled[0]
+    const first = principalConnection(connections(), settings().defaultProvider)
     setProvider(first?.providerId ?? 'codex')
     setModel(first?.defaultModel ?? DEFAULT_PROVIDER_MODELS.codex)
     if (tpl && 'instructions' in tpl) {
@@ -1771,6 +1942,107 @@ export const App: Component = () => {
     }
     setShowModal(true)
   }
+
+  const PrincipalProviderSelect = () => (
+    <label class="principal-provider">
+      <span>Provedor principal</span>
+      <select
+        class="settings-select"
+        value={principalConnection(connections(), settings().defaultProvider)?.providerId ?? ''}
+        disabled={!connections().some((c) => c.enabled)}
+        onChange={(e) => updateSettings({ defaultProvider: e.currentTarget.value })}
+      >
+        <Show when={!connections().some((c) => c.enabled)}>
+          <option value="">Ative um provedor primeiro</option>
+        </Show>
+        <For each={connections().filter((c) => c.enabled)}>
+          {(c) => <option value={c.providerId}>{c.name}</option>}
+        </For>
+      </select>
+    </label>
+  )
+
+  // Escolha única da primeira abertura; nada vem marcado.
+  const [setupChoice, setSetupChoice] = createSignal<SupportedProvider | ''>('')
+  const [savingSetup, setSavingSetup] = createSignal(false)
+  const [setupError, setSetupError] = createSignal('')
+  const readyProviders = createMemo(() => connections().filter((c) => c.readiness === 'ready'))
+  const otherProviders = createMemo(() => connections().filter((c) => c.readiness !== 'ready'))
+
+  const finishProvidersSetup = async (choice: SupportedProvider | '') => {
+    setSavingSetup(true)
+    setSetupError('')
+    try {
+      if (choice && window.orchbot) {
+        // O coordenador nasce no boot com a 1ª IA ativa; passa para a escolhida.
+        const f = foreman()
+        if (f && f.provider !== choice) await handleSwitchProviderMidChat(f.id, choice)
+        setBoardProviderId('')
+        setBoardModel('')
+        // Começa só com a escolhida; provedores de outros agentes que já existem continuam ativos.
+        const inUse = new Set(
+          agents()
+            .filter((a) => !isForeman(a))
+            .map((a) => a.provider),
+        )
+        const next = connections().map((c) => ({
+          ...c,
+          enabled: c.providerId === choice || (c.enabled && inUse.has(c.providerId)),
+        }))
+        await Promise.all(
+          next.map((c, i) =>
+            c.enabled === connections()[i].enabled
+              ? undefined
+              : window.orchbot.updateConnection({ providerId: c.providerId, enabled: c.enabled }),
+          ),
+        )
+        setConnections(next)
+      }
+      setSettings(
+        await window.orchbot.updateSettings({ providersSetupDone: true, defaultProvider: choice }),
+      )
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err))
+      return false
+    } finally {
+      setSavingSetup(false)
+    }
+    // Fora do caminho da janela: recarregar testa todos os CLIs e leva segundos.
+    if (choice) {
+      void loadConnections()
+      void loadProviderStatuses()
+    }
+    return true
+  }
+
+  const SetupProvider = (props: { connection: ProviderConnection }) => (
+    <div class="setup-provider">
+      <button
+        type="button"
+        class="provider-card"
+        classList={{ selected: setupChoice() === props.connection.providerId }}
+        aria-pressed={setupChoice() === props.connection.providerId}
+        onClick={() => setSetupChoice(props.connection.providerId)}
+      >
+        <span class="provider-card-name">{props.connection.name}</span>
+        <span class="provider-card-meta">{providerStatusLabel(props.connection)}</span>
+      </button>
+      <Show when={props.connection.readiness !== 'ready'}>
+        <p class="setup-provider-hint">Confira a instalação e o login na configuração.</p>
+        <button
+          type="button"
+          class="btn-link"
+          aria-label={`Configurar ${props.connection.name}`}
+          disabled={savingSetup()}
+          onClick={async () => {
+            if (await finishProvidersSetup('')) openProviderConfig(props.connection.providerId)
+          }}
+        >
+          Configurar
+        </button>
+      </Show>
+    </div>
+  )
 
   const handleCreateAgent = async (e: Event) => {
     e.preventDefault()
@@ -2059,11 +2331,9 @@ export const App: Component = () => {
   }
 
   const getDefaultProviderAndModel = (): { provider: SupportedProvider; model: string } => {
-    const enabled = connections().filter((c) => c.enabled)
     const first =
-      enabled.find((c) => c.providerId === boardProviderId()) ??
-      enabled.find((c) => c.readiness === 'ready') ??
-      enabled[0]
+      connections().find((c) => c.enabled && c.providerId === boardProviderId()) ??
+      principalConnection(connections(), settings().defaultProvider)
     const prov = first?.providerId ?? 'codex'
     const mod =
       first?.defaultModel ?? DEFAULT_PROVIDER_MODELS[prov] ?? DEFAULT_PROVIDER_MODELS.codex
@@ -2072,6 +2342,57 @@ export const App: Component = () => {
 
   const supportsEffort = (provider: string) =>
     !!connections().find((c) => c.providerId === provider)?.supportsEffort
+
+  const currentBoardProvider = createMemo<SupportedProvider>(() => {
+    if (boardProviderId()) return boardProviderId() as SupportedProvider
+    const f = foreman()
+    if (f) return f.provider
+    return getDefaultProviderAndModel().provider
+  })
+
+  const currentBoardModel = createMemo(() => {
+    if (boardModel()) return boardModel()
+    const f = foreman()
+    if (f) return f.model
+    return getDefaultProviderAndModel().model
+  })
+
+  const currentBoardEffort = createMemo<ProviderEffort | ''>(() => {
+    if (boardEffort() !== '') return boardEffort()
+    const f = foreman()
+    if (f?.effort) return f.effort
+    return ''
+  })
+
+  const handleBoardProviderChange = async (prov: SupportedProvider) => {
+    setBoardProviderId(prov)
+    setIsCustomBoardModel(false)
+    const conn = connections().find((c) => c.providerId === prov)
+    const newModel = conn?.defaultModel || DEFAULT_PROVIDER_MODELS[prov] || ''
+    setBoardModel(newModel)
+    setBoardEffort('')
+    const f = foreman()
+    if (f && window.orchbot) {
+      await handleSwitchProviderMidChat(f.id, prov)
+      await handleSwitchModelMidChat(f.id, newModel)
+    }
+  }
+
+  const handleBoardModelChange = async (newModel: string) => {
+    setBoardModel(newModel)
+    const f = foreman()
+    if (f && window.orchbot) {
+      await handleSwitchModelMidChat(f.id, newModel)
+    }
+  }
+
+  const handleBoardEffortChange = async (effort: ProviderEffort | '') => {
+    setBoardEffort(effort)
+    const f = foreman()
+    if (f && window.orchbot) {
+      await handleSwitchEffort(f.id, effort)
+    }
+  }
 
   // Várias equipes = vários líderes: "Líder", "Líder 2", ...
   const uniqueAgentName = (base: string) => {
@@ -2119,7 +2440,7 @@ export const App: Component = () => {
         setTimeout(() => setBoardDispatchMsg(null), 5000)
       }
     } catch (err: unknown) {
-      alert(`Erro ao adicionar assistente: ${err instanceof Error ? err.message : String(err)}`)
+      alert(`Erro ao adicionar agente: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setInstantHiringId(null)
     }
@@ -2175,31 +2496,46 @@ export const App: Component = () => {
     const prompt = boardForemanPrompt().trim()
     if (!prompt || !window.orchbot) return
 
-    const foreman = agents().find((a) => isForeman(a))
-    if (!foreman) {
+    const f = foreman()
+    if (!f) {
       alert('Conecte uma inteligência artificial para o coordenador poder falar.')
       return
     }
+
+    try {
+      if (boardModel() && f.model !== boardModel()) {
+        await window.orchbot.updateAgent({ id: f.id, model: boardModel() })
+      }
+      if (boardEffort() !== '' && (f.effort ?? '') !== boardEffort()) {
+        await window.orchbot.updateAgent({
+          id: f.id,
+          effort: boardEffort() as ProviderEffort,
+        })
+      }
+    } catch {
+      // continua com o envio caso a atualização falhe silenciosamente
+    }
+
     const projectFilter = boardFilterProject()
     const projectId =
       projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : undefined
     const projectName = projectId ? projects().find((p) => p.id === projectId)?.name : undefined
 
     try {
-      const threads = await window.orchbot.getThreads(foreman.id)
+      const threads = await window.orchbot.getThreads(f.id)
       let targetThread = threads.find((t) => (t.projectId ?? undefined) === projectId)
       if (!targetThread) {
         targetThread = await window.orchbot.createThread(
-          foreman.id,
-          projectName ? `Pedido · ${projectName}` : 'Pedido da Central',
+          f.id,
+          projectName ? `Pedido · ${projectName}` : 'Pedido ao coordenador',
           projectId,
         )
       }
       await window.orchbot.sendMessage(targetThread.id, prompt, [])
       setBoardForemanPrompt('')
-      setBoardDispatchMsg('🚀 Pedido enviado ao coordenador. Abrindo a conversa…')
-      void refreshAgentState(foreman.id)
-      openAgent(foreman.id)
+      setBoardDispatchMsg('Pedido enviado ao coordenador. Abrindo a conversa…')
+      void refreshAgentState(f.id)
+      openAgent(f.id)
       setTimeout(() => setBoardDispatchMsg(null), 4000)
     } catch (err: unknown) {
       alert(`Erro ao enviar pedido: ${err instanceof Error ? err.message : String(err)}`)
@@ -2223,7 +2559,7 @@ export const App: Component = () => {
   const ApprovalCard = (p: { approval: Approval }) => (
     <div class="approval-card">
       <strong>
-        ✋ {agents().find((a) => a.id === p.approval.agentId)?.name ?? 'Um assistente'} pede sua
+        ✋ {agents().find((a) => a.id === p.approval.agentId)?.name ?? 'Um agente'} pede sua
         aprovação
       </strong>
       <div class="approval-card-text">{p.approval.text}</div>
@@ -2331,7 +2667,7 @@ export const App: Component = () => {
   const handleDeleteWebhook = async (trigger: WebhookTrigger) => {
     if (
       !confirm(
-        `Apagar o webhook "${trigger.title}"? Quem usa esta URL deixa de conseguir chamar o assistente.`,
+        `Apagar o webhook "${trigger.title}"? Quem usa esta URL deixa de conseguir chamar o agente.`,
       )
     )
       return
@@ -2450,10 +2786,10 @@ export const App: Component = () => {
       presetTitle ||
       (agentThreads().length === 1 && agentThreads()[0].title === 'Conversa Inicial'
         ? 'Nova Tarefa'
-        : `Assunto ${agentThreads().length + 1}`)
+        : `Conversa ${agentThreads().length + 1}`)
 
     const titlePrompt = window.prompt(
-      'Qual o assunto desta nova conversa? (ex: Criar site, Pesquisar preços, Revisar texto):',
+      'Nome da nova conversa (ex: Criar site, Pesquisar preços, Revisar texto):',
       defaultTitle,
     )
     if (titlePrompt === null) return
@@ -2472,7 +2808,7 @@ export const App: Component = () => {
     const agentId = selectedAgentId()
     if (!agentId || !window.orchbot) return
     if (agentThreads().length <= 1) {
-      alert('Não é possível excluir a única conversa do assistente.')
+      alert('Não é possível excluir a única conversa do agente.')
       return
     }
     const confirmed = window.confirm(
@@ -2494,7 +2830,7 @@ export const App: Component = () => {
     e.stopPropagation()
     const agentId = selectedAgentId()
     if (!agentId || !window.orchbot) return
-    const newTitle = window.prompt('Novo nome para este assunto:', thread.title)
+    const newTitle = window.prompt('Novo nome para esta conversa:', thread.title)
     if (!newTitle || newTitle.trim() === '' || newTitle.trim() === thread.title) return
 
     try {
@@ -2686,13 +3022,41 @@ export const App: Component = () => {
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (mentionQuery() !== null && filteredMentionAgents().length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setMentionSelectedIndex((prev) => (prev + 1) % filteredMentionAgents().length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setMentionSelectedIndex((prev) =>
+          prev === 0 ? filteredMentionAgents().length - 1 : prev - 1,
+        )
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const selected = filteredMentionAgents()[mentionSelectedIndex()]
+        if (selected) {
+          applyMention(selected)
+          return
+        }
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setMentionQuery(null)
+        return
+      }
+    }
+
     if (e.key !== 'Enter' || e.shiftKey) return
     if (settings().sendShortcut === 'ctrl-enter' && !(e.ctrlKey || e.metaKey)) return
     e.preventDefault()
     handleSendMessage(e)
   }
 
-  /** Assistentes que precisam de atenção do usuário. */
+  /** Agentes que precisam de atenção do usuário. */
   const needsYouAgents = () => coworkers().filter((a) => needsYou(agentStates()[a.id] ?? 'idle'))
 
   const openAgent = (agentId: string) => {
@@ -2712,20 +3076,17 @@ export const App: Component = () => {
         }}
         onClick={() => openAgent(agent.id)}
         title={agent.name}
+        aria-label={`${agent.name}${state() !== 'idle' ? `: ${AGENT_STATE_LABEL[state()]}` : ''}`}
       >
         <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
           {agent.avatar || initialsOf(agent.name)}
+          <Show when={state() !== 'idle'}>
+            <span class={`agent-status-dot ${state()}`} title={AGENT_STATE_LABEL[state()]} />
+          </Show>
         </span>
         <span class="agent-item-copy">
           <div class="agent-item-top">
-            <span class="agent-item-name">
-              <Show when={agent.role === 'orchestrator'}>
-                <span class="role-crown-inline" title="Líder da Equipe (Coordenador)">
-                  👑{' '}
-                </span>
-              </Show>
-              {agent.name}
-            </span>
+            <span class="agent-item-name">{agent.name}</span>
             <Show
               when={state() !== 'idle'}
               fallback={<span class="agent-item-date">{formatShortDate(agent.updatedAt)}</span>}
@@ -2733,10 +3094,7 @@ export const App: Component = () => {
               <span class={`agent-state ${state()}`}>{AGENT_STATE_LABEL[state()]}</span>
             </Show>
           </div>
-          <div class="agent-item-workspace">
-            {agent.role === 'orchestrator' ? '👑 Coordenador • ' : '🛠️ Assistente • '}
-            {agent.description || 'Pronto para ajudar'}
-          </div>
+          <div class="agent-item-workspace">{agent.description || 'Pronto para ajudar'}</div>
         </span>
       </button>
     )
@@ -2746,6 +3104,11 @@ export const App: Component = () => {
     const agent = currentAgent()
     if (agent && connections().some((c) => c.providerId === agent.provider && c.enabled))
       void loadModelCatalog(agent.provider, agent.accountId)
+  })
+
+  createEffect(() => {
+    const prov = currentBoardProvider()
+    if (connections().some((c) => c.providerId === prov && c.enabled)) void loadModelCatalog(prov)
   })
 
   createEffect(() => {
@@ -2765,7 +3128,11 @@ export const App: Component = () => {
   })
 
   return (
-    <div class="app-container" style={{ zoom: settings().uiScale / 100 }}>
+    <div
+      class="app-container"
+      classList={{ 'compact-sidebar-layout': isSidebarCompact() }}
+      style={{ zoom: settings().uiScale / 100 }}
+    >
       <ConsentGate />
       <ThemeApplier
         customTheme={settings().customTheme}
@@ -2775,17 +3142,21 @@ export const App: Component = () => {
         <button
           type="button"
           class="rail-logo"
+          classList={{ active: activeSection() === 'board' }}
           style={{ background: settings().logoColor }}
           onClick={() => setActiveSection('board')}
-          title="Início"
-          aria-label="Início"
+          title="Início (Ctrl+1)"
+          aria-label="Início — coordenador (Ctrl+1)"
+          aria-current={activeSection() === 'board' ? 'page' : undefined}
         >
           ✦
+          <Show when={boardSummary().working > 0}>
+            <span class="rail-badge">{boardSummary().working}</span>
+          </Show>
         </button>
         <For
           each={
             [
-              ['board', 'board', 'Início (Ctrl+1)'],
               ['agents', 'chat', 'Conversas (Ctrl+2)'],
               ['channels', 'channels', 'Grupos (Ctrl+3)'],
               ['skills', 'skills', 'Habilidades'],
@@ -2803,9 +3174,6 @@ export const App: Component = () => {
               aria-current={activeSection() === section ? 'page' : undefined}
             >
               <RailIcon name={icon} />
-              <Show when={section === 'board' && boardSummary().working > 0}>
-                <span class="rail-badge">{boardSummary().working}</span>
-              </Show>
             </button>
           )}
         </For>
@@ -2849,18 +3217,37 @@ export const App: Component = () => {
           <RailIcon name="gear" />
         </button>
       </nav>
-      <aside class="sidebar">
+      <aside class="sidebar" classList={{ 'sidebar-compact': isSidebarCompact() }}>
         <div class="sidebar-header">
-          <label class="list-search">
-            <RailIcon name="search" />
-            <input
-              type="search"
-              placeholder="Buscar"
-              value={listQuery()}
-              onInput={(event) => setListQuery(event.currentTarget.value)}
-              aria-label="Buscar assistentes"
-            />
-          </label>
+          <Show
+            when={!isSidebarCompact()}
+            fallback={
+              <button
+                type="button"
+                class="btn-icon-gear sidebar-compact-search-btn"
+                onClick={() => {
+                  setPaletteQuery('')
+                  setPaletteIndex(0)
+                  setShowCommandPalette(true)
+                }}
+                title="Buscar (Ctrl+K)"
+                aria-label="Buscar"
+              >
+                <RailIcon name="search" />
+              </button>
+            }
+          >
+            <label class="list-search">
+              <RailIcon name="search" />
+              <input
+                type="search"
+                placeholder="Buscar"
+                value={listQuery()}
+                onInput={(event) => setListQuery(event.currentTarget.value)}
+                aria-label="Buscar agentes"
+              />
+            </label>
+          </Show>
           <div class="sidebar-top-actions">
             <div class="menu-anchor" onKeyDown={(e) => e.key === 'Escape' && setShowNewMenu(false)}>
               <button
@@ -2892,45 +3279,57 @@ export const App: Component = () => {
                       openNewAgent()
                     }}
                   >
-                    🤖 Criar Assistente Personalizado
+                    Criar agente
                   </button>
                   <button
                     type="button"
                     class="dropdown-item"
                     role="menuitem"
                     disabled={agents().length === 0}
-                    title="Reúna vários assistentes em uma mesma sala para trabalharem juntos"
+                    title="Reúna vários agentes em uma mesma sala para trabalharem juntos"
                     onClick={() => {
                       setShowNewMenu(false)
                       setActiveSection('channels')
                       setCreatingChannel(true)
                     }}
                   >
-                    👥 Nova Sala em Grupo
+                    Novo grupo
                   </button>
                   <button
                     type="button"
                     class="dropdown-item"
                     role="menuitem"
-                    title="Uma pasta para organizar seus assistentes por assunto ou trabalho"
+                    title="Uma pasta para organizar seus agentes por assunto ou trabalho"
                     onClick={() => {
                       setShowNewMenu(false)
                       setShowProjectModal(true)
                     }}
                   >
-                    📁 Nova Pasta de Projeto
+                    Nova pasta de projeto
                   </button>
                 </div>
               </Show>
             </div>
+            <button
+              type="button"
+              class="btn-icon-gear sidebar-toggle-btn"
+              onClick={toggleSidebarCompact}
+              title={isSidebarCompact() ? 'Expandir lateral' : 'Recolher lateral'}
+              aria-label={isSidebarCompact() ? 'Expandir lateral' : 'Recolher lateral'}
+            >
+              <RailIcon name={isSidebarCompact() ? 'chevron-right' : 'chevron-left'} />
+            </button>
           </div>
         </div>
 
         <div class="agent-list">
           <Show when={needsYouAgents().length > 0}>
             <div class="project-group needs-you">
-              <div class="project-group-header">
-                <span class="project-group-name">⚠️ Precisa da sua resposta</span>
+              <div class="project-group-header" title="Aguardando você">
+                <span class="compact-group-indicator" title="Aguardando você">
+                  <span class="compact-indicator-dot warning" />
+                </span>
+                <span class="project-group-name">Aguardando você</span>
                 <span class="nav-badge">{needsYouAgents().length}</span>
               </div>
               <For each={needsYouAgents()}>{(agent) => agentRow(agent)}</For>
@@ -2940,11 +3339,20 @@ export const App: Component = () => {
           <Show
             when={coworkers().length > 0}
             fallback={
-              <button type="button" class="agent-item" onClick={() => setActiveSection('board')}>
+              <button
+                type="button"
+                class="agent-item"
+                title="Coordenador"
+                aria-label="Coordenador"
+                onClick={() => setActiveSection('board')}
+              >
                 <span class="agent-avatar" style={{ background: settings().logoColor }}>
-                  👑
+                  <RailIcon name="board" />
                 </span>
-                <span class="agent-item-name">Peça na Central para montar a equipe</span>
+                <span class="agent-item-copy">
+                  <span class="agent-item-name">Coordenador</span>
+                  <span class="agent-item-workspace">Descreva a tarefa para montar sua equipe</span>
+                </span>
               </button>
             }
           >
@@ -2954,9 +3362,12 @@ export const App: Component = () => {
                   <div class="project-group">
                     <div
                       class="project-group-header"
-                      title={project.description || project.workspacePath || ''}
+                      title={project.description || project.workspacePath || project.name}
                     >
-                      <span class="project-group-name">📁 {project.name}</span>
+                      <span class="compact-group-indicator" title={project.name}>
+                        <RailIcon name="folder" />
+                      </span>
+                      <span class="project-group-name">{project.name}</span>
                       <span class="nav-badge">{agentsOfProject(project.id).length}</span>
                       <button
                         type="button"
@@ -2965,7 +3376,7 @@ export const App: Component = () => {
                         title={`Cérebro de ${project.name}`}
                         aria-label={`Cérebro de ${project.name}`}
                       >
-                        🧠
+                        <RailIcon name="brain" />
                       </button>
                       <button
                         type="button"
@@ -2974,7 +3385,7 @@ export const App: Component = () => {
                         title={`Remover pasta ${project.name}`}
                         aria-label={`Remover pasta ${project.name}`}
                       >
-                        🗑
+                        <RailIcon name="trash" />
                       </button>
                     </div>
                     <For each={agentsOfProject(project.id)}>{(agent) => agentRow(agent)}</For>
@@ -2984,7 +3395,10 @@ export const App: Component = () => {
             </For>
             <Show when={agentsOfProject(null).length > 0}>
               <div class="project-group">
-                <div class="project-group-header">
+                <div class="project-group-header" title="Sua Equipe">
+                  <span class="compact-group-indicator" title="Sua Equipe">
+                    <RailIcon name="users" />
+                  </span>
                   <span class="project-group-name">Sua Equipe</span>
                   <span class="nav-badge">{agentsOfProject(null).length}</span>
                 </div>
@@ -2998,13 +3412,24 @@ export const App: Component = () => {
                 agentsOfProject(null).length === 0
               }
             >
-              <div class="list-empty">Nenhum assistente encontrado.</div>
+              <div class="list-empty">Nenhum agente encontrado.</div>
             </Show>
           </Show>
 
           <div class="project-group">
-            <div class="project-group-header">
-              <span class="project-group-name">Salas em Grupo</span>
+            <div class="project-group-header" title="Grupos">
+              <Show when={isSidebarCompact()}>
+                <button
+                  type="button"
+                  class="compact-group-link"
+                  title="Grupos"
+                  aria-label="Grupos"
+                  onClick={() => setActiveSection('channels')}
+                >
+                  <RailIcon name="channels" />
+                </button>
+              </Show>
+              <span class="project-group-name">Grupos</span>
               <button
                 type="button"
                 class="btn-icon-gear small"
@@ -3013,15 +3438,19 @@ export const App: Component = () => {
                   setActiveSection('channels')
                   setCreatingChannel(true)
                 }}
-                title="Nova sala em grupo"
-                aria-label="Nova sala em grupo"
+                title="Novo grupo"
+                aria-label="Novo grupo"
               >
                 +
               </button>
             </div>
             <For
               each={sidebarChannels()}
-              fallback={<div class="list-empty">Nenhuma sala em grupo criada.</div>}
+              fallback={
+                <Show when={!isSidebarCompact()}>
+                  <div class="list-empty">Nenhum grupo criado.</div>
+                </Show>
+              }
             >
               {(channel) => (
                 <button
@@ -3031,12 +3460,16 @@ export const App: Component = () => {
                     active: activeSection() === 'channels' && selectedChannelId() === channel.id,
                     muted: channel.archived,
                   }}
+                  title={channel.title}
+                  aria-label={channel.title}
                   onClick={() => {
                     setSelectedChannelId(channel.id)
                     setActiveSection('channels')
                   }}
                 >
-                  <span class="agent-avatar channel-avatar">👥</span>
+                  <span class="agent-avatar channel-avatar">
+                    <RailIcon name="users" />
+                  </span>
                   <span class="agent-item-copy">
                     <div class="agent-item-top">
                       <span class="agent-item-name">{channel.title}</span>
@@ -3055,12 +3488,24 @@ export const App: Component = () => {
             <button
               type="button"
               class="btn-link sidebar-small-link"
+              title={showArchivedChannels() ? 'Ocultar grupos arquivados' : 'Ver grupos arquivados'}
+              aria-label={
+                showArchivedChannels() ? 'Ocultar grupos arquivados' : 'Ver grupos arquivados'
+              }
+              aria-pressed={showArchivedChannels()}
               onClick={() => {
                 setShowArchivedChannels(!showArchivedChannels())
                 void loadChannels()
               }}
             >
-              {showArchivedChannels() ? 'Esconder salas arquivadas' : 'Ver salas arquivadas'}
+              <Show
+                when={isSidebarCompact()}
+                fallback={
+                  showArchivedChannels() ? 'Ocultar grupos arquivados' : 'Ver grupos arquivados'
+                }
+              >
+                <RailIcon name="folder" />
+              </Show>
             </button>
           </div>
         </div>
@@ -3070,11 +3515,18 @@ export const App: Component = () => {
       <main class="main-content">
         <Show when={settingsOpen()}>
           <dialog
+            ref={focusDialog}
+            aria-modal="true"
             class="settings-overlay"
             open
             aria-label="Configurações"
             onClick={(e) => e.target === e.currentTarget && closeSettings()}
-            onKeyDown={(e) => e.key === 'Escape' && e.target === e.currentTarget && closeSettings()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                closeSettings()
+              }
+            }}
           >
             <div class="settings-shell">
               <aside class="settings-nav">
@@ -3156,41 +3608,19 @@ export const App: Component = () => {
                           </Show>
                           <div class="connections-header">
                             <div class="connections-header-left">
-                              <h1 class="connections-title">
-                                <span>🔌 Conexões & Provedores de IA</span>
-                              </h1>
                               <p class="connections-desc">
-                                Selecione e habilite quais conexões você deseja disponibilizar no
-                                Orchbot (Codex, Claude, Grok, Muse). Configure credenciais,
-                                endpoints e modelos padrão com testes de conectividade em tempo
-                                real.
+                                Ative suas IAs e escolha um provedor para configurar contas e
+                                modelos.
                               </p>
+                              <PrincipalProviderSelect />
                             </div>
-                            <div style={{ display: 'flex', gap: '8px' }}>
-                              <button
-                                type="button"
-                                class="btn-primary"
-                                onClick={() => {
-                                  const enabled = connections().filter((c) => c.enabled)
-                                  if (enabled.length > 0) {
-                                    setProvider(enabled[0].providerId)
-                                    setModel(enabled[0].defaultModel)
-                                  } else {
-                                    setProvider('codex')
-                                    setModel(DEFAULT_PROVIDER_MODELS.codex)
-                                  }
-                                  setShowModal(true)
-                                }}
-                                title="Criar novo agente com os provedores configurados"
-                              >
-                                + Novo Agente
-                              </button>
+                            <div class="connections-header-actions">
                               <button
                                 type="button"
                                 class="btn-outline"
                                 onClick={() => setShowCustomProvider(true)}
                               >
-                                + Provedor personalizado
+                                Adicionar provedor
                               </button>
                               <button
                                 type="button"
@@ -3201,7 +3631,7 @@ export const App: Component = () => {
                                 }}
                                 title="Atualizar status de todas as conexões"
                               >
-                                🔄 Atualizar Status
+                                Verificar conexões
                               </button>
                             </div>
                           </div>
@@ -3213,19 +3643,15 @@ export const App: Component = () => {
                                   <div
                                     class="connections-row"
                                     classList={{
-                                      active:
-                                        (selectedConnId() ?? connections()[0]?.providerId) ===
-                                        c.providerId,
+                                      active: activeConnectionId() === c.providerId,
                                     }}
                                   >
                                     <button
                                       type="button"
                                       class="connections-row-main"
+                                      aria-pressed={activeConnectionId() === c.providerId}
                                       onClick={() => setSelectedConnId(c.providerId)}
                                     >
-                                      <span class="connection-icon-badge">
-                                        {PROVIDER_ICONS[c.providerId] || '🤖'}
-                                      </span>
                                       <span>
                                         <strong>{c.name}</strong>
                                         <small>
@@ -3238,6 +3664,7 @@ export const App: Component = () => {
                                         <input
                                           type="checkbox"
                                           checked={c.enabled}
+                                          aria-label={`Ativar ${c.name}`}
                                           onChange={(e) =>
                                             handleToggleConnection(c, e.currentTarget.checked)
                                           }
@@ -3252,9 +3679,7 @@ export const App: Component = () => {
                             <div class="connections-grid">
                               <For
                                 each={connections().filter(
-                                  (c) =>
-                                    c.providerId ===
-                                    (selectedConnId() ?? connections()[0]?.providerId),
+                                  (c) => c.providerId === activeConnectionId(),
                                 )}
                               >
                                 {(conn) => {
@@ -3265,15 +3690,12 @@ export const App: Component = () => {
                                   const savedMsg = () => saveMessage()[conn.providerId]
                                   const isKeyVisible = () => Boolean(showApiKeys()[conn.providerId])
 
-                                  const getIcon = () => PROVIDER_ICONS[conn.providerId] || '🤖'
-
                                   return (
                                     <div
                                       class={`connection-box ${conn.enabled ? `active-${conn.providerId}` : 'disabled'}`}
                                     >
                                       <div class="connection-box-top">
                                         <div class="connection-brand">
-                                          <span class="connection-icon-badge">{getIcon()}</span>
                                           <div>
                                             <div class="connection-name">{conn.name}</div>
                                             <div
@@ -3331,6 +3753,7 @@ export const App: Component = () => {
                                               <input
                                                 type="checkbox"
                                                 checked={conn.enabled}
+                                                aria-label={`Ativar ${conn.name}`}
                                                 onChange={(e) =>
                                                   handleToggleConnection(
                                                     conn,
@@ -3435,13 +3858,16 @@ export const App: Component = () => {
                                             <button
                                               type="button"
                                               class="btn-icon-eye"
+                                              aria-label={
+                                                isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'
+                                              }
                                               onClick={() => toggleShowApiKey(conn.providerId)}
                                               title={
                                                 isKeyVisible() ? 'Ocultar chave' : 'Mostrar chave'
                                               }
                                               disabled={!conn.enabled}
                                             >
-                                              {isKeyVisible() ? '🙈' : '👁️'}
+                                              {isKeyVisible() ? 'Ocultar' : 'Mostrar'}
                                             </button>
                                           </div>
                                           <Show when={conn.keyStorageError}>
@@ -3534,7 +3960,7 @@ export const App: Component = () => {
                                             title={`Configurar ${conn.name} (CLI, esforço, modelos)`}
                                             aria-label={`Configurar ${conn.name}`}
                                           >
-                                            ⚙
+                                            <RailIcon name="gear" />
                                           </button>
                                           <button
                                             type="button"
@@ -3543,7 +3969,7 @@ export const App: Component = () => {
                                             disabled={!conn.enabled || isTesting()}
                                             title="Testar comunicação com a CLI ou API do provedor"
                                           >
-                                            {isTesting() ? '⏳ Testando...' : '🧪 Testar Conexão'}
+                                            {isTesting() ? 'Verificando…' : 'Testar conexão'}
                                           </button>
                                         </div>
 
@@ -3553,7 +3979,7 @@ export const App: Component = () => {
                                           onClick={() => handleSaveConnection(conn)}
                                           disabled={!conn.enabled || isSaving()}
                                         >
-                                          {isSaving() ? 'Salvando...' : '💾 Salvar Configuração'}
+                                          {isSaving() ? 'Salvando…' : 'Salvar'}
                                         </button>
                                       </div>
                                     </div>
@@ -4190,14 +4616,14 @@ export const App: Component = () => {
                               when={stats().topAgents.length > 0}
                               fallback={
                                 <p class="settings-section-desc">
-                                  Nenhum robô com atividade ainda.
+                                  Nenhum agente com atividade ainda.
                                 </p>
                               }
                             >
                               <For each={stats().topAgents}>
                                 {(a) => (
                                   <div class="settings-row">
-                                    <div class="settings-row-title">🤖 {a.name}</div>
+                                    <div class="settings-row-title">{a.name}</div>
                                     <strong>{formatCompact(a.tokens)}</strong>
                                   </div>
                                 )}
@@ -4281,126 +4707,266 @@ export const App: Component = () => {
           </dialog>
         </Show>
         <Show when={activeSection() === 'board'}>
-          <div class="board-view board-minimal">
-            <form class="board-min-card" onSubmit={handleBoardForemanDispatch}>
-              <h1 class="board-min-title">O que vamos fazer hoje?</h1>
-              <textarea
-                class="board-min-input"
-                rows={3}
-                autofocus
-                placeholder="Descreva o que você precisa…"
-                value={boardForemanPrompt()}
-                onInput={(e) => setBoardForemanPrompt(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    e.currentTarget.form?.requestSubmit()
-                  }
-                }}
-              />
-              <Show when={projects().length > 0}>
-                <div class="board-min-row">
-                  <select
-                    aria-label="Pasta do projeto"
-                    value={boardFilterProject()}
-                    onChange={(e) => setBoardFilterProject(e.currentTarget.value)}
-                  >
-                    <option value="all">Todas as pastas</option>
-                    <For each={projects()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
-                  </select>
+          <div class="board-view">
+            <div class="board-container">
+              {/* Aprovações pendentes */}
+              <Show when={approvals().length > 0}>
+                <div class="board-approvals-wrap">
+                  <For each={approvals()}>{(a) => <ApprovalCard approval={a} />}</For>
                 </div>
               </Show>
-              <div class="board-min-actions">
-                <button type="submit" class="btn-primary" disabled={!boardForemanPrompt().trim()}>
-                  Começar
-                </button>
-                <button
-                  type="button"
-                  class="btn-secondary"
-                  disabled={!boardForemanPrompt().trim() || teamDrafting()}
-                  onClick={() => void handleDraftTeam()}
-                >
-                  {teamDrafting() ? 'Montando a equipe…' : 'Montar uma equipe para isso'}
-                </button>
+
+              {/* Cabeçalho de boas-vindas / Hero */}
+              <div class="board-hero">
+                <div class="board-hero-emblem" aria-hidden="true">
+                  <RailIcon name="sparkles" />
+                </div>
+                <h1 class="board-hero-title">O que vamos fazer hoje?</h1>
+                <p class="board-hero-subtitle">
+                  Descreva sua tarefa ou monte uma equipe sob medida para o seu objetivo.
+                </p>
               </div>
-              <Show when={boardDispatchMsg()}>
-                {(msg) => <div class="foreman-dispatch-feedback">{msg()}</div>}
-              </Show>
-              <Show when={teamDraft()}>
-                {(team) => (
-                  <div class="board-team-draft">
-                    <strong>Equipe sugerida</strong>
-                    <For each={team()}>
-                      {(d) => (
-                        <div class="board-team-member">
-                          <span class="board-team-avatar">{d.avatar}</span>
-                          <div>
-                            <strong>
-                              {d.name}
-                              {d.role === 'orchestrator' ? ' · líder' : ''}
-                            </strong>
-                            <span>{d.description}</span>
-                          </div>
-                        </div>
-                      )}
-                    </For>
-                    <div class="approval-card-actions">
-                      <button
-                        type="button"
-                        class="btn-primary"
-                        disabled={teamDrafting()}
-                        onClick={() => void handleHireTeam()}
+
+              {/* Compositor flutuante — proporções e estilo fiéis ao OpenBot */}
+              <form class="board-composer-card" onSubmit={handleBoardForemanDispatch}>
+                <textarea
+                  class="board-composer-textarea"
+                  rows={3}
+                  autofocus
+                  placeholder="Descreva o que você precisa… (Pressione Enter para enviar, Shift+Enter para nova linha)"
+                  value={boardForemanPrompt()}
+                  onInput={(e) => setBoardForemanPrompt(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      if (boardForemanPrompt().trim()) {
+                        e.currentTarget.form?.requestSubmit()
+                      }
+                    }
+                  }}
+                />
+
+                <div class="board-composer-toolbar">
+                  <div class="board-composer-pills">
+                    {/* Provedor de IA (quando houver mais de uma conexão ativa) */}
+                    <Show when={connections().filter((c) => c.enabled).length > 1}>
+                      <select
+                        class="composer-pill-select"
+                        aria-label="Provedor de inteligência artificial"
+                        title="Provedor de IA"
+                        value={currentBoardProvider()}
+                        onChange={(e) =>
+                          void handleBoardProviderChange(e.currentTarget.value as SupportedProvider)
+                        }
                       >
-                        Contratar e começar
-                      </button>
-                      <button
-                        type="button"
-                        class="btn-secondary"
-                        onClick={() => setTeamDraft(null)}
+                        <For each={connections().filter((c) => c.enabled)}>
+                          {(c) => (
+                            <option value={c.providerId}>
+                              {c.name}
+                              {c.readiness === 'ready' ? '' : ` (${providerStatusLabel(c)})`}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </Show>
+
+                    {/* Modelo de IA */}
+                    <Show
+                      when={isCustomBoardModel()}
+                      fallback={
+                        <select
+                          class="composer-pill-select composer-model-select"
+                          aria-label="Modelo de inteligência artificial"
+                          title="Modelo de IA"
+                          value={currentBoardModel()}
+                          onChange={(e) => {
+                            if (e.currentTarget.value === '__custom__') {
+                              setIsCustomBoardModel(true)
+                            } else {
+                              void handleBoardModelChange(e.currentTarget.value)
+                            }
+                          }}
+                        >
+                          <Show
+                            when={!modelsFor(currentBoardProvider()).includes(currentBoardModel())}
+                          >
+                            <option value={currentBoardModel()} selected>
+                              {currentBoardModel()}
+                            </option>
+                          </Show>
+                          {/* selected por opção: a lista é refeita ao recarregar e o value do select não se reaplica */}
+                          <For each={modelsFor(currentBoardProvider())}>
+                            {(m) => (
+                              <option value={m} selected={m === currentBoardModel()}>
+                                {m}
+                              </option>
+                            )}
+                          </For>
+                          <option value="__custom__">Outro modelo…</option>
+                        </select>
+                      }
+                    >
+                      <div class="composer-custom-model-wrap">
+                        <input
+                          class="composer-pill-input"
+                          aria-label="ID do modelo personalizado"
+                          placeholder="ID do modelo"
+                          value={currentBoardModel()}
+                          onInput={(e) => void handleBoardModelChange(e.currentTarget.value.trim())}
+                          autofocus
+                        />
+                        <button
+                          type="button"
+                          class="composer-custom-model-close"
+                          title="Voltar à lista de modelos"
+                          aria-label="Voltar à lista de modelos"
+                          onClick={() => setIsCustomBoardModel(false)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </Show>
+
+                    {/* Nível de raciocínio (effort) */}
+                    <Show when={supportsEffort(currentBoardProvider())}>
+                      <select
+                        class="composer-pill-select composer-effort-select"
+                        aria-label="Nível de raciocínio"
+                        title="Nível de raciocínio: mais alto pensa mais, mas demora e gasta mais"
+                        value={currentBoardEffort()}
+                        onChange={(e) =>
+                          void handleBoardEffortChange(e.currentTarget.value as ProviderEffort | '')
+                        }
                       >
-                        Cancelar
-                      </button>
-                    </div>
+                        <For each={effortsFor(currentBoardProvider(), currentBoardModel())}>
+                          {([value, label]) => <option value={value}>{label}</option>}
+                        </For>
+                      </select>
+                    </Show>
+
+                    {/* Pasta do projeto */}
+                    <Show when={projects().length > 0}>
+                      <select
+                        class="composer-pill-select composer-project-select"
+                        aria-label="Pasta do projeto"
+                        title="Pasta do projeto"
+                        value={boardFilterProject()}
+                        onChange={(e) => setBoardFilterProject(e.currentTarget.value)}
+                      >
+                        <option value="all">Todas as pastas</option>
+                        <For each={projects()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
+                      </select>
+                    </Show>
                   </div>
-                )}
-              </Show>
-            </form>
-            <Show when={approvals().length > 0}>
-              <div class="board-min-card">
-                <For each={approvals()}>{(a) => <ApprovalCard approval={a} />}</For>
-              </div>
-            </Show>
-            <Show when={agents().find((a) => isForeman(a))}>
-              {(foreman) => (
-                <button
-                  type="button"
-                  class="board-min-link"
-                  onClick={() => openAgent(foreman().id)}
-                >
-                  Conversar com o coordenador
-                </button>
-              )}
-            </Show>
-            <button type="button" class="board-min-link" onClick={() => openNewAgent()}>
-              Criar assistente personalizado
-            </button>
-            <section class="board-min-suggest-wrap" aria-label="Sugestões">
-              <h2 class="board-min-suggest-title">Sugestões</h2>
-              <div class="board-min-suggestions">
-                <For each={BOARD_SUGGESTIONS}>
-                  {(s) => (
+
+                  <div class="board-composer-actions">
                     <button
                       type="button"
-                      class="board-min-chip"
-                      onClick={() => setBoardForemanPrompt(s.prompt)}
+                      class="board-btn-secondary"
+                      disabled={!boardForemanPrompt().trim() || teamDrafting()}
+                      onClick={() => void handleDraftTeam()}
+                      title="Sugerir uma equipe para realizar esta tarefa"
                     >
-                      <strong>{s.title}</strong>
-                      <span>{s.desc}</span>
+                      <RailIcon name="users" />
+                      <span>{teamDrafting() ? 'Montando…' : 'Montar equipe'}</span>
+                    </button>
+                    <button
+                      type="submit"
+                      class="board-btn-send"
+                      disabled={!boardForemanPrompt().trim()}
+                      title="Enviar tarefa para o coordenador"
+                      aria-label="Enviar tarefa"
+                    >
+                      <RailIcon name="send" />
+                    </button>
+                  </div>
+                </div>
+
+                <Show when={boardDispatchMsg()}>
+                  {(msg) => <div class="foreman-dispatch-feedback">{msg()}</div>}
+                </Show>
+
+                <Show when={teamDraft()}>
+                  {(team) => (
+                    <div class="board-team-draft">
+                      <strong>Equipe sugerida</strong>
+                      <For each={team()}>
+                        {(d) => (
+                          <div class="board-team-member">
+                            <span class="board-team-avatar">{d.avatar}</span>
+                            <div>
+                              <strong>
+                                {d.name}
+                                {d.role === 'orchestrator' ? ' · líder' : ''}
+                              </strong>
+                              <span>{d.description}</span>
+                            </div>
+                          </div>
+                        )}
+                      </For>
+                      <div class="approval-card-actions">
+                        <button
+                          type="button"
+                          class="btn-primary"
+                          disabled={teamDrafting()}
+                          onClick={() => void handleHireTeam()}
+                        >
+                          Contratar e começar
+                        </button>
+                        <button
+                          type="button"
+                          class="btn-secondary"
+                          onClick={() => setTeamDraft(null)}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </Show>
+              </form>
+
+              {/* Sugestões de tarefas */}
+              <section class="board-suggestions-section" aria-label="Sugestões de tarefas">
+                <div class="board-section-header">
+                  <span>Sugestões</span>
+                </div>
+                <div class="board-suggestions-grid">
+                  <For each={BOARD_SUGGESTIONS}>
+                    {(s) => (
+                      <button
+                        type="button"
+                        class="board-suggestion-card"
+                        onClick={() => setBoardForemanPrompt(s.prompt)}
+                      >
+                        <strong class="board-suggestion-title">{s.title}</strong>
+                        <span class="board-suggestion-desc">{s.desc}</span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </section>
+
+              {/* Links de navegação secundária */}
+              <div class="board-footer-nav">
+                <Show when={agents().find((a) => isForeman(a))}>
+                  {(foreman) => (
+                    <button
+                      type="button"
+                      class="board-nav-link"
+                      onClick={() => openAgent(foreman().id)}
+                    >
+                      <RailIcon name="chat" />
+                      <span>Conversar com o coordenador</span>
                     </button>
                   )}
-                </For>
+                </Show>
+                <button type="button" class="board-nav-link" onClick={() => openNewAgent()}>
+                  <RailIcon name="users" />
+                  <span>Criar agente personalizado</span>
+                </button>
               </div>
-            </section>
+            </div>
           </div>
         </Show>
 
@@ -4429,7 +4995,7 @@ export const App: Component = () => {
                     <>
                       <h1 class="welcome-title">Com quem você quer conversar?</h1>
                       <p class="welcome-desc">
-                        Escolha um assistente na lista à esquerda ou volte para a tela de{' '}
+                        Escolha um agente na lista à esquerda ou volte para a tela de{' '}
                         <strong>Início</strong> para ver toda a sua equipe.
                       </p>
                       <div
@@ -4444,10 +5010,10 @@ export const App: Component = () => {
                           class="btn-primary"
                           onClick={() => setActiveSection('board')}
                         >
-                          🏠 Ir para o Início (Central da Equipe)
+                          🏠 Ir para o Início (Início)
                         </button>
                         <button type="button" class="btn-outline" onClick={() => openNewAgent()}>
-                          + Criar Assistente
+                          + Criar Agente
                         </button>
                       </div>
                     </>
@@ -4455,7 +5021,7 @@ export const App: Component = () => {
                 >
                   <h1 class="welcome-title">Bem-vindo ao Orchbot</h1>
                   <p class="welcome-desc">
-                    Sua equipe de assistentes inteligentes que trabalham juntos para você. Comece em
+                    Sua equipe de agentes inteligentes que trabalham juntos para você. Comece em
                     dois passos simples:
                   </p>
                   <ol class="first-run-steps">
@@ -4476,9 +5042,6 @@ export const App: Component = () => {
                               aria-pressed={conn.enabled}
                               onClick={() => handleToggleConnection(conn, !conn.enabled)}
                             >
-                              <span class="provider-card-icon">
-                                {PROVIDER_ICONS[conn.providerId] ?? '🔌'}
-                              </span>
                               <span class="provider-card-name">{conn.name}</span>
                               <span class="provider-card-meta">
                                 {conn.enabled
@@ -4503,7 +5066,7 @@ export const App: Component = () => {
                     <li class="first-run-step">
                       <h2 class="welcome-subtitle">2. Monte sua equipe com 1 clique</h2>
                       <p class="first-run-hint">
-                        Na Central, descreva o que precisa. O coordenador monta a equipe e distribui
+                        No início, descreva o que precisa. O coordenador monta a equipe e distribui
                         o trabalho.
                       </p>
                       <div
@@ -4518,7 +5081,7 @@ export const App: Component = () => {
                           class="btn-primary"
                           onClick={() => setActiveSection('board')}
                         >
-                          🏠 Abrir Central da Equipe
+                          🏠 Abrir Início
                         </button>
                       </div>
                     </li>
@@ -4529,49 +5092,16 @@ export const App: Component = () => {
           >
             {(agent) => (
               <div class="chat-workspace">
-                {/* Header do Assistente — Limpo e Intuitivo */}
+                {/* Header do Agente — Limpo e Compacto */}
                 <header class="agent-detail-header">
                   <div class="agent-info">
                     <div class="agent-title-row">
-                      <button
-                        type="button"
-                        class="btn-back-board"
-                        onClick={() => setActiveSection('board')}
-                        title="Voltar para o Início (Central da Equipe)"
-                      >
-                        ← Início
-                      </button>
                       <span class="agent-avatar" style={{ background: agentColor(agent().name) }}>
                         {agent().avatar || initialsOf(agent().name)}
                       </span>
-                      <h2>{agent().name}</h2>
-                      <Show
-                        when={!isForeman(agent())}
-                        fallback={<span class="role-badge-toggle orchestrator">Coordenador</span>}
-                      >
-                        <button
-                          type="button"
-                          class={`role-badge-toggle ${agent().role === 'orchestrator' ? 'orchestrator' : 'worker'}`}
-                          onClick={() =>
-                            handleSwitchRole(
-                              agent().id,
-                              agent().role === 'orchestrator' ? 'worker' : 'orchestrator',
-                            )
-                          }
-                          title="Clique para alternar entre Líder da Equipe e Especialista"
-                        >
-                          {agent().role === 'orchestrator'
-                            ? '👑 Líder da Equipe'
-                            : '🛠️ Especialista'}
-                        </button>
-                      </Show>
-                    </div>
-                    <div class="agent-meta">
-                      <Show when={agent().description}>
-                        <span>{agent().description}</span>
-                      </Show>
-                      <Show when={projectOf(agent())}>
-                        {(proj) => <span>📁 Pasta: {proj().name}</span>}
+                      <h2 title={agent().description || agent().name}>{agent().name}</h2>
+                      <Show when={isForeman(agent()) || agent().role === 'orchestrator'}>
+                        <span class="agent-role-pill">Coordenador</span>
                       </Show>
                       <Show when={isQueuePaused() || pendingTasksCount() > 0}>
                         <button
@@ -4579,9 +5109,7 @@ export const App: Component = () => {
                           class="cron-badge"
                           onClick={() => setShowQueuePanel(!showQueuePanel())}
                         >
-                          {isQueuePaused()
-                            ? '⏸ Trabalho pausado'
-                            : `📋 ${pendingTasksCount()} pedido(s) na fila`}
+                          {isQueuePaused() ? 'Trabalho pausado' : `${pendingTasksCount()} na fila`}
                         </button>
                       </Show>
                     </div>
@@ -4609,24 +5137,6 @@ export const App: Component = () => {
                   </div>
 
                   <div class="header-actions">
-                    <Show when={otherAgents().length > 0}>
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        onClick={() => handleOpenDelegationModal()}
-                        title="Pedir ajuda de outro assistente da sua equipe"
-                      >
-                        🤝 Passar Tarefa
-                      </button>
-                    </Show>
-                    <button
-                      type="button"
-                      class="btn-outline"
-                      onClick={() => setShowAgentSettings(true)}
-                      title="Configurações deste assistente"
-                    >
-                      ⚙️ Ajustes
-                    </button>
                     <div
                       class="menu-anchor"
                       onKeyDown={(e) => e.key === 'Escape' && setShowAgentMenu(false)}
@@ -4634,12 +5144,13 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="btn-outline"
-                        aria-label="Mais opções do assistente"
+                        aria-label="Ações do agente"
+                        title="Passar tarefa, configurar e outras ações"
                         aria-haspopup="menu"
                         aria-expanded={showAgentMenu()}
                         onClick={() => setShowAgentMenu(!showAgentMenu())}
                       >
-                        ⋯ Mais
+                        Ações
                       </button>
                       <Show when={showAgentMenu()}>
                         <button
@@ -4650,6 +5161,30 @@ export const App: Component = () => {
                           onClick={() => setShowAgentMenu(false)}
                         />
                         <div class="dropdown-menu" role="menu">
+                          <Show when={otherAgents().length > 0}>
+                            <button
+                              type="button"
+                              class="dropdown-item"
+                              role="menuitem"
+                              onClick={() => {
+                                setShowAgentMenu(false)
+                                handleOpenDelegationModal()
+                              }}
+                            >
+                              Passar tarefa
+                            </button>
+                          </Show>
+                          <button
+                            type="button"
+                            class="dropdown-item"
+                            role="menuitem"
+                            onClick={() => {
+                              setShowAgentMenu(false)
+                              setShowAgentSettings(true)
+                            }}
+                          >
+                            Configurar agente
+                          </button>
                           <button
                             type="button"
                             class="dropdown-item"
@@ -4659,7 +5194,7 @@ export const App: Component = () => {
                               setShowAiEdit(true)
                             }}
                           >
-                            ✨ Melhorar este assistente com IA
+                            Melhorar com IA
                           </button>
                           <button
                             type="button"
@@ -4671,7 +5206,7 @@ export const App: Component = () => {
                               setShowMemoryModal(true)
                             }}
                           >
-                            🧠 O que ele lembra de você (Memórias)
+                            Memórias
                           </button>
                           <button
                             type="button"
@@ -4682,7 +5217,7 @@ export const App: Component = () => {
                               setShowCronModal(true)
                             }}
                           >
-                            ⏰ Tarefas automáticas com horário
+                            Tarefas agendadas
                             {scheduledTasks().length > 0 ? ` (${scheduledTasks().length})` : ''}
                           </button>
                           <button
@@ -4694,7 +5229,7 @@ export const App: Component = () => {
                               void openAutomationModal()
                             }}
                           >
-                            🔗 Webhooks e cadeia
+                            Webhooks e automação
                           </button>
                           <button
                             type="button"
@@ -4705,7 +5240,7 @@ export const App: Component = () => {
                               setShowSearchModal(true)
                             }}
                           >
-                            🔍 Pesquisar em conversas antigas
+                            Pesquisar histórico
                           </button>
                           <Show when={workspaceRules()?.exists}>
                             <button
@@ -4717,7 +5252,7 @@ export const App: Component = () => {
                                 setShowRulesModal(true)
                               }}
                             >
-                              📜 Regras da pasta ({workspaceRules()?.filename})
+                              Regras da pasta ({workspaceRules()?.filename})
                             </button>
                           </Show>
                           <button
@@ -4729,7 +5264,7 @@ export const App: Component = () => {
                               setShowQueuePanel(!showQueuePanel())
                             }}
                           >
-                            📋 Ver fila de pedidos ({pendingTasksCount()})
+                            Fila de pedidos ({pendingTasksCount()})
                           </button>
                           <button
                             type="button"
@@ -4740,7 +5275,7 @@ export const App: Component = () => {
                               togglePauseQueue()
                             }}
                           >
-                            {isQueuePaused() ? '▶ Continuar trabalhos' : '⏸ Pausar trabalhos'}
+                            {isQueuePaused() ? 'Continuar trabalhos' : 'Pausar trabalhos'}
                           </button>
                           <Show
                             when={agent().provider === 'codex' || agent().provider === 'claude'}
@@ -4764,7 +5299,7 @@ export const App: Component = () => {
                                 handleResetCliSession()
                               }}
                             >
-                              ↺ Renovar fôlego da conversa
+                              Renovar sessão da conversa
                             </button>
                           </Show>
                           <hr class="dropdown-separator" />
@@ -4777,7 +5312,7 @@ export const App: Component = () => {
                               void handleDeleteAgent(agent().id)
                             }}
                           >
-                            🗑 Remover este assistente
+                            Remover este agente
                           </button>
                         </div>
                       </Show>
@@ -4785,54 +5320,11 @@ export const App: Component = () => {
                   </div>
                 </header>
 
-                {/* Barra Visual de Equipe quando está falando com um Líder */}
-                <Show when={agent().role === 'orchestrator'}>
-                  <div class="orchestrator-live-bar">
-                    <div class="orchestrator-live-left">
-                      <span class="orchestrator-live-badge">👑 Líder Coordenador</span>
-                      <span class="orchestrator-live-hint">
-                        Este líder pode dividir o trabalho com a equipe. Clique em um colega abaixo
-                        para pedir algo direto a ele:
-                      </span>
-                    </div>
-                    <div class="orchestrator-team-chips">
-                      <For
-                        each={teamOf(agent())}
-                        fallback={
-                          <button
-                            type="button"
-                            class="team-specialist-chip add"
-                            onClick={() => setActiveSection('board')}
-                          >
-                            + Adicionar colegas na Central da Equipe
-                          </button>
-                        }
-                      >
-                        {(member) => {
-                          const mState = () => agentStates()[member.id] ?? 'idle'
-                          return (
-                            <button
-                              type="button"
-                              class={`team-specialist-chip ${mState()}`}
-                              onClick={() => setInputText(`@${member.name} `)}
-                              title={`Clique para pedir algo para ${member.name}`}
-                            >
-                              <span class={`team-dot ${mState()}`} />
-                              <span>
-                                {member.avatar || '🛠️'} {member.name}
-                              </span>
-                              <span class="team-chip-action">Pedir tarefa</span>
-                            </button>
-                          )
-                        }}
-                      </For>
-                    </div>
-                  </div>
-                </Show>
-
-                {/* Ajustes do assistente */}
+                {/* Ajustes do agente */}
                 <Show when={showAgentSettings()}>
                   <dialog
+                    ref={focusDialog}
+                    aria-modal="true"
                     class="modal-overlay"
                     open
                     onClick={() => setShowAgentSettings(false)}
@@ -4842,7 +5334,10 @@ export const App: Component = () => {
                       class="modal-content"
                       role="document"
                       onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        e.stopPropagation()
+                        if (e.key === 'Escape') setShowAgentSettings(false)
+                      }}
                     >
                       <div class="modal-header">
                         <span class="modal-title">⚙️ Ajustes de {agent().name}</span>
@@ -4869,11 +5364,7 @@ export const App: Component = () => {
                               }
                             >
                               <For each={connections().filter((c) => c.enabled)}>
-                                {(c) => (
-                                  <option value={c.providerId}>
-                                    {PROVIDER_ICONS[c.providerId] || '🔗'} {c.name}
-                                  </option>
-                                )}
+                                {(c) => <option value={c.providerId}>{c.name}</option>}
                               </For>
                             </select>
                           </div>
@@ -4963,10 +5454,8 @@ export const App: Component = () => {
                                 handleSwitchRole(agent().id, e.currentTarget.value as AgentRole)
                               }
                             >
-                              <option value="worker">🛠️ Especialista (faz o trabalho)</option>
-                              <option value="orchestrator">
-                                👑 Líder Coordenador (divide tarefas)
-                              </option>
+                              <option value="worker">Especialista (executa tarefas)</option>
+                              <option value="orchestrator">Coordenador (distribui tarefas)</option>
                             </select>
                           </div>
 
@@ -4982,8 +5471,10 @@ export const App: Component = () => {
                                 )
                               }
                             >
-                              <option value="autonomous">⚡ Faz sozinho sem interromper</option>
-                              <option value="cautious">🛡️ Pergunta antes de cada passo</option>
+                              <option value="autonomous">
+                                Automático (executa sem interromper)
+                              </option>
+                              <option value="cautious">Confirmar antes de cada passo</option>
                             </select>
                           </div>
                         </div>
@@ -5000,7 +5491,7 @@ export const App: Component = () => {
                                 )
                               }
                             >
-                              <option value="economico">💰 Curta (mais rápida)</option>
+                              <option value="economico">Curta (mais rápida)</option>
                               <option value="padrao">Equilibrada (Recomendado)</option>
                               <option value="completo">Longa (lembra de mais detalhes)</option>
                             </select>
@@ -5012,7 +5503,7 @@ export const App: Component = () => {
                               handleSwitchBrowserAccess(agent().id, agent().browserAccess === false)
                             }
                           >
-                            🌐 Acesso à internet:{' '}
+                            Acesso à internet:{' '}
                             {agent().browserAccess === false ? 'Desligado' : 'Ligado'}
                           </button>
                         </div>
@@ -5022,10 +5513,10 @@ export const App: Component = () => {
                           </span>
                           <Show when={agent().role === 'orchestrator'}>
                             <span class="orchestrator-team">
-                              👑 Colegas que ele coordena:{' '}
+                              Colegas sob coordenação:{' '}
                               {teamOf(agent())
                                 .map((a) => a.name)
-                                .join(', ') || 'nenhum colega ainda'}
+                                .join(', ') || 'nenhum agente ainda'}
                             </span>
                           </Show>
                         </div>
@@ -5054,7 +5545,7 @@ export const App: Component = () => {
                             'font-size': '12px',
                           }}
                         >
-                          Nenhum pedido pendente na fila deste assistente.
+                          Nenhum pedido pendente na fila deste agente.
                         </div>
                       }
                     >
@@ -5111,8 +5602,7 @@ export const App: Component = () => {
                   {/* Barra de Assuntos da Conversa */}
                   <div class="threads-bar">
                     <div class="threads-bar-header">
-                      <span class="threads-bar-label">Assuntos:</span>
-                      <div class="threads-list">
+                      <div class="threads-list" aria-label="Conversas">
                         <For each={agentThreads()}>
                           {(thread) => (
                             <div
@@ -5122,27 +5612,29 @@ export const App: Component = () => {
                                 type="button"
                                 class="thread-chip-select"
                                 onClick={() => handleSelectThread(thread)}
-                                title={`Assunto: ${thread.title}`}
+                                title={`Conversa: ${thread.title}`}
+                                aria-pressed={activeThread()?.id === thread.id}
                               >
-                                <span class="thread-chip-icon">💬</span>
                                 <span class="thread-chip-title">{thread.title}</span>
                               </button>
                               <button
                                 type="button"
                                 class="thread-chip-action"
-                                title="Mudar nome deste assunto"
+                                title="Renomear conversa"
+                                aria-label={`Renomear ${thread.title}`}
                                 onClick={(e) => handleRenameThread(thread, e)}
                               >
-                                ✏️
+                                Renomear
                               </button>
                               <Show when={agentThreads().length > 1}>
                                 <button
                                   type="button"
                                   class="thread-chip-action delete"
                                   title="Apagar esta conversa"
+                                  aria-label={`Apagar ${thread.title}`}
                                   onClick={(e) => handleDeleteThread(thread, e)}
                                 >
-                                  ✕
+                                  <RailIcon name="close" />
                                 </button>
                               </Show>
                             </div>
@@ -5154,9 +5646,9 @@ export const App: Component = () => {
                       type="button"
                       class="btn-new-thread"
                       onClick={() => handleCreateThread()}
-                      title="Começar uma nova conversa separada com este assistente"
+                      title="Começar uma nova conversa separada com este agente"
                     >
-                      <span>+</span> Nova Conversa
+                      <span aria-hidden="true">+</span> Nova conversa
                     </button>
                   </div>
 
@@ -5238,7 +5730,7 @@ export const App: Component = () => {
                               {/* Badge de Delegação se a mensagem veio de outro agente */}
                               <Show when={msg.senderAgentId}>
                                 <span class="delegation-badge">
-                                  🤝 Pedido vindo de um colega da equipe
+                                  🤝 Pedido vindo de um agente da equipe
                                 </span>
                               </Show>
 
@@ -5256,7 +5748,16 @@ export const App: Component = () => {
                                   {(block) => (
                                     <Show
                                       when={block.kind === 'code'}
-                                      fallback={<div class="msg-text-segment">{block.content}</div>}
+                                      fallback={
+                                        <Show
+                                          when={msg.role === 'assistant'}
+                                          fallback={
+                                            <div class="msg-text-segment">{block.content}</div>
+                                          }
+                                        >
+                                          <MessageText text={block.content} />
+                                        </Show>
+                                      }
                                     >
                                       <div class="code-block-card">
                                         <div class="code-block-header">
@@ -5307,7 +5808,9 @@ export const App: Component = () => {
                             <span class="streaming-pill">escrevendo...</span>
                           </div>
                           <div class="message-bubble assistant streaming">
-                            {streamingText() || 'Pensando e preparando sua resposta...'}
+                            <MessageText
+                              text={streamingText() || 'Pensando e preparando sua resposta...'}
+                            />
                             <div class="streaming-indicator">
                               <span class="pulse-dot" />
                               <span>Trabalhando no seu pedido...</span>
@@ -5345,34 +5848,35 @@ export const App: Component = () => {
 
                   {/* Barra de input do chat — Simples e Intuitiva */}
                   <div class="chat-input-container">
-                    <form class="chat-input-form" onSubmit={handleSendMessage}>
-                      {/* Chips rápidos para chamar colegas */}
-                      <div class="composer-quick-chips">
-                        <Show when={otherAgents().length > 0}>
-                          <span class="composer-chip-label">Equipe</span>
-                          <For each={otherAgents().slice(0, 5)}>
-                            {(teammate) => (
-                              <button
-                                type="button"
-                                class="composer-mention-chip"
-                                onClick={() => setInputText(`@${teammate.name} `)}
-                                title={`Passar tarefa para ${teammate.name}`}
+                    {/* Menu flutuante de sugestões de menção @ */}
+                    <Show when={mentionQuery() !== null && filteredMentionAgents().length > 0}>
+                      <div class="composer-mention-menu">
+                        <For each={filteredMentionAgents()}>
+                          {(teammate, idx) => (
+                            <button
+                              type="button"
+                              class="composer-mention-item"
+                              classList={{ selected: idx() === mentionSelectedIndex() }}
+                              onClick={() => applyMention(teammate)}
+                              aria-label={`Mencionar ${teammate.name}`}
+                            >
+                              <span
+                                class="agent-avatar"
+                                style={{ background: agentColor(teammate.name) }}
                               >
-                                {teammate.avatar || '🛠️'} @{teammate.name}
-                              </button>
-                            )}
-                          </For>
-                        </Show>
-                        <button
-                          type="button"
-                          class="composer-slash-chip"
-                          onClick={() => setActiveSection('board')}
-                          title="Voltar para a Central da Equipe"
-                        >
-                          Central da Equipe
-                        </button>
+                                {teammate.avatar || initialsOf(teammate.name)}
+                              </span>
+                              <span class="composer-mention-name">@{teammate.name}</span>
+                              <Show when={teammate.role === 'orchestrator'}>
+                                <span class="composer-mention-role">Coordenador</span>
+                              </Show>
+                            </button>
+                          )}
+                        </For>
                       </div>
+                    </Show>
 
+                    <form class="chat-input-form" onSubmit={handleSendMessage}>
                       {/* Arquivos anexados antes do envio */}
                       <Show when={stagedFiles().length > 0}>
                         <div class="attachments-preview-bar">
@@ -5387,7 +5891,7 @@ export const App: Component = () => {
                                   class="attachment-chip-remove"
                                   onClick={() => removeStagedFile(index())}
                                 >
-                                  ✕
+                                  <RailIcon name="close" />
                                 </button>
                               </div>
                             )}
@@ -5396,24 +5900,60 @@ export const App: Component = () => {
                       </Show>
 
                       <textarea
+                        ref={(el) => {
+                          chatTextareaRef = el
+                        }}
                         class="chat-textarea"
                         placeholder={`Mensagem para ${agent().name}…`}
                         aria-label={`Mensagem para ${agent().name}`}
                         value={inputText()}
-                        onInput={(e) => setInputText(e.currentTarget.value)}
+                        onInput={(e) => {
+                          setInputText(e.currentTarget.value)
+                          updateMentionState(e.currentTarget)
+                        }}
                         onKeyDown={handleKeyDown}
+                        onClick={(e) => updateMentionState(e.currentTarget)}
+                        onBlur={() => {
+                          setTimeout(() => setMentionQuery(null), 200)
+                        }}
                       />
                       <div class="chat-actions-bar">
                         <div class="composer-inline-pills">
                           <button
                             type="button"
-                            class="btn-outline"
+                            class="btn-outline composer-action-btn"
                             onClick={handleSelectFiles}
                             title="Enviar um arquivo ou imagem junto com sua mensagem"
                             aria-label="Anexar arquivo"
                           >
                             <RailIcon name="link" />
                           </button>
+
+                          <Show when={otherAgents().length > 0}>
+                            <button
+                              type="button"
+                              class="btn-outline composer-action-btn"
+                              onClick={() => {
+                                const current = inputText()
+                                const newText = current
+                                  ? current.endsWith(' ')
+                                    ? `${current}@`
+                                    : `${current} @`
+                                  : '@'
+                                setInputText(newText)
+                                setMentionQuery('')
+                                setMentionSelectedIndex(0)
+                                if (chatTextareaRef) {
+                                  chatTextareaRef.focus()
+                                  chatTextareaRef.setSelectionRange(newText.length, newText.length)
+                                }
+                              }}
+                              title="Mencionar agente da equipe (@)"
+                              aria-label="Mencionar agente"
+                            >
+                              @
+                            </button>
+                          </Show>
 
                           <button
                             type="button"
@@ -5426,21 +5966,40 @@ export const App: Component = () => {
                                   : 'autonomous',
                               )
                             }
-                            title="Clique para escolher se o assistente faz tudo sozinho ou pede sua permissão antes"
+                            title="Clique para alternar entre execução automática e confirmação prévia"
                           >
                             {(agent().autonomyLevel || 'autonomous') === 'cautious'
                               ? 'Pedir confirmação'
                               : 'Automático'}
                           </button>
 
-                          <button
-                            type="button"
-                            class="btn-link composer-settings-link"
-                            onClick={() => setShowAgentSettings(true)}
-                            title="Trocar modelo de IA ou ajustes avançados"
+                          <select
+                            class="composer-model-select"
+                            aria-label="Modelo de IA"
+                            title="Trocar modelo de IA"
+                            value={agent().model}
+                            onChange={(e) => {
+                              if (e.currentTarget.value === '__settings__') {
+                                setShowAgentSettings(true)
+                              } else {
+                                void handleSwitchModelMidChat(agent().id, e.currentTarget.value)
+                              }
+                            }}
                           >
-                            {PROVIDER_ICONS[agent().provider] || '🔗'} {agent().model}
-                          </button>
+                            <Show
+                              when={
+                                !modelsFor(agent().provider, agent().accountId).includes(
+                                  agent().model,
+                                )
+                              }
+                            >
+                              <option value={agent().model}>{agent().model}</option>
+                            </Show>
+                            <For each={modelsFor(agent().provider, agent().accountId)}>
+                              {(m) => <option value={m}>{m}</option>}
+                            </For>
+                            <option value="__settings__">Ajustes…</option>
+                          </select>
                           <Show when={supportsEffort(agent().provider)}>
                             <select
                               class="composer-effort-select"
@@ -5467,10 +6026,15 @@ export const App: Component = () => {
                           </Show>
                         </div>
 
-                        <div style={{ display: 'flex', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '8px', 'align-items': 'center' }}>
                           <Show when={isStreaming()}>
-                            <button type="button" class="btn-interrupt" onClick={handleInterrupt}>
-                              ⏹ Parar
+                            <button
+                              type="button"
+                              class="btn-interrupt"
+                              onClick={handleInterrupt}
+                              aria-label="Parar geração"
+                            >
+                              <span class="btn-interrupt-icon" /> Parar
                             </button>
                           </Show>
                           <button
@@ -6038,8 +6602,77 @@ export const App: Component = () => {
         )}
       </Show>
 
+      <Show when={settingsLoaded() && !settings().providersSetupDone}>
+        <dialog
+          ref={focusDialog}
+          aria-modal="true"
+          class="modal-overlay"
+          aria-labelledby="providers-setup-title"
+          open
+        >
+          <div class="modal-content providers-setup" role="document">
+            <div class="modal-header">
+              <h2 id="providers-setup-title">Com qual IA você quer começar?</h2>
+            </div>
+            <p class="first-run-hint">
+              Escolha uma IA pronta para começar. Você pode mudar essa escolha ou ativar outras em
+              Configurações → Provedores.
+            </p>
+            <Show
+              when={readyProviders().length > 0}
+              fallback={
+                <p class="first-run-hint">
+                  Abra Outros provedores para configurar sua primeira IA.
+                </p>
+              }
+            >
+              <div class="provider-picker" aria-label="Provedores prontos">
+                <For each={readyProviders()}>
+                  {(connection) => <SetupProvider connection={connection} />}
+                </For>
+              </div>
+            </Show>
+            <Show when={otherProviders().length > 0}>
+              <details class="setup-other-providers">
+                <summary>Outros provedores ({otherProviders().length})</summary>
+                <div class="provider-picker">
+                  <For each={otherProviders()}>
+                    {(connection) => <SetupProvider connection={connection} />}
+                  </For>
+                </div>
+              </details>
+            </Show>
+            <Show when={setupError()}>
+              <p class="error-banner" role="alert">
+                {setupError()}
+              </p>
+            </Show>
+            <div class="modal-actions">
+              <button
+                type="button"
+                class="btn-outline"
+                disabled={savingSetup()}
+                onClick={() => finishProvidersSetup('')}
+              >
+                Configurar depois
+              </button>
+              <button
+                type="button"
+                class="btn-primary"
+                disabled={!setupChoice() || savingSetup()}
+                onClick={() => finishProvidersSetup(setupChoice())}
+              >
+                Começar
+              </button>
+            </div>
+          </div>
+        </dialog>
+      </Show>
+
       <Show when={showCustomProvider()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           aria-labelledby="custom-provider-title"
           open
@@ -6186,6 +6819,9 @@ export const App: Component = () => {
           const models = () => modelsFor(conn().providerId)
           return (
             <dialog
+              ref={focusDialog}
+              aria-modal="true"
+              aria-label={`Configurar ${conn().name}`}
               class="modal-overlay"
               open
               onClick={() => setConfigProviderId(null)}
@@ -6195,12 +6831,13 @@ export const App: Component = () => {
                 class="modal-content provider-config-modal"
                 role="document"
                 onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation()
+                  if (e.key === 'Escape') setConfigProviderId(null)
+                }}
               >
                 <div class="modal-header">
-                  <span class="modal-title">
-                    {PROVIDER_ICONS[conn().providerId] || '🔗'} Configurar {conn().name}
-                  </span>
+                  <span class="modal-title">Configurar {conn().name}</span>
                   <button
                     type="button"
                     class="modal-close"
@@ -6485,6 +7122,8 @@ export const App: Component = () => {
       {/* Modal Delegar Tarefa para Outro Agente (Fase 4) */}
       <Show when={showDelegationModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowDelegationModal(false)}
@@ -6582,6 +7221,8 @@ export const App: Component = () => {
       {/* Modal Novo Projeto (pasta de robôs) */}
       <Show when={showProjectModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowProjectModal(false)}
@@ -6594,7 +7235,7 @@ export const App: Component = () => {
             onKeyDown={(e) => e.stopPropagation()}
           >
             <div class="modal-header">
-              <span class="modal-title">📁 Novo Projeto</span>
+              <span class="modal-title">Novo Projeto</span>
               <button type="button" class="modal-close" onClick={() => setShowProjectModal(false)}>
                 ✕
               </button>
@@ -6650,7 +7291,10 @@ export const App: Component = () => {
 
       <Show when={showModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
+          aria-labelledby="new-agent-title"
           open
           onClick={() => setShowModal(false)}
           onKeyDown={(e) => e.key === 'Escape' && setShowModal(false)}
@@ -6659,11 +7303,21 @@ export const App: Component = () => {
             class="modal-content"
             role="document"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Escape') setShowModal(false)
+            }}
           >
             <div class="modal-header">
-              <span class="modal-title">Novo Agente</span>
-              <button type="button" class="modal-close" onClick={() => setShowModal(false)}>
+              <span class="modal-title" id="new-agent-title">
+                Novo agente
+              </span>
+              <button
+                type="button"
+                class="modal-close"
+                aria-label="Fechar criação de agente"
+                onClick={() => setShowModal(false)}
+              >
                 ✕
               </button>
             </div>
@@ -6673,68 +7327,7 @@ export const App: Component = () => {
                 <div style={{ color: 'var(--danger)', 'font-size': '12px' }}>{errorMessage()}</div>
               </Show>
 
-              <div class="form-group">
-                <span class="form-label-title">
-                  Modelos Prontos de Coworker (1 clique para preencher)
-                </span>
-                <div class="modal-template-strip">
-                  <For each={COWORKER_TEMPLATES}>
-                    {(tpl) => (
-                      <button
-                        type="button"
-                        class={`modal-template-pill ${name() === tpl.name ? 'active' : ''}`}
-                        onClick={() => applyCoworkerTemplate(tpl)}
-                        title={tpl.description}
-                      >
-                        <span>{tpl.avatar}</span>
-                        <span>{tpl.name}</span>
-                        <span class={`role-mini-tag ${tpl.role}`}>
-                          {tpl.role === 'orchestrator' ? '👑' : '🛠️'}
-                        </span>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </div>
-
-              <div class="form-group ai-draft-box">
-                <label for="agent-ai-prompt">O que este agente deve fazer?</label>
-                <textarea
-                  id="agent-ai-prompt"
-                  rows={3}
-                  placeholder="Ex: um revisor de código rigoroso que aponta riscos de segurança e sugere testes"
-                  value={aiPrompt()}
-                  onInput={(e) => setAiPrompt(e.currentTarget.value)}
-                />
-                <button
-                  type="button"
-                  class="btn-outline"
-                  disabled={drafting() || !aiPrompt().trim()}
-                  onClick={draftForCreate}
-                >
-                  {drafting() ? 'Gerando…' : 'Gerar rascunho'}
-                </button>
-                <Show when={draftNote()}>
-                  <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
-                    {draftNote()}
-                  </div>
-                </Show>
-              </div>
-
               <div class="form-row form-row-avatar">
-                <div class="form-group">
-                  <label for="agent-avatar">Avatar</label>
-                  <input
-                    id="agent-avatar"
-                    type="text"
-                    maxLength={8}
-                    style={{ width: '90px' }}
-                    placeholder="🤖"
-                    value={newAvatar()}
-                    onInput={(e) => setNewAvatar(e.currentTarget.value)}
-                  />
-                </div>
-
                 <div class="form-group">
                   <label for="agent-name">Nome</label>
                   <input
@@ -6744,6 +7337,17 @@ export const App: Component = () => {
                     value={name()}
                     onInput={(e) => setName(e.currentTarget.value)}
                     required
+                  />
+                </div>
+                <div class="form-group">
+                  <label for="agent-avatar">Avatar (opcional)</label>
+                  <input
+                    id="agent-avatar"
+                    type="text"
+                    maxLength={8}
+                    placeholder="🤖"
+                    value={newAvatar()}
+                    onInput={(e) => setNewAvatar(e.currentTarget.value)}
                   />
                 </div>
               </div>
@@ -6759,42 +7363,42 @@ export const App: Component = () => {
                 />
               </div>
 
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="agent-provider">IA</label>
-                  <Show
-                    when={connections().some((c) => c.enabled)}
-                    fallback={
-                      <button
-                        type="button"
-                        class="btn-outline"
-                        onClick={() => {
-                          setShowModal(false)
-                          openSettings('provedores')
-                        }}
-                      >
-                        Ativar um provedor primeiro
-                      </button>
+              <div class="form-group">
+                <label for="agent-provider">IA</label>
+                <Show
+                  when={connections().some((c) => c.enabled)}
+                  fallback={
+                    <button
+                      type="button"
+                      class="btn-outline"
+                      onClick={() => {
+                        setShowModal(false)
+                        openSettings('provedores')
+                      }}
+                    >
+                      Ativar um provedor primeiro
+                    </button>
+                  }
+                >
+                  <select
+                    id="agent-provider"
+                    value={provider()}
+                    onChange={(e) =>
+                      handleProviderChange(e.currentTarget.value as SupportedProvider)
                     }
                   >
-                    <select
-                      id="agent-provider"
-                      value={provider()}
-                      onChange={(e) =>
-                        handleProviderChange(e.currentTarget.value as SupportedProvider)
-                      }
-                    >
-                      <For each={connections().filter((c) => c.enabled)}>
-                        {(conn) => (
-                          <option value={conn.providerId}>
-                            {conn.name}
-                            {conn.readiness === 'ready' ? '' : ` — ${providerStatusLabel(conn)}`}
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                  </Show>
-                </div>
+                    <For each={connections().filter((c) => c.enabled)}>
+                      {(conn) => (
+                        <option value={conn.providerId}>
+                          {conn.name}
+                          {conn.readiness === 'ready' ? '' : ` — ${providerStatusLabel(conn)}`}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </Show>
+              </div>
+              <div class="form-row agent-model-row">
                 <div class="form-group">
                   <label for="agent-model">Modelo</label>
                   <ModelPicker
@@ -6807,7 +7411,8 @@ export const App: Component = () => {
                     value={model()}
                     onChange={setModel}
                   />
-
+                </div>
+                <div class="form-group">
                   <label for="agent-effort">Esforço de raciocínio</label>
                   <select
                     id="agent-effort"
@@ -6833,8 +7438,59 @@ export const App: Component = () => {
                 <OverLimitCounter id="agent-instructions-count" text={instructions()} />
               </div>
 
+              {/* Perfis prontos recolhíveis */}
+              <details class="creation-collapsible-box">
+                <summary>Perfis prontos</summary>
+                <div class="modal-template-strip">
+                  <For each={COWORKER_TEMPLATES}>
+                    {(tpl) => (
+                      <button
+                        type="button"
+                        class={`modal-template-pill ${name() === tpl.name ? 'active' : ''}`}
+                        onClick={() => applyCoworkerTemplate(tpl)}
+                        title={tpl.description}
+                      >
+                        <span>{tpl.avatar}</span>
+                        <span>{tpl.name}</span>
+                        <span class={`role-mini-tag ${tpl.role}`}>
+                          {tpl.role === 'orchestrator' ? 'Coordenador' : 'Especialista'}
+                        </span>
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </details>
+
+              {/* Geração de rascunho por IA recolhível */}
+              <details class="creation-collapsible-box">
+                <summary>Gerar rascunho com IA</summary>
+                <div class="form-group ai-draft-box">
+                  <label for="agent-ai-prompt">O que este agente deve fazer?</label>
+                  <textarea
+                    id="agent-ai-prompt"
+                    rows={3}
+                    placeholder="Ex: um revisor de código rigoroso que aponta riscos de segurança e sugere testes"
+                    value={aiPrompt()}
+                    onInput={(e) => setAiPrompt(e.currentTarget.value)}
+                  />
+                  <button
+                    type="button"
+                    class="btn-outline"
+                    disabled={drafting() || !aiPrompt().trim()}
+                    onClick={draftForCreate}
+                  >
+                    {drafting() ? 'Gerando…' : 'Gerar rascunho'}
+                  </button>
+                  <Show when={draftNote()}>
+                    <div style={{ 'font-size': '11px', color: 'var(--text-muted)' }}>
+                      {draftNote()}
+                    </div>
+                  </Show>
+                </div>
+              </details>
+
               <details class="advanced-box">
-                <summary>Avançado: pasta, projeto, tipo, autonomia e permissões</summary>
+                <summary>Avançado: projeto, autonomia e permissões</summary>
                 <div class="form-group">
                   <label for="agent-role">Tipo</label>
                   <select
@@ -6842,9 +7498,9 @@ export const App: Component = () => {
                     value={agentRole()}
                     onChange={(e) => setAgentRole(e.currentTarget.value as AgentRole)}
                   >
-                    <option value="worker">🛠️ Especialista — executa tarefas</option>
+                    <option value="worker">Especialista — executa tarefas</option>
                     <option value="orchestrator">
-                      👑 Orquestrador — recebe você e delega aos especialistas
+                      Coordenador — distribui tarefas aos especialistas
                     </option>
                   </select>
                   <Show when={agentRole() === 'orchestrator'}>
@@ -6876,7 +7532,7 @@ export const App: Component = () => {
                     >
                       <option value="">Sem projeto</option>
                       <For each={projects()}>
-                        {(proj) => <option value={proj.id}>📁 {proj.name}</option>}
+                        {(proj) => <option value={proj.id}>{proj.name}</option>}
                       </For>
                     </select>
                     <button
@@ -6885,7 +7541,7 @@ export const App: Component = () => {
                       onClick={() => setShowProjectModal(true)}
                       title="Criar novo projeto"
                     >
-                      📁 + Projeto
+                      + Novo projeto
                     </button>
                   </div>
                 </div>
@@ -6940,10 +7596,10 @@ export const App: Component = () => {
                     onChange={(e) => setAutonomyLevel(e.currentTarget.value as AutonomyLevel)}
                   >
                     <option value="autonomous">
-                      ⚡ Modo Autônomo (Executa tarefas da fila sequencialmente)
+                      Automático (executa tarefas da fila sequencialmente)
                     </option>
                     <option value="cautious">
-                      🛡️ Modo Cauteloso (Pede confirmação antes de ações e cliques)
+                      Confirmar antes de cada passo (pede confirmação para ações e cliques)
                     </option>
                   </select>
                 </div>
@@ -6955,9 +7611,9 @@ export const App: Component = () => {
                     value={agentContextMode()}
                     onChange={(e) => setAgentContextMode(e.currentTarget.value as ContextMode)}
                   >
-                    <option value="economico">💰 Econômico — resumo + últimas 4 mensagens</option>
-                    <option value="padrao">Padrão — resumo + últimas 10 mensagens</option>
-                    <option value="completo">Completo — histórico amplo (mais tokens)</option>
+                    <option value="economico">Econômico (resumo + últimas 4 mensagens)</option>
+                    <option value="padrao">Padrão (resumo + últimas 10 mensagens)</option>
+                    <option value="completo">Completo (histórico amplo)</option>
                   </select>
                 </div>
 
@@ -6975,7 +7631,7 @@ export const App: Component = () => {
                       checked={agentBrowserAccess()}
                       onChange={(e) => setAgentBrowserAccess(e.currentTarget.checked)}
                     />
-                    🌐 Pode abrir o navegador (Meta Ads, Google Ads, painéis web)
+                    Pode abrir o navegador para tarefas na web
                   </label>
                 </div>
 
@@ -7075,6 +7731,8 @@ export const App: Component = () => {
       <Show when={showAutomationModal() && currentAgent()}>
         {(agent) => (
           <dialog
+            ref={focusDialog}
+            aria-modal="true"
             class="modal-overlay"
             open
             onClick={() => setShowAutomationModal(false)}
@@ -7088,7 +7746,7 @@ export const App: Component = () => {
               onKeyDown={(e) => e.stopPropagation()}
             >
               <div class="modal-header">
-                <span class="modal-title">🔗 Webhooks e cadeia · {agent().name}</span>
+                <span class="modal-title">Webhooks e cadeia · {agent().name}</span>
                 <button
                   type="button"
                   class="modal-close"
@@ -7117,7 +7775,7 @@ export const App: Component = () => {
                     </For>
                   </select>
                   <span class="settings-section-desc">
-                    Ex.: um assistente acha os clientes, o próximo escreve para eles. A cadeia para
+                    Ex.: um agente acha os clientes, o próximo escreve para eles. A cadeia para
                     sozinha depois de algumas etapas.
                   </span>
                 </div>
@@ -7133,8 +7791,8 @@ export const App: Component = () => {
                     }
                   >
                     <span class="settings-section-desc">
-                      Um POST nesta URL faz o assistente trabalhar, com o conteúdo recebido. A URL é
-                      a senha: não compartilhe. Ela só responde neste computador; para receber da
+                      Um POST nesta URL faz o agente trabalhar, com o conteúdo recebido. A URL é a
+                      senha: não compartilhe. Ela só responde neste computador; para receber da
                       internet, use um túnel (ex.: cloudflared).
                     </span>
                   </Show>
@@ -7174,7 +7832,7 @@ export const App: Component = () => {
                     />
                     <textarea
                       rows={3}
-                      placeholder="O que o assistente faz quando for chamado (ex.: confira o pedido e avise se faltar estoque)"
+                      placeholder="O que o agente faz quando for chamado (ex.: confira o pedido e avise se faltar estoque)"
                       value={webhookInstruction()}
                       onInput={(e) => setWebhookInstruction(e.currentTarget.value)}
                     />
@@ -7196,6 +7854,8 @@ export const App: Component = () => {
       {/* Modal de Agendamentos & Tarefas em Background (Cron) */}
       <Show when={showCronModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowCronModal(false)}
@@ -7215,7 +7875,7 @@ export const App: Component = () => {
           >
             <div class="modal-header">
               <div>
-                <span class="modal-title">⏰ Agendamentos & Rotinas em Background (Cron)</span>
+                <span class="modal-title">Agendamentos e rotinas em background</span>
                 <div
                   style={{
                     'font-size': '11px',
@@ -7660,6 +8320,8 @@ export const App: Component = () => {
       {/* Modal de Diretrizes do Projeto (ORCHBOT.md / AGENTS.md) */}
       <Show when={showAiEdit() && currentAgent()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowAiEdit(false)}
@@ -7673,7 +8335,7 @@ export const App: Component = () => {
             onKeyDown={(e) => e.stopPropagation()}
           >
             <div class="modal-header">
-              <span class="modal-title">✨ Editar {currentAgent()?.name} com IA</span>
+              <span class="modal-title">Editar {currentAgent()?.name} com IA</span>
               <button type="button" class="modal-close" onClick={() => setShowAiEdit(false)}>
                 ✕
               </button>
@@ -7811,6 +8473,8 @@ export const App: Component = () => {
 
       <Show when={showMemoryModal() && currentAgent()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowMemoryModal(false)}
@@ -7824,7 +8488,7 @@ export const App: Component = () => {
             onKeyDown={(e) => e.stopPropagation()}
           >
             <div class="modal-header">
-              <span class="modal-title">🧠 Memórias de {currentAgent()?.name}</span>
+              <span class="modal-title">Memórias de {currentAgent()?.name}</span>
               <button type="button" class="modal-close" onClick={() => setShowMemoryModal(false)}>
                 ✕
               </button>
@@ -7890,13 +8554,14 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="btn-outline"
-                        title="Esquecer"
+                        title="Esquecer memória"
+                        aria-label="Esquecer memória"
                         onClick={async () => {
                           await window.orchbot.deleteMemory(m.agentId, m.id)
                           await refreshMemories(m.agentId)
                         }}
                       >
-                        🗑️
+                        <RailIcon name="trash" />
                       </button>
                     </div>
                   )}
@@ -7909,6 +8574,8 @@ export const App: Component = () => {
 
       <Show when={showRulesModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowRulesModal(false)}
@@ -7924,7 +8591,7 @@ export const App: Component = () => {
             <div class="modal-header">
               <div>
                 <span class="modal-title">
-                  📜 Diretrizes do Projeto ({workspaceRules()?.filename})
+                  Diretrizes do Projeto ({workspaceRules()?.filename})
                 </span>
                 <div
                   style={{
@@ -7975,6 +8642,8 @@ export const App: Component = () => {
       {/* Modal de Busca Rápida Full-Text & RAG (SQLite FTS5) */}
       <Show when={showSearchModal()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay"
           open
           onClick={() => setShowSearchModal(false)}
@@ -7989,7 +8658,7 @@ export const App: Component = () => {
           >
             <div class="modal-header">
               <div>
-                <span class="modal-title">🔍 Busca Rápida de Memória & RAG (SQLite FTS5)</span>
+                <span class="modal-title">Busca de Memória & RAG</span>
                 <div
                   style={{
                     'font-size': '11px',
@@ -7997,7 +8666,7 @@ export const App: Component = () => {
                     'margin-top': '2px',
                   }}
                 >
-                  Pesquise instantaneamente no histórico de conversas e nos arquivos do projeto.
+                  Pesquise no histórico de conversas e nos arquivos do projeto.
                 </div>
               </div>
               <button type="button" class="modal-close" onClick={() => setShowSearchModal(false)}>
@@ -8043,14 +8712,14 @@ export const App: Component = () => {
                   class={`search-tab-btn ${searchTab() === 'messages' ? 'active' : ''}`}
                   onClick={() => setSearchTab('messages')}
                 >
-                  💬 Conversas Anteriores ({searchResults()?.messages.length ?? 0})
+                  Conversas anteriores ({searchResults()?.messages.length ?? 0})
                 </button>
                 <button
                   type="button"
                   class={`search-tab-btn ${searchTab() === 'files' ? 'active' : ''}`}
                   onClick={() => setSearchTab('files')}
                 >
-                  📁 Arquivos do Repositório ({searchResults()?.files.length ?? 0})
+                  Arquivos do repositório ({searchResults()?.files.length ?? 0})
                 </button>
               </div>
             </div>
@@ -8072,9 +8741,9 @@ export const App: Component = () => {
                     <div class="search-result-item">
                       <div class="search-result-header">
                         <div class="search-result-meta">
-                          <span class="search-result-thread">💬 {res.threadTitle}</span>
+                          <span class="search-result-thread">{res.threadTitle}</span>
                           <span class="search-result-role">
-                            {res.role === 'user' ? 'Usuário' : 'Assistente'}
+                            {res.role === 'user' ? 'Usuário' : 'Agente'}
                           </span>
                         </div>
                         <button
@@ -8106,7 +8775,7 @@ export const App: Component = () => {
                     <div class="search-result-item">
                       <div class="search-result-header">
                         <div class="search-result-meta">
-                          <span class="search-result-thread">📁 {file.fileName}</span>
+                          <span class="search-result-thread">{file.fileName}</span>
                           <span class="search-result-role" style={{ 'font-size': '10px' }}>
                             {file.filePath}
                           </span>
@@ -8134,6 +8803,8 @@ export const App: Component = () => {
       {/* Paleta de Comandos Rápida (Ctrl+K / Ctrl+P) */}
       <Show when={showCommandPalette()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
           class="modal-overlay command-palette-overlay"
           open
           onClick={() => setShowCommandPalette(false)}
