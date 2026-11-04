@@ -62,8 +62,8 @@ describe('a pasta shared/ chega liberada a cada CLI', () => {
     const at = args.indexOf(expected[0])
     expect(at).toBeGreaterThanOrEqual(0)
     expect(args.slice(at, at + expected.length)).toEqual(expected)
-    // Claude e Codex fecham as flags com `--`: a pasta extra não pode engolir o prompt.
-    if (args.includes('--')) expect(args.slice(args.indexOf('--') + 1).at(-1)).toBe('oi')
+    // Codex fecha as flags com `--` e lê o prompt do stdin (`-`): a pasta extra não engole o prompt.
+    if (args.includes('--')) expect(args.slice(args.indexOf('--') + 1).at(-1)).toBe('-')
   })
 
   it.each([

@@ -185,6 +185,9 @@ export interface AppSettings {
   updateFeedUrl: string
 }
 
+/** Tamanho máximo das instruções que a pessoa (ou o rascunho da IA) dá a um robô. */
+export const MAX_AGENT_INSTRUCTIONS = 2000
+
 /** Sobe quando o texto do aviso muda de forma relevante; força novo aceite. */
 export const CONSENT_VERSION = 1
 

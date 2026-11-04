@@ -35,7 +35,11 @@ import type {
   WebhookTrigger,
   WorkspaceRulesInfo,
 } from '../../shared/types'
-import { DEFAULT_APP_SETTINGS, effectiveCapabilities } from '../../shared/types'
+import {
+  DEFAULT_APP_SETTINGS,
+  MAX_AGENT_INSTRUCTIONS,
+  effectiveCapabilities,
+} from '../../shared/types'
 import { BrainPanel } from './Brain'
 import { Channels } from './Channels'
 import {
@@ -305,6 +309,18 @@ const Switch: Component<{
     <span class="switch-knob" />
   </button>
 )
+
+/** Só aparece quando o texto passa do limite: mostra quanto tem e quanto pode. */
+function OverLimitCounter(props: { id: string; text: string }) {
+  return (
+    <Show when={props.text.length > MAX_AGENT_INSTRUCTIONS}>
+      <output id={props.id} class="char-over">
+        {props.text.length}/{MAX_AGENT_INSTRUCTIONS} caracteres: reduza{' '}
+        {props.text.length - MAX_AGENT_INSTRUCTIONS} para salvar.
+      </output>
+    </Show>
+  )
+}
 
 export const App: Component = () => {
   // Abre diretamente na Central da Equipe ('board') para visualização imediata e intuitiva.
@@ -6674,7 +6690,9 @@ export const App: Component = () => {
                   placeholder="Ex: Você é um desenvolvedor focado em testes limpos..."
                   value={instructions()}
                   onInput={(e) => setInstructions(e.currentTarget.value)}
+                  aria-describedby="agent-instructions-count"
                 />
+                <OverLimitCounter id="agent-instructions-count" text={instructions()} />
               </div>
 
               <details class="advanced-box">
@@ -6915,7 +6933,11 @@ export const App: Component = () => {
                 <button type="button" class="btn-secondary" onClick={() => setShowModal(false)}>
                   Cancelar
                 </button>
-                <button type="submit" class="btn-primary" disabled={loading()}>
+                <button
+                  type="submit"
+                  class="btn-primary"
+                  disabled={loading() || instructions().length > MAX_AGENT_INSTRUCTIONS}
+                >
                   {loading() ? 'Criando...' : 'Criar Agente'}
                 </button>
               </div>
@@ -7631,6 +7653,7 @@ export const App: Component = () => {
                       <textarea
                         id="ai-edit-instr"
                         rows={9}
+                        aria-describedby="ai-edit-instr-count"
                         value={draft().instructions}
                         onInput={(e) =>
                           setEditDraft({
@@ -7639,11 +7662,16 @@ export const App: Component = () => {
                           })
                         }
                       />
+                      <OverLimitCounter id="ai-edit-instr-count" text={draft().instructions} />
                     </div>
                     <button
                       type="button"
                       class="btn-primary"
-                      disabled={!draft().name.trim() || !draft().instructions.trim()}
+                      disabled={
+                        !draft().name.trim() ||
+                        !draft().instructions.trim() ||
+                        draft().instructions.length > MAX_AGENT_INSTRUCTIONS
+                      }
                       onClick={() => currentAgent() && saveEditDraft(currentAgent()?.id as string)}
                     >
                       Salvar alterações

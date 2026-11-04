@@ -1,4 +1,9 @@
-import { type AgentDraft, type AgentRole, normalizeAvatar } from '../../shared/types'
+import {
+  type AgentDraft,
+  type AgentRole,
+  MAX_AGENT_INSTRUCTIONS,
+  normalizeAvatar,
+} from '../../shared/types'
 import type { Agent } from '../../shared/types'
 import { runOneShot } from '../memory/memory-service'
 import { resolveAccountRuntime } from '../providers/account-config'
@@ -22,7 +27,10 @@ function localDraft(prompt: string, base?: Agent): AgentDraft {
     description: base?.description ?? text.slice(0, 140),
     role: base?.role ?? 'worker',
     avatar: base?.avatar ?? AVATARS[text.length % AVATARS.length],
-    instructions: base ? `${base.instructions}\n\n${text}`.trim() : text,
+    instructions: (base ? `${base.instructions}\n\n${text}`.trim() : text).slice(
+      0,
+      MAX_AGENT_INSTRUCTIONS,
+    ),
     source: 'local',
   }
 }
@@ -46,7 +54,7 @@ function parseDraft(raw: string, base?: Agent): AgentDraft | null {
           ? 'worker'
           : (base?.role ?? 'worker')) as AgentRole,
       avatar: normalizeAvatar(o.avatar) ?? base?.avatar ?? '🤖',
-      instructions: instructions.slice(0, 8000),
+      instructions: instructions.slice(0, MAX_AGENT_INSTRUCTIONS),
       source: 'model',
     }
   } catch {

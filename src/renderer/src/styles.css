@@ -1766,6 +1766,12 @@ dialog.modal-overlay,
   resize: vertical;
   min-height: 70px;
 }
+.char-over {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+}
 .modal-actions {
   display: flex;
   justify-content: flex-end;

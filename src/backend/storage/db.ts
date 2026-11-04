@@ -7,6 +7,7 @@ import { tokensFromChars } from '../../shared/tokens'
 import {
   type AppSettings,
   DEFAULT_APP_SETTINGS,
+  MAX_AGENT_INSTRUCTIONS,
   type MemoryKind,
   normalizeAvatar,
 } from '../../shared/types'
@@ -65,6 +66,18 @@ import {
   decryptApiKey,
   encryptApiKey,
 } from './secrets'
+
+/** O coordenador tem texto fixo do sistema; o resto passa pelo limite. */
+function checkInstructionsLength(instructions: string | undefined): void {
+  if (
+    instructions &&
+    instructions !== FOREMAN_INSTRUCTIONS &&
+    instructions.length > MAX_AGENT_INSTRUCTIONS
+  )
+    throw new Error(
+      `As instruções passam de ${MAX_AGENT_INSTRUCTIONS} caracteres (${instructions.length}).`,
+    )
+}
 
 export function sanitizeFtsQuery(raw: string): string {
   if (!raw || typeof raw !== 'string') return ''
@@ -1603,6 +1616,7 @@ export class OrchbotDatabase {
     if (input.projectId && !this.getProject(input.projectId)) {
       throw new Error(`Projeto "${input.projectId}" não encontrado`)
     }
+    checkInstructionsLength(input.instructions)
 
     const agent: Agent = {
       id,
@@ -1713,6 +1727,7 @@ export class OrchbotDatabase {
       throw new Error('Conta não pertence ao provedor selecionado.')
     const model = input.model ?? current.model
     const effort = input.effort !== undefined ? (input.effort ?? undefined) : current.effort
+    if (input.instructions !== current.instructions) checkInstructionsLength(input.instructions)
     const instructions = input.instructions ?? current.instructions
     const workspacePath = input.workspacePath ?? current.workspacePath
     const autonomyLevel = input.autonomyLevel ?? current.autonomyLevel ?? 'autonomous'

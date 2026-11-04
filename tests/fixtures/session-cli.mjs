@@ -16,7 +16,12 @@ const resume =
     : args.includes('--resume')
       ? args[args.indexOf('--resume') + 1]
       : undefined
-const prompt = positional.at(-1)
+// O prompt chega por stdin; as instruções do Claude, em arquivo.
+const prompt = readFileSync(0, 'utf8')
+const systemFile = args.includes('--append-system-prompt-file')
+  ? args[args.indexOf('--append-system-prompt-file') + 1]
+  : undefined
+const system = systemFile ? readFileSync(systemFile, 'utf8') : undefined
 const file = path.join(process.cwd(), 'cli-sessions.json')
 const log = path.join(process.cwd(), 'cli-calls.jsonl')
 const state = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {}
@@ -36,7 +41,7 @@ const error = (message) => {
 }
 appendFileSync(
   log,
-  `${JSON.stringify({ provider, args, resume, id, prompt, cwd: process.cwd() })}\n`,
+  `${JSON.stringify({ provider, args, resume, id, prompt, system, cwd: process.cwd() })}\n`,
 )
 if (resume && !state[resume]) {
   error('Session not found')

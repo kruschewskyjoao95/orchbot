@@ -25,6 +25,7 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     id: string
     resume?: string
     prompt: string
+    system?: string
     args: string[]
     event?: string
   }> =>
@@ -73,6 +74,24 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     )
     return { execution, onSessionId, onChunk, onDone, onError, onInterrupted }
   }
+
+  it('sends prompt and instructions above the 128 KB argv limit without E2BIG', async () => {
+    const big = 'ação '.repeat(30_000) // ~180 KB em UTF-8
+    const onDone = vi.fn()
+    const onError = vi.fn()
+    adapter.executeTurn(
+      big,
+      { workspacePath: dir, instructions: big, providerConfig: { cliPath: cli } },
+      { onChunk: () => {}, onDone, onError },
+    )
+    await vi.waitFor(() => expect(onDone.mock.calls.length + onError.mock.calls.length).toBe(1), {
+      timeout: 5000,
+    })
+    expect(onError).not.toHaveBeenCalled()
+    const call = calls()[0]
+    expect(call.prompt).toContain(big)
+    if (provider === 'claude') expect(call.system).toBe(big)
+  })
 
   it('resumes exactly the same native session across turns and an app/database restart', async () => {
     await enqueue('First detailed task')
@@ -134,10 +153,11 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     db.addMessage(threadId, 'assistant', 'We decided to preserve existing data')
     await new Promise((resolve) => setTimeout(resolve, 5))
     await enqueue('First native turn')
-    expect(calls()[0].args.join(' ')).toContain('preserve existing data')
+    const sent = (call: ReturnType<typeof calls>[number]) => `${call.prompt}\n${call.system ?? ''}`
+    expect(sent(calls()[0])).toContain('preserve existing data')
     await enqueue('Native continuation')
-    // Claude sends system instructions as an argument; Codex embeds them in the prompt.
-    expect(calls()[1].args.join(' ')).not.toContain('[HISTÓRICO RECENTE DA CONVERSA]')
+    // Claude sends system instructions in a file; Codex embeds them in the stdin prompt.
+    expect(sent(calls()[1])).not.toContain('[HISTÓRICO RECENTE DA CONVERSA]')
     expect(db.resetProviderSession(threadId)).toBe(true)
     expect(db.listMessages(threadId)).toHaveLength(4)
     await enqueue('Start a clean native session')

@@ -76,10 +76,10 @@ describe('Claude no modo cauteloso pergunta antes de cada ferramenta', () => {
     expect(text).toMatch(/^deny:A pessoa recusou/)
   })
 
-  it('modo autônomo continua com o prompt no argv e sem pergunta', async () => {
+  it('modo autônomo manda o prompt por stdin e não pergunta', async () => {
     const { args } = await run(new ClaudeAdapter(), 'args-cli.mjs', {})
     expect(args).not.toContain('--permission-prompt-tool')
-    expect(args.at(-1)).toBe('apague o build')
+    expect(args).not.toContain('apague o build')
   })
 })
 
