@@ -34,3 +34,20 @@ describe('Configurações do app (Geral/Aparência/Conversas/Comportamento/Permi
     fs.rmSync(tmp, { recursive: true, force: true })
   })
 })
+
+describe('Provedor principal', () => {
+  it('usa o principal se ativo; senão o primeiro pronto; senão o primeiro ativo', async () => {
+    const { principalConnection } = await import('../src/shared/provider-status')
+    const conns = [
+      { providerId: 'codex', enabled: true, readiness: 'login_required' },
+      { providerId: 'claude', enabled: true, readiness: 'ready' },
+      { providerId: 'grok', enabled: false, readiness: 'ready' },
+    ] as const
+    const list = conns.map((c) => ({ ...c }))
+    expect(principalConnection(list, 'codex')?.providerId).toBe('codex')
+    expect(principalConnection(list, 'grok')?.providerId).toBe('claude')
+    expect(principalConnection(list, '')?.providerId).toBe('claude')
+    expect(principalConnection([list[0]], '')?.providerId).toBe('codex')
+    expect(principalConnection([list[2]], 'grok')).toBeUndefined()
+  })
+})

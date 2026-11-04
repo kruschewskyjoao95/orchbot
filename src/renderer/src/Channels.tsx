@@ -1,5 +1,7 @@
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js'
 import type { Agent, Channel, ChannelMessage } from '../../shared/types'
+import { MessageText } from './MessageText'
+import { focusDialog } from './dialog-focus'
 
 /** Mostra o canal escolhido na barra lateral; a lista de canais fica no App. */
 export function Channels(props: {
@@ -67,7 +69,7 @@ export function Channels(props: {
     selectedId()
     void refresh()
   })
-  // Abrir "Novo canal" já sugere o primeiro agente como dono.
+  // Abrir "Novo grupo" já sugere o primeiro agente como dono.
   createEffect(() => {
     if (props.creating && !owner()) setOwner(props.agents[0]?.id ?? '')
   })
@@ -112,7 +114,7 @@ export function Channels(props: {
         <Show
           when={selected()}
           fallback={
-            <div class="channels-empty">Escolha um canal na barra lateral ou crie um novo.</div>
+            <div class="channels-empty">Escolha um grupo na barra lateral ou crie um novo.</div>
           }
         >
           {(channel) => (
@@ -210,7 +212,11 @@ export function Channels(props: {
                       }}
                     >
                       <span class="channel-msg-author">{author(m)}</span>
-                      <span class="channel-msg-text">{m.text}</span>
+                      <div class="channel-msg-text">
+                        <Show when={m.authorAgentId} fallback={m.text}>
+                          <MessageText text={m.text} />
+                        </Show>
+                      </div>
                     </div>
                   )}
                 </For>
@@ -222,9 +228,9 @@ export function Channels(props: {
                   value={text()}
                   placeholder={
                     channel().archived
-                      ? 'Canal arquivado'
+                      ? 'Grupo arquivado'
                       : channel().status === 'stopped'
-                        ? 'Canal parado: retome para continuar'
+                        ? 'Grupo pausado: retome para continuar'
                         : 'Fale com o dono da tarefa…'
                   }
                   disabled={channel().archived || channel().status === 'stopped'}
@@ -245,6 +251,9 @@ export function Channels(props: {
 
       <Show when={creating()}>
         <dialog
+          ref={focusDialog}
+          aria-modal="true"
+          aria-label="Novo grupo"
           class="modal-overlay"
           open
           onClick={() => setCreating(false)}
@@ -255,11 +264,19 @@ export function Channels(props: {
             role="document"
             style={{ width: '520px' }}
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Escape') setCreating(false)
+            }}
           >
             <div class="modal-header">
-              <span class="modal-title">Novo canal</span>
-              <button type="button" class="modal-close" onClick={() => setCreating(false)}>
+              <span class="modal-title">Novo grupo</span>
+              <button
+                type="button"
+                class="modal-close"
+                aria-label="Fechar criação de grupo"
+                onClick={() => setCreating(false)}
+              >
                 ✕
               </button>
             </div>
@@ -317,7 +334,7 @@ export function Channels(props: {
                 </For>
               </div>
               <button type="submit" class="btn-primary" disabled={!title().trim() || !owner()}>
-                Criar canal
+                Criar grupo
               </button>
             </form>
           </div>

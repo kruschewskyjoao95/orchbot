@@ -35,7 +35,13 @@ export function withForemanProject(agent: Agent, projectId: string | undefined):
  */
 export function ensureForeman(db: OrchbotDatabase): Agent | null {
   let agent = db.findForeman()
-  const enabled = db.listConnections().filter((connection) => connection.enabled)
+  const all = db.listConnections().filter((connection) => connection.enabled)
+  // O provedor principal escolhido pela pessoa vem primeiro.
+  const principal = db.getSettings().defaultProvider
+  const enabled = [
+    ...all.filter((c) => c.providerId === principal),
+    ...all.filter((c) => c.providerId !== principal),
+  ]
   if (!agent) {
     const connection = enabled[0]
     // shortcut: sem conexão ligada ele não nasce agora; a lista de agentes tenta de novo neste boot.

@@ -15,6 +15,7 @@
     "package:deb": "bun run build && electron-builder --linux deb --config electron-builder.json",
     "dist": "bun run build && electron-builder --linux --config electron-builder.json",
     "typecheck": "tsc --noEmit",
+    "clear:setup": "sqlite3 ~/.config/orchbot/orchbot.db \"DELETE FROM app_settings WHERE key IN ('providersSetupDone','defaultProvider')\"",
     "test": "vitest run",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

@@ -199,6 +199,10 @@ export interface AppSettings {
   autoUpdate: boolean
   /** Endereço (HTTPS) do feed de atualização do Orchbot, ex.: https://exemplo.com/orchbot. */
   updateFeedUrl: string
+  /** Provedor principal: novos agentes nascem com ele (vazio = primeiro ativo e pronto). */
+  defaultProvider: string
+  /** Tela de escolha de provedores já foi concluída (mostrada só uma vez). */
+  providersSetupDone: boolean
 }
 
 /** Tamanho máximo das instruções que a pessoa (ou o rascunho da IA) dá a um robô. */
@@ -232,6 +236,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   gitContext: true,
   autoUpdate: false,
   updateFeedUrl: '',
+  defaultProvider: '',
+  providersSetupDone: false,
 }
 
 export interface AgentCapabilities {

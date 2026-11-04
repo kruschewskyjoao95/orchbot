@@ -328,11 +328,28 @@ function registerIpcHandlers(): void {
 
   applySettings(database.getSettings())
 
-  const checkAccount = async (
+  // Junta checagens simultâneas do mesmo provedor (a abertura pede o status por 3 caminhos).
+  const checksInFlight = new Map<string, Promise<ProviderInfo>>()
+  const checkAccount = (providerId: SupportedProvider, id?: string): Promise<ProviderInfo> => {
+    const key = `${providerId}:${id ?? ''}`
+    let pending = checksInFlight.get(key)
+    if (!pending) {
+      pending = runAccountCheck(providerId, id).finally(() => checksInFlight.delete(key))
+      checksInFlight.set(key, pending)
+    }
+    return pending
+  }
+  const runAccountCheck = async (
     providerId: SupportedProvider,
     id?: string,
   ): Promise<ProviderInfo> => {
     try {
+      const connection = database.getConnection(providerId)
+      // Desativado: ainda checa se o CLI existe, para a tela não dizer "Não instalado".
+      if (connection && !connection.enabled)
+        return await providerRegistry
+          .getAdapter(providerId)
+          .checkAvailability({ cliPath: connection.cliPath })
       const { config } = resolveAccountRuntime(database, providerId, id)
       return accountStatus(
         await providerRegistry.getAdapter(providerId).checkAvailability(config),
@@ -719,7 +736,8 @@ ${out.slice(-800)}`,
     const live = await Promise.all(
       list.map(async (conn) => {
         const adapter = providerRegistry.getAdapter(conn.providerId)
-        if (!statuses[conn.providerId]?.available || !adapter.discoverModels) return undefined
+        if (!conn.enabled || !statuses[conn.providerId]?.available || !adapter.discoverModels)
+          return undefined
         const hit = modelCache.get(conn.providerId)
         if (hit && Date.now() - hit.at < 600_000) return hit.models
         try {
@@ -772,6 +790,7 @@ ${out.slice(-800)}`,
 
   ipcMain.handle('orchbot:update-connection', (_event, input: UpdateConnectionInput) => {
     const updated = database.updateConnection(input)
+    checksInFlight.clear() // a próxima checagem já vê o novo estado ativo/desativado
     if (isCustomProvider(updated.providerId))
       providerRegistry.registerAdapter(
         new OpenAiCompatibleAdapter(updated.providerId, updated.name),

@@ -7,6 +7,7 @@ import type {
   SupportedProvider,
   ThemeFileInfo,
 } from '../../shared/types'
+import { focusDialog } from './dialog-focus'
 
 const clean = (e: unknown) =>
   (e instanceof Error ? e.message : String(e)).replace(
@@ -51,10 +52,18 @@ export function ConsentGate() {
   onMount(async () => setNeeded(!(await window.orchbot.getConsent()).accepted))
   return (
     <Show when={needed()}>
-      <dialog class="modal-overlay consent-overlay" open>
-        <div class="modal-content" role="document" style={{ width: '600px', 'max-height': '90vh' }}>
+      <dialog
+        ref={focusDialog}
+        aria-modal="true"
+        aria-labelledby="consent-title"
+        class="modal-overlay consent-overlay"
+        open
+      >
+        <div class="modal-content" role="document" style={{ width: '600px' }}>
           <div class="modal-header">
-            <span class="modal-title">Antes de começar</span>
+            <span class="modal-title" id="consent-title">
+              Antes de começar
+            </span>
           </div>
           <div class="modal-form" style={{ 'overflow-y': 'auto' }}>
             <p class="consent-lead">

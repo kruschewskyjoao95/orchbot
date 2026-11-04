@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onMount } from 'solid-js'
 import { providerStatusLabel } from '../../shared/provider-status'
 import type { ProviderAccount, ProviderConnection } from '../../shared/types'
+import { focusDialog } from './dialog-focus'
 
 export function ProviderAccounts(props: {
   connection: ProviderConnection
@@ -89,6 +90,8 @@ export function ProviderAccounts(props: {
   })
   return (
     <dialog
+      ref={focusDialog}
+      aria-modal="true"
       class="modal-overlay"
       open
       aria-labelledby="accounts-title"

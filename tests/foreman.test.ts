@@ -24,6 +24,12 @@ describe('coordenador fixo', () => {
     if (skillsDir) fs.rmSync(skillsDir, { recursive: true, force: true })
   })
 
+  it('nasce com o provedor principal escolhido', () => {
+    db = new OrchbotDatabase(':memory:', testSecretStorage)
+    db.updateSettings({ defaultProvider: 'claude' })
+    expect(ensureForeman(db)?.provider).toBe('claude')
+  })
+
   it('reescreve no boot e esquece preferência, skill, agenda e conta', () => {
     db = new OrchbotDatabase(':memory:', testSecretStorage)
     skillsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'foreman-skills-'))
