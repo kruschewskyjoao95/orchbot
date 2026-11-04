@@ -188,4 +188,58 @@ describe('Fluxo orquestrador → especialista → resumo', () => {
     )
     queue.close()
   })
+
+  it('cancelar uma tarefa com fila cheia não roda dois turnos do mesmo agente juntos', async () => {
+    const agent = db.createAgent({
+      name: 'Solo',
+      provider: 'gemini',
+      model: 'fake',
+      workspacePath: tmpDir,
+    })
+    let running = 0
+    let maxConcurrent = 0
+    const registry = new ProviderRegistry()
+    registry.registerAdapter({
+      id: 'gemini',
+      name: 'gemini',
+      checkAvailability: async () => ({ available: true, version: 'fake' }),
+      executeTurn: (_prompt, _options, callbacks) => {
+        running++
+        maxConcurrent = Math.max(maxConcurrent, running)
+        let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+          running--
+          callbacks.onDone('ok')
+        }, 150)
+        return {
+          interrupt: () => {
+            if (!timer) return
+            clearTimeout(timer)
+            timer = undefined
+            // Como o runner real: avisa só quando o processo fecha.
+            setTimeout(() => {
+              running--
+              callbacks.onInterrupted?.()
+            }, 40)
+          },
+        }
+      },
+    })
+    const queue = new QueueManager(db, registry, {})
+    const thread = db.listThreads(agent.id)[0]
+    if (!thread) throw new Error('thread ausente')
+    const first = queue.enqueue(agent.id, thread.id, 'um')
+    const second = queue.enqueue(agent.id, thread.id, 'dois')
+    const third = queue.enqueue(agent.id, thread.id, 'tres')
+    await vi.waitFor(() => expect(db.getTask(first.id)?.status).toBe('running'))
+    queue.cancel(first.id)
+    await vi.waitFor(
+      () => {
+        expect(db.getTask(second.id)?.status).toBe('completed')
+        expect(db.getTask(third.id)?.status).toBe('completed')
+      },
+      { timeout: 5000, interval: 25 },
+    )
+    expect(maxConcurrent).toBe(1)
+    queue.close()
+  })
 })

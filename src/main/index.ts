@@ -300,6 +300,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
+    if (!/^https?:\/\//i.test(details.url)) return { action: 'deny' }
     if (externalLinksMode === 'embedded') {
       const popup = new BrowserWindow({ width: 1000, height: 720, title: details.url })
       popup.loadURL(details.url)

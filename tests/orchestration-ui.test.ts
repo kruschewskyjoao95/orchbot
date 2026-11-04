@@ -9,6 +9,7 @@ import {
   getActiveTaskForAgent,
   parseComposerInput,
   parseStructuredMessage,
+  safeSnippetHtml,
 } from '../src/renderer/src/orchestration-ui'
 import type { Agent, Channel, Project, TaskQueueItem } from '../src/shared/types'
 
@@ -245,5 +246,13 @@ describe('orchestration-ui helpers (Quadro da Equipe & Paleta de Comandos)', () 
     expect(getActiveTaskForAgent(tasks)?.id).toBe('t2')
     expect(getActiveTaskForAgent([tasks[0], tasks[2]])?.id).toBe('t3')
     expect(getActiveTaskForAgent([tasks[0]])).toBeUndefined()
+  })
+})
+
+describe('safeSnippetHtml', () => {
+  it('escapa HTML do texto e mantém só o destaque <b>', () => {
+    expect(safeSnippetHtml('a <img src=x onerror=alert(1)> <b>termo</b> & fim')).toBe(
+      'a &lt;img src=x onerror=alert(1)&gt; <b>termo</b> &amp; fim',
+    )
   })
 })

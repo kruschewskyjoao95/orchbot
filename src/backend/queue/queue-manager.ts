@@ -136,7 +136,6 @@ export class QueueManager {
   private computerExecutor: ComputerExecutor | null = null
   private pausedAgents = new Set<string>()
   private isProcessingAgent = new Set<string>()
-  private nativeExecutionThreads = new Set<string>()
   /** Tarefas que retomam depois de uma aprovação em texto: no cauteloso, o Codex pode gravar só nelas. */
   private approvedTurns = new Set<string>()
   /** Tarefas que a pessoa escreveu: só depois delas o curador roda (é dali que vêm fato e preferência). */
@@ -264,9 +263,8 @@ export class QueueManager {
     const task = this.db.getTask(taskId)
     if (!task) return false
 
-    const waitsForClose =
-      task.status === 'running' && this.nativeExecutionThreads.has(task.threadId)
-    if (task.status === 'running') this.registry.interruptThread(task.threadId)
+    // Todo adaptador avisa onInterrupted ao fechar: se há execução registrada, ele libera o agente.
+    const waitsForClose = task.status === 'running' && this.registry.interruptThread(task.threadId)
 
     this.taskFallbackAttempts.delete(taskId)
     const updated = this.db.updateTaskStatus(taskId, 'cancelled', 'Cancelado pelo usuário')
@@ -1026,7 +1024,6 @@ export class QueueManager {
     // Uso de tokens informado pela CLI neste turno (gravado junto da resposta).
     let turnUsage: TurnUsage | undefined
     let nativeSessionId: string | undefined
-    if (adapter.supportsSessionResume) this.nativeExecutionThreads.add(nextTask.threadId)
     const permission =
       agent.autonomyLevel === 'cautious'
         ? this.approvedTurns.has(nextTask.id)
@@ -1069,7 +1066,6 @@ export class QueueManager {
         },
         onInterrupted: () => {
           this.taskFallbackAttempts.delete(nextTask.id)
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           this.registry.removeActiveExecution(nextTask.threadId)
           this.isProcessingAgent.delete(agentId)
@@ -1096,7 +1092,6 @@ export class QueueManager {
         },
         onError: (rawError) => {
           const error = apiKey ? rawError.split(apiKey).join('[REDACTED]') : rawError
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
           if (isQuotaOrRateLimitError(error)) {
@@ -1177,7 +1172,6 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
-          this.nativeExecutionThreads.delete(nextTask.threadId)
           if (this.isClosed || !this.db.isOpen()) return
           this.taskFallbackAttempts.delete(nextTask.id)
           this.registry.removeActiveExecution(nextTask.threadId)

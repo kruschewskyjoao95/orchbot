@@ -65,6 +65,7 @@ import {
   getActiveTaskForAgent,
   parseComposerInput,
   parseStructuredMessage,
+  safeSnippetHtml,
   templateInstructions,
 } from './orchestration-ui'
 
@@ -7931,7 +7932,7 @@ export const App: Component = () => {
                           Ir para Conversa ↗
                         </button>
                       </div>
-                      <div class="search-result-snippet" innerHTML={res.snippet} />
+                      <div class="search-result-snippet" innerHTML={safeSnippetHtml(res.snippet)} />
                     </div>
                   )}
                 </For>
@@ -7958,7 +7959,10 @@ export const App: Component = () => {
                           </span>
                         </div>
                       </div>
-                      <div class="search-result-snippet code" innerHTML={file.snippet} />
+                      <div
+                        class="search-result-snippet code"
+                        innerHTML={safeSnippetHtml(file.snippet)}
+                      />
                     </div>
                   )}
                 </For>

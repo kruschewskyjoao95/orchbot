@@ -644,3 +644,12 @@ function pushTextSegments(out: MessageSegment[], chunk: string) {
 export function getActiveTaskForAgent(queue: TaskQueueItem[]): TaskQueueItem | undefined {
   return queue.find((t) => t.status === 'running') ?? queue.find((t) => t.status === 'pending')
 }
+
+/** Trecho de busca do SQLite: escapa tudo e devolve só o <b> do destaque. */
+export function safeSnippetHtml(snippet: string): string {
+  return snippet
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/&lt;(\/?)b&gt;/g, '<$1b>')
+}
