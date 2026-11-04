@@ -104,16 +104,14 @@ export function isQuotaOrRateLimitError(error: string): boolean {
   if (!error) return false
   const lower = error.toLowerCase()
   return (
-    lower.includes('429') ||
+    /\b429\b/.test(lower) ||
     lower.includes('too many requests') ||
     lower.includes('quota') ||
     lower.includes('rate_limit') ||
     lower.includes('rate limit') ||
     lower.includes('insufficient_quota') ||
     lower.includes('resource_exhausted') ||
-    lower.includes('overloaded') ||
     lower.includes('exceeded your current quota') ||
-    lower.includes('capacity exceeded') ||
     lower.includes('tokens per min') ||
     lower.includes('requests per min')
   )
