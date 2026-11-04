@@ -23,6 +23,7 @@ export function runStreamingCli(
   const args = spec.buildArgs(prompt, options)
 
   let isInterrupted = false
+  let settled = false
   let child: ChildProcess | null = null
   const state = { fullText: '' }
   let stderrText = ''
@@ -45,7 +46,7 @@ export function runStreamingCli(
   }
 
   child.stdout?.on('data', (data: Buffer) => {
-    if (isInterrupted) return
+    if (isInterrupted || settled) return
     const text = data.toString('utf-8')
     if (spec.mode === 'plain') {
       flushPlain(text)
@@ -70,10 +71,14 @@ export function runStreamingCli(
   })
 
   child.on('error', (err) => {
-    if (!isInterrupted) callbacks.onError(`Erro ao executar ${spec.label}: ${err.message}`)
+    if (isInterrupted || settled) return
+    settled = true
+    callbacks.onError(`Erro ao executar ${spec.label}: ${err.message}`)
   })
 
   child.on('close', (code) => {
+    if (settled) return
+    settled = true
     if (isInterrupted) {
       callbacks.onInterrupted?.()
       return
@@ -83,7 +88,7 @@ export function runStreamingCli(
       if (chunk) callbacks.onChunk(chunk, state.fullText)
       buffer = ''
     }
-    if (code !== 0 && !state.fullText) {
+    if (code !== 0) {
       callbacks.onError(stderrText.trim() || `Processo ${spec.label} finalizou com código ${code}.`)
     } else {
       callbacks.onDone(state.fullText.trim())

@@ -196,6 +196,26 @@ describe.each(['codex', 'claude'] as const)('%s persistent sessions', (provider)
     expect(log[2].resume).toBe(log[0].id)
   })
 
+  it('stops the CLI when deleting its conversation and continues work in another conversation', async () => {
+    db.updateAgent({ id: agentId, model: 'hang' })
+    const running = queue.enqueue(agentId, threadId, 'Delete this running conversation')
+    await vi.waitFor(() => expect(fs.existsSync(path.join(dir, 'cli-sessions.json'))).toBe(true))
+    const cancelled = queue.enqueue(agentId, threadId, 'Never execute this')
+    const other = db.createThread(agentId, 'Keep this conversation')
+    db.updateAgent({ id: agentId, model: 'normal' })
+    const next = queue.enqueue(agentId, other.id, 'Continue here')
+
+    queue.deleteThread(threadId)
+    expect(db.getThread(threadId)).toBeNull()
+    expect(db.getTask(running.id)).toBeNull()
+    expect(db.getTask(cancelled.id)).toBeNull()
+    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'), { timeout: 5000 })
+    const log = calls()
+    expect(log[1].event).toBe('closed')
+    expect(log[2].prompt).toContain('Continue here')
+    expect(log).toHaveLength(3)
+  })
+
   it('does not unlock the active session when cancelling a different pending task', async () => {
     db.updateAgent({ id: agentId, model: 'hang' })
     const running = queue.enqueue(agentId, threadId, 'Keep this running')

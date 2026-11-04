@@ -151,16 +151,21 @@ export function calculateNextRun(rawExpression: string, fromDate = new Date()): 
   candidate.setSeconds(0, 0)
   candidate.setMinutes(candidate.getMinutes() + 1)
 
-  // Itera minuto a minuto até achar a próxima correspondência (limite de 366 dias = 527040 minutos)
-  const maxMinutes = 527040
-  let count = 0
+  // O intervalo entre 29/02 pode chegar a oito anos (2096 → 2104).
+  const limit = new Date(candidate.getTime())
+  limit.setFullYear(limit.getFullYear() + 8)
+  const dayExpression = `* * ${expr.split(/\s+/).slice(2).join(' ')}`
 
-  while (count < maxMinutes) {
+  while (candidate < limit) {
+    if (!matchesDate(dayExpression, candidate)) {
+      candidate.setDate(candidate.getDate() + 1)
+      candidate.setHours(0, 0, 0, 0)
+      continue
+    }
     if (matchesDate(expr, candidate)) {
       return candidate
     }
     candidate.setMinutes(candidate.getMinutes() + 1)
-    count++
   }
 
   throw new Error(`Não foi possível calcular próxima execução para a cron: "${rawExpression}"`)

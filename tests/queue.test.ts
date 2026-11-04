@@ -106,27 +106,123 @@ describe('Fase 3: Fila Durável FIFO (QueueManager)', () => {
     expect(() => callbacks?.onError('Erro atrasado')).not.toThrow()
   })
 
-  it('não executa a tarefa cancelada enquanto o histórico era compactado', async () => {
+  it.each(['cancel', 'deleteThread'] as const)(
+    'não executa a tarefa interrompida durante a compactação (%s)',
+    async (action) => {
+      const adapter = mockRegistry.getAdapter('codex')
+      const pending: Array<() => void> = []
+      vi.spyOn(mockRegistry, 'getAdapter').mockReturnValue({
+        ...adapter,
+        executeTurn: (prompt, options, handlers) => {
+          if (!prompt.startsWith('Resuma')) return adapter.executeTurn(prompt, options, handlers)
+          pending.push(() => handlers.onDone('resumo'))
+          return { interrupt: () => {} }
+        },
+      })
+      for (let i = 0; i < 40; i++) db.addMessage(threadId, i % 2 ? 'assistant' : 'user', `m${i}`)
+      await new Promise((r) => setTimeout(r, 5))
+      const first = queue.enqueue(testAgent.id, threadId, 'Cancelada')
+      await vi.waitFor(() => expect(pending).toHaveLength(1))
+      if (action === 'cancel') queue.cancel(first.id)
+      else queue.deleteThread(threadId)
+      for (const done of pending.splice(0)) done()
+      await new Promise((r) => setTimeout(r, 50))
+      expect(mockRegistry.executedPrompts).not.toContain('Cancelada')
+      expect(db.getTask(first.id)?.status).toBe(action === 'cancel' ? 'cancelled' : undefined)
+      const other = db.createThread(testAgent.id, 'Outra conversa')
+      const next = queue.enqueue(testAgent.id, other.id, 'Continuar após compactação')
+      await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'))
+    },
+  )
+
+  it('ignora o resultado do navegador quando a conversa é excluída durante a ação', async () => {
+    let resolveBrowser: (result: unknown) => void = () => {}
+    const browser = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveBrowser = resolve
+        }),
+    )
+    queue.setBrowserExecutor(browser)
     const adapter = mockRegistry.getAdapter('codex')
-    const pending: Array<() => void> = []
     vi.spyOn(mockRegistry, 'getAdapter').mockReturnValue({
       ...adapter,
-      executeTurn: (prompt, options, handlers) => {
-        if (!prompt.startsWith('Resuma')) return adapter.executeTurn(prompt, options, handlers)
-        pending.push(() => handlers.onDone('resumo'))
+      executeTurn: (prompt, options, callbacks) => {
+        if (prompt !== 'Navegar') return adapter.executeTurn(prompt, options, callbacks)
+        setTimeout(() => callbacks.onDone('[[BROWSER:inspect]] [[/BROWSER]]'), 0)
         return { interrupt: () => {} }
       },
     })
-    for (let i = 0; i < 40; i++) db.addMessage(threadId, i % 2 ? 'assistant' : 'user', `m${i}`)
-    await new Promise((r) => setTimeout(r, 5))
-    const first = queue.enqueue(testAgent.id, threadId, 'Cancelada')
-    await vi.waitFor(() => expect(pending).toHaveLength(1))
-    queue.cancel(first.id)
-    for (const done of pending.splice(0)) done()
-    await new Promise((r) => setTimeout(r, 50))
-    expect(mockRegistry.executedPrompts).not.toContain('Cancelada')
-    expect(db.getTask(first.id)?.status).toBe('cancelled')
+    queue.enqueue(testAgent.id, threadId, 'Navegar')
+    await vi.waitFor(() => expect(browser).toHaveBeenCalledTimes(1))
+    queue.deleteThread(threadId)
+    const other = db.createThread(testAgent.id, 'Outra conversa')
+    const next = queue.enqueue(testAgent.id, other.id, 'Continuar após navegador')
+    resolveBrowser({ text: 'Resultado atrasado' })
+    await vi.waitFor(() => expect(db.getTask(next.id)?.status).toBe('completed'))
+    expect(db.getThread(threadId)).toBeNull()
+    expect(db.listTasks(testAgent.id)).toHaveLength(1)
   })
+
+  it.each(['onDone', 'onError', 'onInterrupted'] as const)(
+    'exclui a conversa ativa e aguarda %s sem afetar outras conversas',
+    async (terminal) => {
+      queue.close()
+      const registry = new ProviderRegistry()
+      const runs: Array<{ prompt: string; callbacks: ExecutionCallbacks }> = []
+      const interrupt = vi.fn()
+      const onStreamChunk = vi.fn()
+      registry.registerAdapter({
+        id: 'codex',
+        name: 'Controlled provider',
+        checkAvailability: async () => ({ available: true }),
+        executeTurn: (prompt, _options, callbacks) => {
+          runs.push({ prompt, callbacks })
+          return { interrupt }
+        },
+      })
+      queue = new QueueManager(db, registry, { onStreamChunk })
+      const other = db.createThread(testAgent.id, 'Outra conversa')
+      const running = queue.enqueue(testAgent.id, threadId, 'Em execução')
+      await vi.waitFor(() => expect(runs).toHaveLength(1))
+      const cancelled = queue.enqueue(testAgent.id, threadId, 'Não executar')
+      const next = queue.enqueue(testAgent.id, other.id, 'Continuar na outra conversa')
+
+      expect(queue.deleteThread(threadId)).toBe(true)
+      expect(interrupt).toHaveBeenCalledTimes(1)
+      expect(db.getThread(threadId)).toBeNull()
+      expect(db.getTask(running.id)).toBeNull()
+      expect(db.getTask(cancelled.id)).toBeNull()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(runs).toHaveLength(1)
+      onStreamChunk.mockClear()
+      const callbacks = runs[0].callbacks
+      expect(() => callbacks.onNotice?.('Aviso atrasado')).not.toThrow()
+      callbacks.onChunk('Texto atrasado', 'Texto atrasado')
+      expect(onStreamChunk).not.toHaveBeenCalled()
+      expect(() => {
+        if (terminal === 'onInterrupted') callbacks.onInterrupted?.()
+        else callbacks[terminal]('Retorno atrasado')
+      }).not.toThrow()
+      await vi.waitFor(() => expect(runs).toHaveLength(2))
+      expect(runs[1].prompt).toBe('Continuar na outra conversa')
+
+      // Retornos duplicados da conversa apagada não podem liberar o turno seguinte.
+      expect(() => {
+        callbacks.onDone('Resposta atrasada')
+        callbacks.onError('429 quota exceeded')
+        callbacks.onInterrupted?.()
+      }).not.toThrow()
+      const third = queue.enqueue(testAgent.id, other.id, 'Esperar o segundo turno')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(runs).toHaveLength(2)
+      runs[1].callbacks.onDone('Concluído')
+      await vi.waitFor(() => expect(runs).toHaveLength(3))
+      expect(db.getTask(next.id)?.status).toBe('completed')
+      runs[2].callbacks.onDone('Concluído também')
+      await vi.waitFor(() => expect(db.getTask(third.id)?.status).toBe('completed'))
+    },
+  )
 
   it('no canal, o resultado do participante volta ao dono sem esgotar a profundidade', async () => {
     const helper = db.createAgent({

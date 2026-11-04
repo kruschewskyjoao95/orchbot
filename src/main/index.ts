@@ -663,7 +663,7 @@ ${out.slice(-800)}`,
 
   ipcMain.handle('orchbot:delete-thread', (_event, threadId: string) => {
     if (typeof threadId !== 'string') throw new Error('ID da thread inválido')
-    return database.deleteThread(threadId)
+    return queue.deleteThread(threadId)
   })
 
   ipcMain.handle(
