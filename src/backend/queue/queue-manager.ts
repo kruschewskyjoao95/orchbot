@@ -1290,21 +1290,6 @@ export class QueueManager {
           // 1b. Orquestrador delega aos especialistas; especialista devolve ao orquestrador
           if (isOrchestrator) {
             this.dispatchDelegations(nextTask, agent, fullText)
-          } else if (
-            nextTask.originThreadId &&
-            !waitingApproval &&
-            browserDirectives.length === 0 &&
-            !needsMemoryFollowUp(memoryDirectives) &&
-            !brainOutcome.followUp &&
-            !needsCollabFollowUp(collabDirectives) &&
-            !needsSkillFollowUp(skillDirectives)
-          ) {
-            const specialistText = brainDirectives.length
-              ? [stripBrainDirectives(fullText).trim(), brainOutcome.lines.join('\n')]
-                  .filter(Boolean)
-                  .join('\n\n')
-              : fullText.trim()
-            this.returnResultToOrchestrator(nextTask, agent.name, specialistText)
           }
 
           // 1c. Comandos de navegador do robô (vale para qualquer papel)
@@ -1354,8 +1339,18 @@ export class QueueManager {
             !(isOrchestrator && parseDelegationDirectives(fullText).length > 0) &&
             !this.db.getChannelByThread(nextTask.threadId)
           void Promise.allSettled(followUpWork).then(() => {
-            if (!this.flushFollowUps(nextTask, agentId) && canHandOff)
-              this.handOff(nextTask, agent, visibleText)
+            if (this.flushFollowUps(nextTask, agentId)) return
+            // Sem continuação agendada (inclusive no limite de rodadas): devolve o resultado.
+            if (this.isClosed || !this.db.isOpen()) return
+            if (!isOrchestrator && nextTask.originThreadId && !waitingApproval) {
+              const specialistText = brainDirectives.length
+                ? [stripBrainDirectives(fullText).trim(), brainOutcome.lines.join('\n')]
+                    .filter(Boolean)
+                    .join('\n\n')
+                : fullText.trim()
+              this.returnResultToOrchestrator(nextTask, agent.name, specialistText)
+            }
+            if (canHandOff) this.handOff(nextTask, agent, visibleText)
           })
 
           // 1d. Robô inicia um novo chat (quando a capacidade permite)

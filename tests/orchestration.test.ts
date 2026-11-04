@@ -144,4 +144,48 @@ describe('Fluxo orquestrador → especialista → resumo', () => {
     expect(messages.some((m) => m.role === 'assistant' && m.text.includes('[[DELEGAR'))).toBe(false)
     queue.close()
   })
+
+  it('devolve o resultado mesmo quando o especialista emite bloco de navegador sem continuação possível', async () => {
+    const project = db.createProject({ name: 'Equipe', workspacePath: tmpDir })
+    const orchestrator = db.createAgent({
+      name: 'Chefe',
+      role: 'orchestrator',
+      projectId: project.id,
+      provider: 'codex',
+      model: 'fake',
+      workspacePath: tmpDir,
+    })
+    db.createAgent({
+      name: 'Pesquisador',
+      role: 'worker',
+      projectId: project.id,
+      provider: 'claude',
+      model: 'fake',
+      workspacePath: tmpDir,
+      browserAccess: false,
+    })
+    const registry = new ProviderRegistry()
+    registry.registerAdapter(
+      fakeAdapter('codex', (prompt) =>
+        prompt.includes('[RESULTADO DO ESPECIALISTA')
+          ? 'Resumo final: pesquisa entregue.'
+          : 'Delegando.\n\n[[DELEGAR:Pesquisador]]\nPesquise.\n[[/DELEGAR]]',
+      ),
+    )
+    registry.registerAdapter(
+      fakeAdapter('claude', () => 'Achei.\n[[BROWSER:open]] https://example.com [[/BROWSER]]'),
+    )
+    const queue = new QueueManager(db, registry, {})
+    const orchThread = db.listThreads(orchestrator.id)[0]
+    if (!orchThread) throw new Error('thread do orquestrador ausente')
+    queue.enqueue(orchestrator.id, orchThread.id, 'Pesquise')
+    await vi.waitFor(
+      () =>
+        expect(
+          db.listMessages(orchThread.id).some((m) => m.text.includes('Resumo final: pesquisa')),
+        ).toBe(true),
+      { timeout: 8000, interval: 50 },
+    )
+    queue.close()
+  })
 })
