@@ -58,6 +58,8 @@ export function runSessionCli(
   callbacks: ExecutionCallbacks,
   /** Claude com permissão por stdio: o prompt vai por stdin e o CLI pergunta antes de cada ferramenta. */
   stdinPrompt?: string,
+  /** Prompt em texto puro por stdin: argv tem limite de 128 KB por argumento no Linux (E2BIG). */
+  stdinText?: string,
 ): ActiveExecution {
   let child: ChildProcess | undefined
   const permissions = new AbortController()
@@ -142,10 +144,12 @@ export function runSessionCli(
         runningChildren.delete(launched)
         permissions.abort() // fecha o diálogo se o CLI morrer esperando resposta
       })
+      // CLI que sai sem ler o stdin daria EPIPE sem dono, derrubando o processo principal.
+      launched.stdin.on('error', () => {})
       const write = (message: unknown) => {
         if (launched.stdin.writable) launched.stdin.write(`${JSON.stringify(message)}\n`)
       }
-      if (stdinPrompt === undefined) launched.stdin.end()
+      if (stdinPrompt === undefined) launched.stdin.end(stdinText)
       else write({ type: 'user', message: { role: 'user', content: stdinPrompt } })
       const answerPermission = async (event: CliEvent) => {
         const requestId = event.request_id

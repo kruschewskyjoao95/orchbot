@@ -64,7 +64,8 @@ export class CodexAdapter implements ProviderAdapter {
     const effectivePrompt = options.instructions
       ? `[Instruções do Sistema: ${options.instructions}]\n\n${prompt}`
       : prompt
-    args.push('--', ...(options.resumeSessionId ? [options.resumeSessionId] : []), effectivePrompt)
-    return runSessionCli('codex', args, options, callbacks)
+    // `-`: o prompt vem por stdin (instruções + prompt podem passar de 128 KB, o limite do argv).
+    args.push('--', ...(options.resumeSessionId ? [options.resumeSessionId] : []), '-')
+    return runSessionCli('codex', args, options, callbacks, undefined, effectivePrompt)
   }
 }

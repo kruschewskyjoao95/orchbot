@@ -183,10 +183,13 @@ export class SkillService {
     if (!row) throw new Error('Proposta não encontrada.')
     if (row.status !== 'open') throw new Error('Esta proposta já foi respondida.')
     if (accept) {
-      const info = this.create(
-        { slug: row.slug, name: row.name, description: row.description, body: row.body },
-        'agent',
-      )
+      // Slug já na biblioteca = revisão (install/revise só chegam aqui para skills existentes ou novas).
+      const info = this.info(row.slug)
+        ? this.revise(row.slug, { description: row.description, body: row.body })
+        : this.create(
+            { slug: row.slug, name: row.name, description: row.description, body: row.body },
+            'agent',
+          )
       this.activate(row.agentId, info.slug)
     }
     return this.db.setSkillProposalStatus(id, accept ? 'accepted' : 'dismissed')
@@ -361,14 +364,24 @@ export class SkillService {
           const src = fs.realpathSync(path.resolve(root, d.target))
           if (src !== root && !src.startsWith(root + path.sep))
             return `[${label}] a pasta precisa estar dentro do seu workspace.`
-          const s = this.installFolder(src, 'agent', agent.name)
-          this.activate(agent.id, s.slug)
-          return `[${label}] instalada "${s.slug}" e ativada para você.`
+          // shortcut: a proposta guarda só o SKILL.md (sem arquivos extras da pasta); amplie se skills com scripts forem aceitas.
+          const file = path.join(src, 'SKILL.md')
+          if (!fs.existsSync(file)) return `[${label}] a pasta não tem SKILL.md.`
+          const p = parseSkillFile(fs.readFileSync(file, 'utf8'))
+          if (!p.description) return `[${label}] o SKILL.md precisa de description.`
+          const proposal = this.propose(agent.id, {
+            name: p.name || path.basename(src),
+            description: p.description,
+            body: p.body,
+          })
+          return `[${label}] proposta "${proposal.slug}" registrada. Ela só entra na biblioteca depois que a pessoa aceitar.`
         }
         const [first, ...rest] = d.body.split('\n')
         const description = first.trim()
         const body = rest.join('\n').trim()
         if (d.action === 'create') {
+          if (this.info(slugify(d.target)))
+            return `[${label}] já existe a skill "${slugify(d.target)}"; use [[SKILL:revise]].`
           const proposal = this.propose(agent.id, {
             name: d.target,
             description,
@@ -379,8 +392,8 @@ export class SkillService {
         const slug = slugify(d.target)
         if (!this.db.listAgentSkills(agent.id).includes(slug))
           return `[${label}] a skill "${slug}" não está ativa para você.`
-        const s = this.revise(slug, { description, body })
-        return `[${label}] skill "${s.slug}" atualizada para a v${s.version}.`
+        const proposal = this.propose(agent.id, { name: slug, description, body })
+        return `[${label}] revisão de "${proposal.slug}" registrada. Ela só vale depois que a pessoa aceitar.`
       } catch (err) {
         return `[${label}] erro: ${err instanceof Error ? err.message : String(err)}`
       }
