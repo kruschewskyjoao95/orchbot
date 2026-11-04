@@ -219,7 +219,7 @@ describe('OpenAI-compatible HTTP provider', () => {
     expect(() => registry.getAdapter(id)).toThrow('não encontrado')
   })
 
-  it('executes a saved custom provider through the real queue and persists its response', async () => {
+  it('executes a saved custom provider through the queue with history on subsequent turns', async () => {
     const db = new OrchbotDatabase(':memory:', testSecretStorage)
     const connection = db.createCustomProvider({
       name: 'API test',
@@ -241,6 +241,7 @@ describe('OpenAI-compatible HTTP provider', () => {
         workspacePath: process.cwd(),
       })
       const thread = db.listThreads(agent.id)[0]
+      db.addMessage(thread.id, 'user', 'API task')
       const task = queue.enqueue(agent.id, thread.id, 'API task')
       await vi.waitFor(() => expect(db.getTask(task.id)?.status).toBe('completed'))
       expect(db.listMessages(thread.id).find((message) => message.role === 'assistant')?.text).toBe(
@@ -248,6 +249,19 @@ describe('OpenAI-compatible HTTP provider', () => {
       )
       expect(requests[0]).toMatchObject({ key: 'Bearer queue-secret', body: { model: 'model-a' } })
       expect(JSON.stringify(db.listConnections())).not.toContain('queue-secret')
+
+      db.addMessage(thread.id, 'user', 'Pode continuar?')
+      const nextTask = queue.enqueue(agent.id, thread.id, 'Pode continuar?')
+      await vi.waitFor(() => expect(db.getTask(nextTask.id)?.status).toBe('completed'))
+      const history = requests[1].body.messages?.find((message) => message.role === 'system')
+      expect(history?.content).toContain('[HISTÓRICO RECENTE DA CONVERSA]')
+      expect(history?.content).toContain('[Usuário] API task')
+      expect(history?.content).toContain('[Assistente] Olá 🌍')
+      expect(history?.content).not.toContain('Pode continuar?')
+      expect(requests[1].body.messages?.at(-1)).toEqual({
+        role: 'user',
+        content: 'Pode continuar?',
+      })
     } finally {
       queue.close()
       db.close()

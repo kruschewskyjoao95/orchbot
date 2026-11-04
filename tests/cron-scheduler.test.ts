@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as cronParser from '../src/backend/cron/cron-parser'
 import {
   calculateNextRun,
   describeCron,
@@ -74,6 +75,8 @@ describe('Agendamento & Tarefas em Background (Cron)', () => {
     scheduler?.close()
     queueManager?.close()
     db.close()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   describe('Cron Parser & Calculador de Próxima Execução', () => {
@@ -146,6 +149,19 @@ describe('Agendamento & Tarefas em Background (Cron)', () => {
       expect(nextRun.getHours()).toBe(9)
       expect(nextRun.getMinutes()).toBe(0)
       expect(nextRun.getTime()).toBeGreaterThan(base.getTime())
+    })
+
+    it.each([
+      { from: new Date(2028, 1, 29), next: new Date(2032, 1, 29) },
+      { from: new Date(2096, 1, 29), next: new Date(2104, 1, 29) },
+    ])('calcula o próximo 29 de fevereiro após $from', ({ from, next }) => {
+      expect(calculateNextRun('0 0 29 2 *', from)).toEqual(next)
+    })
+
+    it('encerra a busca quando a data nunca existe no calendário', () => {
+      expect(() => calculateNextRun('0 0 31 2 *', new Date(2028, 0, 1))).toThrow(
+        'Não foi possível calcular próxima execução',
+      )
     })
 
     it('gera descrição legível em português', () => {
@@ -244,6 +260,48 @@ describe('Agendamento & Tarefas em Background (Cron)', () => {
   })
 
   describe('Execução em Background pelo CronScheduler', () => {
+    it('dispara 29 de fevereiro uma única vez e agenda o próximo ano bissexto', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date(2028, 1, 28, 12))
+      queueManager.pause(testAgent.id)
+      scheduler = new CronScheduler(db, queueManager)
+      const task = db.createScheduledTask({
+        agentId: testAgent.id,
+        title: 'Ano bissexto',
+        prompt: 'Executar uma vez',
+        cronExpression: '0 0 29 2 *',
+      })
+      vi.setSystemTime(new Date(2028, 1, 29))
+
+      expect(await scheduler.checkAndRunDueTasks()).toBe(1)
+      expect(await scheduler.checkAndRunDueTasks()).toBe(0)
+      expect(db.listTasks(testAgent.id)).toHaveLength(1)
+      expect(db.getScheduledTask(task.id)).toMatchObject({
+        lastRunAt: new Date(2028, 1, 29).toISOString(),
+        nextRunAt: new Date(2032, 1, 29).toISOString(),
+        enabled: true,
+      })
+    })
+
+    it('não enfileira nem anuncia disparo quando o cálculo da próxima data falha', async () => {
+      scheduler = new CronScheduler(db, queueManager)
+      const task = db.createScheduledTask({
+        agentId: testAgent.id,
+        title: 'Falha de cálculo',
+        prompt: 'Não executar',
+        cronExpression: '@daily',
+      })
+      db.updateScheduledTask({ id: task.id, nextRunAt: new Date(0).toISOString() })
+      vi.spyOn(cronParser, 'calculateNextRun').mockImplementation(() => {
+        throw new Error('Falha ao calcular próxima execução')
+      })
+
+      expect(await scheduler.checkAndRunDueTasks()).toBe(0)
+      expect(await scheduler.checkAndRunDueTasks()).toBe(0)
+      expect(db.listTasks(testAgent.id)).toEqual([])
+      expect(db.listMessages(db.listThreads(testAgent.id)[0].id)).toEqual([])
+    })
+
     it('dispara rotina agendada ("verifique issues ou rode testes"), enfileira no QueueManager e atualiza próximo disparo', async () => {
       let triggered = false
       scheduler = new CronScheduler(db, queueManager, undefined, {

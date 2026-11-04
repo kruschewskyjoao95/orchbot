@@ -185,9 +185,10 @@ export class QueueManager {
     this.browserExecutor = executor
   }
 
-  /** Sem o aceite do primeiro uso, nenhum agente executa (tarefas ficam pendentes). */
+  /** Retoma as filas após configurar o aceite; sem ele, tarefas continuam pendentes. */
   public setConsentCheck(check: () => boolean): void {
     this.consentCheck = check
+    this.kick()
   }
 
   /** Reprocessa filas pendentes (ex.: logo após o aceite do aviso). */
@@ -269,6 +270,24 @@ export class QueueManager {
   /** Interrompe o turno ativo de uma thread (orientar enquanto trabalha). */
   public interruptThread(threadId: string): boolean {
     return this.registry.interruptThread(threadId)
+  }
+
+  public deleteThread(threadId: string): boolean {
+    const thread = this.db.getThread(threadId)
+    if (thread) {
+      const tasks = this.listTasks(thread.agentId).filter((task) => task.threadId === threadId)
+      for (const task of tasks) {
+        if (task.status === 'pending') this.cancel(task.id)
+      }
+      for (const task of tasks) {
+        if (task.status === 'running') this.cancel(task.id)
+        this.personTurns.delete(task.id)
+        this.approvedTurns.delete(task.id)
+        this.followUps.delete(task.id)
+        this.followUpBump.delete(task.id)
+      }
+    }
+    return this.db.deleteThread(threadId)
   }
 
   /**
@@ -366,6 +385,7 @@ export class QueueManager {
     }
 
     const results = await this.collectComputerResults(agentId, directives)
+    if (this.isClosed || !this.db.isOpen() || !this.db.getThread(task.threadId)) return
     const notice = this.db.addMessage(
       task.threadId,
       'system',
@@ -777,6 +797,7 @@ export class QueueManager {
     }
 
     const results = await this.collectBrowserResults(agentId, directives)
+    if (this.isClosed || !this.db.isOpen() || !this.db.getThread(task.threadId)) return
 
     const notice = this.db.addMessage(
       task.threadId,
@@ -866,6 +887,7 @@ export class QueueManager {
     result: string,
   ): void {
     if (!task.originThreadId || !task.originAgentId) return
+    if (!this.db.getThread(task.originThreadId)) return
     const originAgent = this.db.getAgent(task.originAgentId)
     if (!originAgent) return
     // Canal: o dono pode seguir coordenando (a profundidade continua subindo até MAX_CHANNEL_DEPTH).
@@ -1080,7 +1102,7 @@ export class QueueManager {
       // Ignora falhas de busca em arquivos
     }
 
-    if (adapter.supportsSessionResume && !resumeSessionId) {
+    if (!resumeSessionId) {
       const messages = this.db
         .listMessages(nextTask.threadId)
         .filter((message) => message.createdAt <= nextTask.createdAt)
@@ -1176,6 +1198,7 @@ export class QueueManager {
     // Uso de tokens informado pela CLI neste turno (gravado junto da resposta).
     let turnUsage: TurnUsage | undefined
     let nativeSessionId: string | undefined
+    let settled = false
     const permission =
       agent.autonomyLevel === 'cautious'
         ? this.approvedTurns.has(nextTask.id)
@@ -1203,7 +1226,13 @@ export class QueueManager {
           turnUsage = usage
         },
         onNotice: (text) => {
-          if (this.isClosed || !this.db.isOpen()) return
+          if (
+            settled ||
+            this.isClosed ||
+            !this.db.isOpen() ||
+            !this.db.getThread(nextTask.threadId)
+          )
+            return
           const notice = this.db.addMessage(nextTask.threadId, 'system', text)
           this.events?.onTurnFinished?.({
             threadId: nextTask.threadId,
@@ -1217,6 +1246,8 @@ export class QueueManager {
             this.db.saveProviderSession(nextTask.threadId, agent.provider, sessionScope, sessionId)
         },
         onInterrupted: () => {
+          if (settled) return
+          settled = true
           this.taskFallbackAttempts.delete(nextTask.id)
           if (this.isClosed || !this.db.isOpen()) return
           this.registry.removeActiveExecution(nextTask.threadId)
@@ -1232,10 +1263,27 @@ export class QueueManager {
           }
           setTimeout(() => this.processNextForAgent(agentId), 0)
         },
-        onPermissionRequest: (request, signal) =>
-          this.events?.onPermissionRequest?.(request, signal, agent.name) ??
-          Promise.resolve(undefined),
+        onPermissionRequest: (request, signal) => {
+          if (
+            settled ||
+            this.isClosed ||
+            !this.db.isOpen() ||
+            !this.db.getThread(nextTask.threadId)
+          )
+            return Promise.resolve(undefined)
+          return (
+            this.events?.onPermissionRequest?.(request, signal, agent.name) ??
+            Promise.resolve(undefined)
+          )
+        },
         onChunk: (chunk, fullText) => {
+          if (
+            settled ||
+            this.isClosed ||
+            !this.db.isOpen() ||
+            !this.db.getThread(nextTask.threadId)
+          )
+            return
           this.events?.onStreamChunk?.({
             threadId: nextTask.threadId,
             chunk,
@@ -1243,8 +1291,16 @@ export class QueueManager {
           })
         },
         onError: (rawError) => {
+          if (settled) return
+          settled = true
           const error = apiKey ? rawError.split(apiKey).join('[REDACTED]') : rawError
           if (this.isClosed || !this.db.isOpen()) return
+          if (!this.db.getThread(nextTask.threadId)) {
+            this.taskFallbackAttempts.delete(nextTask.id)
+            this.registry.removeActiveExecution(nextTask.threadId)
+            this.finishAgentTurn(agentId)
+            return
+          }
           // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
           if (isQuotaOrRateLimitError(error)) {
             const tried = this.taskFallbackAttempts.get(nextTask.id) ?? new Set<string>()
@@ -1324,7 +1380,11 @@ export class QueueManager {
           }, 50)
         },
         onDone: (fullText) => {
-          if (this.isClosed || !this.db.isOpen()) {
+          if (settled) return
+          settled = true
+          if (this.isClosed || !this.db.isOpen() || !this.db.getThread(nextTask.threadId)) {
+            this.taskFallbackAttempts.delete(nextTask.id)
+            this.registry.removeActiveExecution(nextTask.threadId)
             this.finishAgentTurn(agentId)
             return
           }
@@ -1463,7 +1523,8 @@ export class QueueManager {
             this.dispatchMemoryDirectives(nextTask, agentId, memoryDirectives)
             if (this.personTurns.delete(nextTask.id))
               this.memory.maybeReview({ agent, adapter, config }, nextTask.threadId, (text) => {
-                if (this.isClosed || !this.db.isOpen()) return
+                if (this.isClosed || !this.db.isOpen() || !this.db.getThread(nextTask.threadId))
+                  return
                 const notice = this.db.addMessage(nextTask.threadId, 'system', text)
                 this.events?.onTurnFinished?.({
                   threadId: nextTask.threadId,
@@ -1487,7 +1548,8 @@ export class QueueManager {
               !this.db.getChannelByThread(nextTask.threadId)
             void Promise.allSettled(followUpWork).then(() => {
               try {
-                if (this.isClosed || !this.db.isOpen()) return
+                if (this.isClosed || !this.db.isOpen() || !this.db.getThread(nextTask.threadId))
+                  return
                 if (this.flushFollowUps(nextTask, agentId)) return
                 // Sem continuação agendada (inclusive no limite de rodadas): devolve o resultado.
                 if (!isOrchestrator && nextTask.originThreadId && !waitingApproval) {

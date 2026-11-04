@@ -89,6 +89,9 @@ export class CronScheduler {
 
   private async executeScheduledTask(task: ScheduledTask, executionTime: Date): Promise<void> {
     const nowIso = executionTime.toISOString()
+    const nextRunIso = isValidCron(task.cronExpression)
+      ? calculateNextRun(task.cronExpression, executionTime).toISOString()
+      : null
 
     // 1. Resolve ou cria thread de destino para o agente
     let targetThreadId = task.threadId
@@ -123,9 +126,8 @@ export class CronScheduler {
     // 4. Enfileira a tarefa na fila durável FIFO do agente
     this.queueManager.enqueue(task.agentId, targetThreadId, prompt)
 
-    // 5. Calcula próximo disparo e registra execução no banco
-    if (isValidCron(task.cronExpression)) {
-      const nextRunIso = calculateNextRun(task.cronExpression, executionTime).toISOString()
+    // 5. Registra execução no banco
+    if (nextRunIso) {
       this.db.recordScheduledTaskRun(task.id, nowIso, nextRunIso)
     } else {
       // Expressão inválida: agendar "agora" dispararia a cada ciclo; desliga a rotina.
