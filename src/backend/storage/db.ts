@@ -2205,7 +2205,7 @@ export class OrchbotDatabase {
         completed_at AS completedAt
       FROM task_queue
       WHERE agent_id = ? AND status = 'pending'
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, rowid ASC
       LIMIT 1
     `)
     const rawResult = stmt.get(agentId) as unknown as TaskQueueItem | undefined
