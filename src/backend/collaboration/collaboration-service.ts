@@ -208,8 +208,18 @@ export class CollaborationService {
     if (stat.size > MAX_FILE_BYTES) return 'arquivo maior que 25 MB.'
     const safeSender = from.name.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 40) || 'agente'
     const dir = orchbotDir(to.workspacePath, 'inbox', safeSender)
-    const dest = path.join(dir, path.basename(real))
-    fs.copyFileSync(real, dest)
+    // Nunca sobrescreve: se já existe, grava como "nome (2).ext", "nome (3).ext"…
+    const { name, ext } = path.parse(path.basename(real))
+    let dest = path.join(dir, `${name}${ext}`)
+    for (let n = 2; ; n++) {
+      try {
+        fs.copyFileSync(real, dest, fs.constants.COPYFILE_EXCL)
+        break
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST' || n > 999) throw err
+        dest = path.join(dir, `${name} (${n})${ext}`)
+      }
+    }
     const toThread = this.latestThread(to.id)
     if (!toThread)
       return `arquivo copiado para ${dest}, mas ${to.name} não tem conversa para avisar.`
@@ -219,7 +229,7 @@ export class CollaborationService {
       ctx.threadId,
       to,
       toThread,
-      `📎 Enviei o arquivo "${path.basename(real)}". Ele está em ${relDest} no seu workspace.`,
+      `📎 Enviei o arquivo "${path.basename(dest)}". Ele está em ${relDest} no seu workspace.`,
       ctx.depth,
     )
     return `arquivo entregue a ${to.name} em ${relDest}.`

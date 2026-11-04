@@ -288,5 +288,19 @@ describe('Agendamento & Tarefas em Background (Cron)', () => {
       expect(prompt).toContain('https://status.github.com')
       expect(prompt).toContain('Verifique se há avisos de erro ou falha no dashboard')
     })
+
+    it('desliga a rotina com expressão cron inválida em vez de agendar "agora"', async () => {
+      scheduler = new CronScheduler(db, queueManager)
+      const task = db.createScheduledTask({
+        agentId: testAgent.id,
+        title: 'Quebrada',
+        prompt: 'x',
+        cronExpression: '*/30 * * * *',
+      })
+      db.updateScheduledTask({ id: task.id, cronExpression: 'invalido' })
+      await scheduler.runNow(task.id)
+      expect(db.getScheduledTask(task.id)?.enabled).toBe(false)
+      expect(db.getDueScheduledTasks(new Date(Date.now() + 60_000).toISOString())).toEqual([])
+    })
   })
 })

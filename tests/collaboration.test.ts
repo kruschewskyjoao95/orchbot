@@ -107,6 +107,11 @@ describe('colaboração entre agentes e canais', () => {
     expect(
       fs.readFileSync(path.join(ws, 'b', '.orchbot', 'inbox', 'Ana', 'dados.txt'), 'utf8'),
     ).toBe('olá')
+    fs.writeFileSync(path.join(ws, 'a', 'dados.txt'), 'nova versão')
+    run(a, '[[AGENT:file]] Bruno :: dados.txt [[/AGENT]]')
+    const inbox = path.join(ws, 'b', '.orchbot', 'inbox', 'Ana')
+    expect(fs.readFileSync(path.join(inbox, 'dados.txt'), 'utf8')).toBe('olá')
+    expect(fs.readFileSync(path.join(inbox, 'dados (2).txt'), 'utf8')).toBe('nova versão')
     expect(
       run(a, '[[AGENT:file]] Bruno :: ../b/.orchbot/inbox/Ana/dados.txt [[/AGENT]]').lines[0],
     ).toContain('dentro do seu workspace')
