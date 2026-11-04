@@ -888,7 +888,9 @@ export class QueueManager {
     const contextSections: string[] = []
 
     if (rules.exists && rules.content) {
-      contextSections.push(`[DIRETRIZES DO PROJETO (${rules.filename})]\n${rules.content}`)
+      contextSections.push(
+        `[DIRETRIZES DO PROJETO (${rules.filename})]\n${capRulesContent(rules.content, agent.contextMode ?? 'padrao')}`,
+      )
     }
 
     // 1b. Estado do repositório git do workspace (barato e útil para agentes de código)

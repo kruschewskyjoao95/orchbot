@@ -44,7 +44,7 @@ export const CONTEXT_BUDGETS: Record<ContextMode, ModeBudget> = {
 
 /** Limite das regras do projeto conforme o modo (elas voltam inteiras a cada turno). */
 export function capRulesContent(content: string, mode: ContextMode): string {
-  const limit = mode === 'economico' ? 1200 : mode === 'padrao' ? 4000 : content.length
+  const limit = mode === 'economico' ? 1200 : mode === 'padrao' ? 4000 : 60_000 // completo: abaixo do limite de 128 KB por argumento do Linux
   if (content.length <= limit) return content
   return `${content.slice(0, limit)}\n[...regras truncadas no modo ${mode} para economizar tokens]`
 }
