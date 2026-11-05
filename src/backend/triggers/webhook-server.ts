@@ -59,6 +59,16 @@ export function startWebhookServer(
       req.resume()
       return notFound()
     }
+    const deliveryId = req.headers['idempotency-key']
+    if (
+      deliveryId !== undefined &&
+      (typeof deliveryId !== 'string' ||
+        !/^[\x21-\x7e]{1,200}$/.test(deliveryId) ||
+        req.headersDistinct['idempotency-key']?.length !== 1)
+    ) {
+      req.resume()
+      return send(400, { error: 'Idempotency-Key must be 1-200 visible ASCII characters' })
+    }
     const chunks: Buffer[] = []
     let size = 0
     req.on('data', (chunk: Buffer) => {
@@ -76,12 +86,10 @@ export function startWebhookServer(
           String(req.headers['content-type'] ?? ''),
           Buffer.concat(chunks).toString('utf8'),
         )
-        const thread = db.createThread(trigger.agentId, `Gatilho: ${trigger.title}`)
-        db.addMessage(thread.id, 'user', prompt)
-        queue.enqueue(trigger.agentId, thread.id, prompt)
-        send(202, { threadId: thread.id })
+        const threadId = queue.enqueueWebhook(trigger.id, deliveryId, prompt)
+        send(202, { threadId })
       } catch {
-        notFound()
+        send(503, { error: 'Webhook could not be accepted; retry later' })
       }
     })
   })

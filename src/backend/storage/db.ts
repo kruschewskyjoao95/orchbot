@@ -467,6 +467,15 @@ export class OrchbotDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS webhook_receipts (
+        trigger_id TEXT NOT NULL REFERENCES webhook_triggers(id) ON DELETE CASCADE,
+        delivery_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        accepted_at INTEGER NOT NULL,
+        PRIMARY KEY (trigger_id, delivery_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_receipts_accepted ON webhook_receipts(accepted_at);
+
       CREATE TABLE IF NOT EXISTS agent_memories (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -3284,6 +3293,49 @@ export class OrchbotDatabase {
   }
 
   // --- Gatilhos por webhook ---
+
+  public acceptWebhook(
+    triggerId: string,
+    deliveryId: string | undefined,
+    prompt: string,
+  ): { threadId: string; task: TaskQueueItem | null } {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const now = Date.now()
+      if (deliveryId !== undefined) {
+        this.db
+          .prepare('DELETE FROM webhook_receipts WHERE accepted_at <= ?')
+          .run(now - 7 * 24 * 60 * 60 * 1000)
+        const receipt = this.db
+          .prepare(
+            'SELECT thread_id AS threadId FROM webhook_receipts WHERE trigger_id = ? AND delivery_id = ?',
+          )
+          .get(triggerId, deliveryId) as { threadId: string } | undefined
+        if (receipt) {
+          this.db.exec('COMMIT')
+          return { threadId: receipt.threadId, task: null }
+        }
+      }
+      const trigger = this.getWebhookTrigger(triggerId)
+      if (!trigger) throw new Error('Gatilho não encontrado.')
+      const thread = this.createThread(trigger.agentId, `Gatilho: ${trigger.title}`)
+      this.addMessage(thread.id, 'user', prompt)
+      const task = this.enqueueTask(trigger.agentId, thread.id, prompt)
+      if (deliveryId !== undefined) {
+        // O recibo sobrevive à exclusão da conversa para um retry não repetir efeitos externos.
+        this.db
+          .prepare(
+            'INSERT INTO webhook_receipts (trigger_id, delivery_id, thread_id, accepted_at) VALUES (?, ?, ?, ?)',
+          )
+          .run(triggerId, deliveryId, thread.id, now)
+      }
+      this.db.exec('COMMIT')
+      return { threadId: thread.id, task }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
 
   public createWebhookTrigger(agentId: string, title: string, instruction: string): WebhookTrigger {
     if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')

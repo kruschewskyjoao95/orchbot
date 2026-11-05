@@ -257,14 +257,23 @@ export class QueueManager {
       computerRounds,
       memoryRounds,
     )
+    this.scheduleTask(task)
+    return task
+  }
+
+  public enqueueWebhook(triggerId: string, deliveryId: string | undefined, prompt: string): string {
+    const { threadId, task } = this.db.acceptWebhook(triggerId, deliveryId, prompt)
+    if (task) this.scheduleTask(task)
+    return threadId
+  }
+
+  private scheduleTask(task: TaskQueueItem): void {
     this.events?.onTaskStatusChanged?.({ task })
 
     // Dispara processamento
     setTimeout(() => {
-      this.processNextForAgent(agentId)
+      this.processNextForAgent(task.agentId)
     }, 0)
-
-    return task
   }
 
   /** Interrompe o turno ativo de uma thread (orientar enquanto trabalha). */
