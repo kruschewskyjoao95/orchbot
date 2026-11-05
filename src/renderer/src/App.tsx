@@ -61,6 +61,7 @@ import {
   ThemeApplier,
 } from './Distribution'
 import { MessageText } from './MessageText'
+import { MiniBrowser } from './MiniBrowser'
 import { ModelPicker } from './ModelPicker'
 import { ProviderAccounts } from './ProviderAccounts'
 import { SkillsPlugins } from './SkillsPlugins'
@@ -793,6 +794,7 @@ export const App: Component = () => {
   const [browserFillSelector, setBrowserFillSelector] = createSignal('')
   const [browserFillValue, setBrowserFillValue] = createSignal('')
   const [browserStatusMsg, setBrowserStatusMsg] = createSignal<string | null>(null)
+  const [miniBrowserOpen, setMiniBrowserOpen] = createSignal(false)
 
   // Chat signals
   const [inputText, setInputText] = createSignal('')
@@ -1281,6 +1283,7 @@ export const App: Component = () => {
       await loadBrowserTabs(agent.id)
       setActiveTabId(tab.id)
       setBrowserUrlInput(tab.url)
+      setMiniBrowserOpen(true)
       setBrowserInspectData(null)
       setBrowserScreenshotUrl(null)
     } catch (err: unknown) {
@@ -1560,20 +1563,24 @@ export const App: Component = () => {
 
     const unsubBrowserTab = window.orchbot.onBrowserTabUpdated((updatedTab) => {
       const agentId = selectedAgentId()
-      if (agentId && updatedTab.agentId === agentId) {
-        setBrowserTabs((prev) => {
-          const index = prev.findIndex((t) => t.id === updatedTab.id)
-          if (index >= 0) {
-            const next = [...prev]
-            next[index] = updatedTab
-            return next
-          }
-          return [...prev, updatedTab]
-        })
-        if (activeTabId() === updatedTab.id) {
-          setBrowserUrlInput(updatedTab.url)
+      if (!agentId || updatedTab.agentId !== agentId) return
+      const previous = browserTabs().find((tab) => tab.id === updatedTab.id)
+      setBrowserTabs((prev) => {
+        const index = prev.findIndex((t) => t.id === updatedTab.id)
+        if (index >= 0) {
+          const next = [...prev]
+          next[index] = updatedTab
+          return next
         }
+        return [...prev, updatedTab]
+      })
+      if (!previous || previous.url !== updatedTab.url) {
+        setActiveTabId(updatedTab.id)
+        setBrowserUrlInput(updatedTab.url)
+        setMiniBrowserOpen(true)
+        return
       }
+      if (activeTabId() === updatedTab.id) setBrowserUrlInput(updatedTab.url)
     })
 
     const unsubCronTriggered = window.orchbot.onScheduledTaskTriggered?.((task) => {
@@ -1612,6 +1619,7 @@ export const App: Component = () => {
       setStagedFiles([])
       setBrowserInspectData(null)
       setBrowserScreenshotUrl(null)
+      setMiniBrowserOpen(false)
       setSearchResults(null)
       setSearchQuery('')
       loadThreadAndMessages(id)
@@ -5134,6 +5142,15 @@ export const App: Component = () => {
                     >
                       Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
                     </button>
+                    <Show when={browserTabs().length > 0 && !miniBrowserOpen()}>
+                      <button
+                        type="button"
+                        class="btn-mode"
+                        onClick={() => setMiniBrowserOpen(true)}
+                      >
+                        Ver página
+                      </button>
+                    </Show>
                   </div>
 
                   <div class="header-actions">
@@ -6585,6 +6602,16 @@ export const App: Component = () => {
                       </div>
                     </div>
                   </div>
+                </Show>
+                <Show when={miniBrowserOpen() ? currentActiveTab() : null}>
+                  {(tab) => (
+                    <MiniBrowser
+                      tab={tab()}
+                      scale={settings().uiScale}
+                      onHide={() => setMiniBrowserOpen(false)}
+                      onCloseTab={() => void handleCloseBrowserTab(tab().id)}
+                    />
+                  )}
                 </Show>
               </div>
             )}
