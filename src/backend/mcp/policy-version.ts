@@ -3,6 +3,7 @@ import type { SupportedProvider } from '../../shared/types'
 import { runCliProbe } from '../providers/cli-auth'
 import { buildProviderEnv, resolveCliCommand } from '../providers/cli-utils'
 import type { McpLaunchServer, ProviderRuntimeConfig } from '../providers/types'
+import { createDockerLaunch } from '../runtime/docker'
 
 export async function requireMcpPolicyVersion(
   provider: SupportedProvider,
@@ -13,11 +14,15 @@ export async function requireMcpPolicyVersion(
   if (provider !== 'codex' && provider !== 'claude')
     throw new Error('Engine sem suporte a política MCP.')
   const minimum = MCP_POLICY_MIN_VERSION[provider]
+  const docker = config.docker
+    ? await createDockerLaunch(provider, ['--version'], config.docker.workspacePath, config)
+    : undefined
   const probe = await runCliProbe(
-    resolveCliCommand(provider, config.cliPath),
-    ['--version'],
+    docker?.command ?? resolveCliCommand(provider, config.cliPath),
+    docker?.args ?? ['--version'],
     buildProviderEnv(config),
   )
+  await docker?.cleanup()
   const found =
     provider === 'codex'
       ? /^codex-cli (\d+)\.(\d+)\.(\d+)\s*$/m.exec(probe.stdout.trim())

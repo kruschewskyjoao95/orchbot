@@ -4,6 +4,7 @@ import type { Agent, Channel, ChannelMessage, CreateChannelInput } from '../../s
 import { MAX_ORCHESTRATION_DEPTH } from '../orchestration/protocol'
 import { describeMiss, resolveAgent } from '../orchestration/resolve-agent'
 import { orchbotDir } from '../storage/agent-mirror'
+import { routeChannel } from './routing'
 
 /** Cada ida e volta no canal consome um nível; limita loops sem travar tarefas de várias etapas. */
 export const MAX_CHANNEL_DEPTH = 8
@@ -283,7 +284,20 @@ export class CollaborationService {
     const body = text.trim()
     if (!body) throw new Error('Mensagem vazia.')
     this.db.addChannelMessage(channel.id, null, body)
-    const owner = channel.members.find((m) => m.agentId === channel.ownerAgentId)
+    const agents = channel.members
+      .map((member) => this.db.getAgent(member.agentId))
+      .filter((agent): agent is Agent => !!agent)
+    const route = this.db.getSettings().autoRouteChannels
+      ? routeChannel(body, agents, channel.ownerAgentId ?? '')
+      : { agentId: channel.ownerAgentId, reason: '' }
+    const owner = channel.members.find((m) => m.agentId === route.agentId)
+    if (this.db.getSettings().autoRouteChannels)
+      this.db.addChannelMessage(
+        channel.id,
+        null,
+        `Routing: ${agents.find((agent) => agent.id === route.agentId)?.name ?? 'dono'} · ${route.reason}.`,
+        'system',
+      )
     if (!owner) throw new Error('O canal está sem dono: reatribua a tarefa.')
     this.db.addMessage(owner.threadId, 'user', body)
     this.hooks.enqueue(owner.agentId, owner.threadId, body, 1)

@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import { createDockerLaunch } from '../runtime/docker'
 import { getCatalogEntry } from './catalog'
 import { buildProviderEnv, resolveCliCommand } from './cli-utils'
 import type { ActiveExecution, ExecutionCallbacks, ExecutionOptions } from './types'
@@ -62,6 +63,7 @@ export function runSessionCli(
   stdinText?: string,
 ): ActiveExecution {
   let child: ChildProcess | undefined
+  let cleanupDocker: (() => Promise<void>) | undefined
   const permissions = new AbortController()
   let interrupted = false
   let settled = false
@@ -75,6 +77,7 @@ export function runSessionCli(
   const config = options.providerConfig
   const entry = getCatalogEntry(provider)
   const terminate = () => {
+    if (cleanupDocker) void cleanupDocker().catch(() => undefined)
     if (!child?.pid) return
     const active = child
     signalProcessGroup(active, 'SIGTERM')
@@ -82,9 +85,17 @@ export function runSessionCli(
     force.unref()
     active.once('close', () => clearTimeout(force))
   }
-  const finish = (code: number | null) => {
+  const finish = async (code: number | null) => {
     if (settled) return
     settled = true
+    try {
+      await cleanupDocker?.()
+    } catch {
+      callbacks.onError(
+        'Não foi possível remover o container do turno. Confira o Docker e os containers com label org.orchbot.managed=1 antes de continuar.',
+      )
+      return
+    }
     if (interrupted) {
       callbacks.onInterrupted?.()
       return
@@ -121,7 +132,7 @@ export function runSessionCli(
     }
   }
   // Deferring also lets the queue register the execution before any startup failure.
-  void Promise.resolve().then(() => {
+  void Promise.resolve().then(async () => {
     if (interrupted) {
       finish(null)
       return
@@ -129,7 +140,18 @@ export function runSessionCli(
     try {
       if (options.resumeSessionId !== undefined && !isCliSessionId(options.resumeSessionId))
         throw new Error('ID da sessão CLI inválido.')
-      const launched = spawn(resolveCliCommand(entry.cliCommand, config?.cliPath), args, {
+      const launch = config?.docker
+        ? await createDockerLaunch(entry.cliCommand, args, options.workspacePath, {
+            ...config,
+            envKeys: entry.envKeys,
+          })
+        : { command: resolveCliCommand(entry.cliCommand, config?.cliPath), args }
+      if ('cleanup' in launch) cleanupDocker = launch.cleanup
+      if (interrupted) {
+        await finish(null)
+        return
+      }
+      const launched = spawn(launch.command, launch.args, {
         cwd: options.workspacePath || process.cwd(),
         env: {
           ...buildProviderEnv({ ...config, envKeys: entry.envKeys }),
@@ -237,7 +259,10 @@ export function runSessionCli(
                   config?.cliProfile?.envKey === 'CODEX_HOME'
                     ? config.cliProfile.directory
                     : undefined
-                const context = sessionId ? readCodexContext(sessionId, codexHome(home)) : undefined
+                const context =
+                  sessionId && !config?.docker
+                    ? readCodexContext(sessionId, codexHome(home))
+                    : undefined
                 callbacks.onUsage?.({ ...usage, ...context })
               }
             }

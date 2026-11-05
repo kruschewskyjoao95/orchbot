@@ -32,6 +32,10 @@ import type {
 } from '../shared/types'
 
 const api: OrchbotApi = {
+  getControlStatus: () => ipcRenderer.invoke('orchbot:control-status'),
+  getDockerStatus: () => ipcRenderer.invoke('orchbot:docker-status'),
+  setAgentRuntime: (id, runtime) => ipcRenderer.invoke('orchbot:set-agent-runtime', id, runtime),
+  getThreadSnapshot: (threadId: string) => ipcRenderer.invoke('orchbot:thread-snapshot', threadId),
   getComputerUseStatus: () => ipcRenderer.invoke('orchbot:get-computer-use-status'),
   getProviderUpdates: () => ipcRenderer.invoke('orchbot:get-provider-updates'),
   runProviderUpdate: (providerId: SupportedProvider) =>
@@ -261,8 +265,18 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:decide-approval', { id, approved, note }),
   listWebhookTriggers: (agentId: string) =>
     ipcRenderer.invoke('orchbot:list-webhook-triggers', agentId),
-  createWebhookTrigger: (agentId: string, title: string, instruction: string) =>
-    ipcRenderer.invoke('orchbot:create-webhook-trigger', { agentId, title, instruction }),
+  createWebhookTrigger: (
+    agentId: string,
+    title: string,
+    instruction: string,
+    githubRepository?: string,
+  ) =>
+    ipcRenderer.invoke('orchbot:create-webhook-trigger', {
+      agentId,
+      title,
+      instruction,
+      githubRepository,
+    }),
   deleteWebhookTrigger: (id: string) => ipcRenderer.invoke('orchbot:delete-webhook-trigger', id),
   getWebhookBaseUrl: () => ipcRenderer.invoke('orchbot:webhook-base-url'),
   getScheduledTasks: (agentId?: string) =>

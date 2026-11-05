@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -481,6 +481,14 @@ export class OrchbotDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS control_requests (
+        request_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        accepted_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS webhook_receipts (
         trigger_id TEXT NOT NULL REFERENCES webhook_triggers(id) ON DELETE CASCADE,
         delivery_id TEXT NOT NULL,
@@ -659,6 +667,9 @@ export class OrchbotDatabase {
       'ALTER TABLE agents ADD COLUMN show_plan INTEGER',
       'ALTER TABLE agents ADD COLUMN steer_mode TEXT',
       'ALTER TABLE agents ADD COLUMN computer_use INTEGER',
+      "ALTER TABLE agents ADD COLUMN runtime TEXT NOT NULL DEFAULT 'host'",
+      'ALTER TABLE webhook_triggers ADD COLUMN github_repository TEXT',
+      'ALTER TABLE task_queue ADD COLUMN required_runtime TEXT',
       'ALTER TABLE agents ADD COLUMN account_id TEXT',
       'ALTER TABLE agents ADD COLUMN paused INTEGER DEFAULT 0',
       'ALTER TABLE messages ADD COLUMN input_tokens INTEGER',
@@ -1600,6 +1611,7 @@ export class OrchbotDatabase {
         model, 
         effort,
         instructions, 
+        runtime,
         workspace_path AS workspacePath, 
         avatar, 
         COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
@@ -1633,6 +1645,7 @@ export class OrchbotDatabase {
         model, 
         effort,
         instructions, 
+        runtime,
         workspace_path AS workspacePath, 
         avatar, 
         COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
@@ -1654,6 +1667,27 @@ export class OrchbotDatabase {
     return result ? normalizeAgent(result) : null
   }
 
+  public setAgentRuntime(id: string, runtime: unknown): Agent {
+    const agent = this.getAgent(id)
+    if (!agent || (runtime !== 'host' && runtime !== 'docker')) throw new Error('Runtime inválido.')
+    if (
+      runtime === 'docker' &&
+      (agent.systemRole ||
+        agent.role === 'orchestrator' ||
+        !['codex', 'claude'].includes(agent.provider))
+    )
+      throw new Error('Runtime configurável apenas para colegas Codex/Claude.')
+    if (this.listTasks(id).some((task) => task.status === 'running'))
+      throw new Error('Espere o turno terminar antes de trocar o runtime.')
+    this.db.prepare('UPDATE agents SET runtime = ? WHERE id = ?').run(runtime, id)
+    this.db
+      .prepare(
+        'DELETE FROM provider_sessions WHERE thread_id IN (SELECT id FROM threads WHERE agent_id = ?)',
+      )
+      .run(id)
+    return { ...agent, runtime }
+  }
+
   public createAgent(input: CreateAgentInput): Agent {
     if (!this.getConnection(input.provider)) throw new Error('Provedor não cadastrado.')
     if (input.accountId !== undefined && !this.getProviderAccount(input.provider, input.accountId))
@@ -1666,6 +1700,7 @@ export class OrchbotDatabase {
     checkInstructionsLength(input.instructions)
 
     const agent: Agent = {
+      runtime: 'host',
       id,
       name: input.name,
       role: input.role === 'orchestrator' ? 'orchestrator' : 'worker',
@@ -2156,6 +2191,7 @@ export class OrchbotDatabase {
         a.model,
         a.effort,
         a.instructions,
+        a.runtime,
         a.workspace_path AS workspacePath,
         a.avatar,
         COALESCE(a.autonomy_level, 'autonomous') AS autonomyLevel,
@@ -2189,9 +2225,19 @@ export class OrchbotDatabase {
     computerRounds = 0,
     memoryRounds = 0,
   ): TaskQueueItem {
+    const requiredRuntime =
+      this.getAgent(agentId)?.runtime === 'docker' ||
+      this.db
+        .prepare(
+          "SELECT 1 FROM task_queue WHERE thread_id = ? AND required_runtime = 'docker' LIMIT 1",
+        )
+        .get(threadId)
+        ? 'docker'
+        : null
     const id = randomUUID()
     const now = createdAt ?? new Date().toISOString()
     const item: TaskQueueItem = {
+      requiredRuntime,
       id,
       agentId,
       threadId,
@@ -2210,8 +2256,8 @@ export class OrchbotDatabase {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, computer_rounds, memory_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, computer_rounds, memory_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at, required_runtime)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       item.id,
@@ -2229,6 +2275,7 @@ export class OrchbotDatabase {
       item.createdAt,
       item.startedAt ?? null,
       item.completedAt ?? null,
+      requiredRuntime,
     )
     return item
   }
@@ -2241,6 +2288,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2266,6 +2314,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2319,6 +2368,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2916,7 +2966,7 @@ export class OrchbotDatabase {
 
   private mirror(agentId: string): void {
     const agent = this.getAgent(agentId)
-    if (agent) mirrorAgent(agent, this.listMemories(agentId))
+    if (agent && agent.runtime !== 'docker') mirrorAgent(agent, this.listMemories(agentId))
   }
 
   public addMemory(
@@ -3363,6 +3413,40 @@ export class OrchbotDatabase {
 
   // --- Gatilhos por webhook ---
 
+  public acceptControl(
+    requestId: string,
+    agentId: string,
+    prompt: string,
+  ): { threadId: string; taskId: string; task: TaskQueueItem | null } {
+    return this.transaction(() => {
+      this.db
+        .prepare('DELETE FROM control_requests WHERE accepted_at <= ?')
+        .run(Date.now() - 7 * 86400000)
+      const fingerprint = createHash('sha256')
+        .update(JSON.stringify([agentId, prompt]))
+        .digest('hex')
+      const receipt = this.db
+        .prepare(
+          'SELECT fingerprint, thread_id AS threadId, task_id AS taskId FROM control_requests WHERE request_id = ?',
+        )
+        .get(requestId) as { fingerprint: string; threadId: string; taskId: string } | undefined
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint)
+          throw new Error('requestId já usado com outro conteúdo.')
+        return { threadId: receipt.threadId, taskId: receipt.taskId, task: null }
+      }
+      const agent = this.getAgent(agentId)
+      if (!agent || agent.systemRole) throw new Error('Colega não encontrado.')
+      const thread = this.createThread(agentId, 'Controle externo')
+      this.addMessage(thread.id, 'user', prompt)
+      const task = this.enqueueTask(agentId, thread.id, prompt)
+      this.db
+        .prepare('INSERT INTO control_requests VALUES (?, ?, ?, ?, ?)')
+        .run(requestId, fingerprint, thread.id, task.id, Date.now())
+      return { threadId: thread.id, taskId: task.id, task }
+    })
+  }
+
   public acceptWebhook(
     triggerId: string,
     deliveryId: string | undefined,
@@ -3387,6 +3471,8 @@ export class OrchbotDatabase {
       }
       const trigger = this.getWebhookTrigger(triggerId)
       if (!trigger) throw new Error('Gatilho não encontrado.')
+      if (trigger.githubRepository && this.getAgent(trigger.agentId)?.runtime !== 'docker')
+        throw new Error('GitHub requer agente Docker.')
       const thread = this.createThread(trigger.agentId, `Gatilho: ${trigger.title}`)
       this.addMessage(thread.id, 'user', prompt)
       const task = this.enqueueTask(trigger.agentId, thread.id, prompt)
@@ -3406,11 +3492,25 @@ export class OrchbotDatabase {
     }
   }
 
-  public createWebhookTrigger(agentId: string, title: string, instruction: string): WebhookTrigger {
+  public createWebhookTrigger(
+    agentId: string,
+    title: string,
+    instruction: string,
+    githubRepository?: string,
+  ): WebhookTrigger {
+    if (
+      githubRepository !== undefined &&
+      (typeof githubRepository !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(githubRepository))
+    )
+      throw new Error('Use um repositório GitHub no formato dono/repo.')
+    if (githubRepository && this.getAgent(agentId)?.runtime !== 'docker')
+      throw new Error('Selecione Docker para este agente antes de criar o broker GitHub.')
     if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')
     const trigger: WebhookTrigger = {
       id: randomUUID(),
       agentId,
+      githubRepository: githubRepository ?? null,
       title: title.trim().slice(0, 80) || 'Webhook',
       instruction: instruction.trim(),
       token: randomBytes(24).toString('base64url'),
@@ -3418,7 +3518,7 @@ export class OrchbotDatabase {
     }
     this.db
       .prepare(
-        'INSERT INTO webhook_triggers (id, agent_id, title, instruction, token, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO webhook_triggers (id, agent_id, title, instruction, token, created_at, github_repository) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         trigger.id,
@@ -3427,12 +3527,13 @@ export class OrchbotDatabase {
         trigger.instruction,
         trigger.token,
         trigger.createdAt,
+        trigger.githubRepository ?? null,
       )
     return trigger
   }
 
   private static readonly TRIGGER_COLS =
-    'id, agent_id AS agentId, title, instruction, token, created_at AS createdAt'
+    'id, agent_id AS agentId, title, instruction, token, created_at AS createdAt, github_repository AS githubRepository'
 
   public listWebhookTriggers(agentId: string): WebhookTrigger[] {
     return this.db

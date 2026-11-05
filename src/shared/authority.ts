@@ -55,7 +55,7 @@ export function assertMcpToolSupport(provider: SupportedProvider, policy: McpToo
 export const MCP_POLICY_MIN_VERSION = { codex: [0, 166, 0], claude: [2, 1, 318] } as const
 
 /** Descreve o que o adapter solicita, sem afirmar que observou o sandbox resolvido do CLI. */
-export function agentAuthority(agent: Pick<Agent, 'provider' | 'autonomyLevel'>) {
+export function agentAuthority(agent: Pick<Agent, 'provider' | 'autonomyLevel' | 'runtime'>) {
   const cautious = agent.autonomyLevel === 'cautious'
   return {
     mcpTools: mcpToolSupport(agent.provider),
@@ -63,11 +63,15 @@ export function agentAuthority(agent: Pick<Agent, 'provider' | 'autonomyLevel'>)
       agent.provider === 'claude'
         ? cautious
           ? 'Permissões de ferramentas solicitadas ao CLI em modo manual.'
-          : 'Permissões herdadas do CLI Claude.'
+          : agent.runtime === 'docker'
+            ? 'Ferramentas nativas autônomas dentro do container; sem diálogo CLI.'
+            : 'Permissões herdadas do CLI Claude.'
         : agent.provider === 'codex'
           ? cautious
             ? 'Codex exec sem diálogo: read-only solicitado; após aprovação, workspace-write no turno autorizado.'
-            : 'Permissões e sandbox herdados do CLI Codex.'
+            : agent.runtime === 'docker'
+              ? 'CLI autônomo; a barreira de execução é o container Docker.'
+              : 'Permissões e sandbox herdados do CLI Codex.'
           : agent.provider === 'acp' || agent.provider === 'antigravity'
             ? 'Pedidos ACP são apresentados quando o agente os emite; a política interna pertence ao agente.'
             : agent.provider.startsWith('custom:')
@@ -76,7 +80,9 @@ export function agentAuthority(agent: Pick<Agent, 'provider' | 'autonomyLevel'>)
                 ? 'CLI iniciado com --allow-all-tools; o modo cauteloso do Orchbot não restringe suas ferramentas nativas.'
                 : 'Adapter não aplica o modo cauteloso às ferramentas nativas; usa a configuração do CLI.',
     isolation:
-      'Orchbot não adiciona sandbox de processos. Pastas separadas não isolam disco, rede ou credenciais.',
+      agent.runtime === 'docker'
+        ? 'Container Docker: somente workspace montado, usuário sem privilégios, kernel compartilhado, rede bridge com saída para internet/LAN. Chromium interno sem sandbox próprio; o limite é o container.'
+        : 'Orchbot não adiciona sandbox de processos. Pastas separadas não isolam disco, rede ou credenciais.',
     scope:
       agent.provider === 'codex'
         ? 'Filtro nativo dos servidores MCP vinculados. Outros MCP/plugins do perfil Codex podem permanecer disponíveis. Read-only do filesystem não impede escrita em serviços por MCP.'

@@ -85,7 +85,12 @@ Pacotes de equipe continuam sem transportar MCP, contas ou estas políticas.
 do sandbox não é observado pelo Orchbot. Para um CLI autônomo, o relatório diz
 que herda a configuração; não presume acesso total nem isolamento.
 
-O Orchbot não adiciona sandbox de processos. Pastas por agente e partições de
+No runtime **host**, o Orchbot não adiciona sandbox de processos. O runtime
+**Docker**, opt-in para colegas Codex/Claude em Linux amd64, executa CLI e
+Playwright MCP no container; veja [fronteira e validação](control-and-runtime.md).
+Perfis nativos não são montados; a sessão é descartada por turno.
+
+No host, pastas por agente e partições de
 browser não isolam os processos de CLI no disco ou na rede. `read-only` do
 filesystem Codex não impede que MCP altere serviços remotos. Autorizar shell
 pode permitir chamadas de API ou programas fora do caminho MCP filtrado.
