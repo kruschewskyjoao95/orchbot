@@ -35,6 +35,38 @@ describe('Configurações do app (Geral/Aparência/Conversas/Comportamento/Permi
   })
 })
 
+describe('Escolha inicial em banco já usado', () => {
+  it('grava a escolha como feita quando já existe um agente e preserva o adiamento', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orchbot-setup-'))
+    const file = path.join(tmp, 't.db')
+    const agent = {
+      name: 'Ana',
+      provider: 'codex' as const,
+      model: 'gpt',
+      instructions: '',
+      workspacePath: tmp,
+    }
+    const first = new OrchbotDatabase(file)
+    expect(first.getSettings().providersSetupDone).toBe(false)
+    first.createAgent(agent)
+    first.close()
+
+    const upgraded = new OrchbotDatabase(file)
+    expect(upgraded.getSettings().providersSetupDone).toBe(true)
+    expect(upgraded.getSettings().defaultProvider).toBe('')
+    upgraded.close()
+
+    const deferred = new OrchbotDatabase(path.join(tmp, 'adiada.db'))
+    deferred.updateSettings({ providersSetupDone: false })
+    deferred.createAgent(agent)
+    deferred.close()
+    const reopened = new OrchbotDatabase(path.join(tmp, 'adiada.db'))
+    expect(reopened.getSettings().providersSetupDone).toBe(false)
+    reopened.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  })
+})
+
 describe('Provedor principal', () => {
   it('usa o principal se ativo; senão o primeiro pronto; senão o primeiro ativo', async () => {
     const { principalConnection } = await import('../src/shared/provider-status')

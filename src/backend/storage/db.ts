@@ -262,6 +262,28 @@ export class OrchbotDatabase {
       this.open = false
       throw error
     }
+    // Antes do coordenador nascer no boot: um agente criado agora não pode esconder a escolha inicial.
+    this.migrateProvidersSetup()
+  }
+
+  /** Banco que já tem uso não reabre a escolha de provedor. A chave ausente numa instalação vazia continua falsa. */
+  private migrateProvidersSetup(): void {
+    const marked = this.db
+      .prepare('SELECT 1 AS ok FROM app_settings WHERE key = ?')
+      .get('providersSetupDone')
+    if (marked) return
+    const used = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM agents
+         UNION ALL SELECT 1 FROM threads
+         UNION ALL SELECT 1 FROM messages
+         LIMIT 1`,
+      )
+      .get()
+    if (!used) return
+    this.db
+      .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?)')
+      .run('providersSetupDone', JSON.stringify(true))
   }
 
   private initMigrations(): void {

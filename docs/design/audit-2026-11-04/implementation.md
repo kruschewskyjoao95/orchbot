@@ -18,7 +18,7 @@ Direção aprovada pela pessoa: [analysis.md](analysis.md). Implementação em 0
 
 A verificação encontrou também um defeito de zoom: os diálogos usavam dimensões de viewport que eram ampliadas novamente pelo `zoom` da interface. O contêiner agora ocupa o espaço disponível e os limites principais usam percentuais, mantendo criação e configurações dentro da janela a 125%.
 
-Nenhuma dependência foi adicionada. Não houve alteração de schema, migração, histórico ou lógica de execução dos agentes nesta implementação. Os estados internos e nomes das APIs continuam os mesmos.
+Nenhuma dependência foi adicionada. Não houve alteração de schema, histórico ou lógica de execução dos agentes. Na abertura, um banco que já tem agente, conversa ou mensagem grava a escolha inicial como feita. Uma instalação vazia continua vendo a tela. O provedor principal só muda quando a pessoa escolhe. Os estados internos e nomes das APIs continuam os mesmos.
 
 ## Checks concluídos
 
