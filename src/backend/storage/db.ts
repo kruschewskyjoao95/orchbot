@@ -236,6 +236,18 @@ export class OrchbotDatabase {
   private db: DatabaseSync
   private open = true
 
+  public transaction<T>(work: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const result = work()
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   constructor(
     private readonly dbPath: string,
     private readonly secretStorage?: SecretStorage,

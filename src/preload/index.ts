@@ -43,6 +43,9 @@ const api: OrchbotApi = {
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke('orchbot:create-project', input),
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke('orchbot:update-project', input),
   deleteProject: (id: string) => ipcRenderer.invoke('orchbot:delete-project', id),
+  exportTeamPackage: (projectId: string | null) =>
+    ipcRenderer.invoke('orchbot:export-team-package', projectId),
+  importTeamPackage: () => ipcRenderer.invoke('orchbot:import-team-package'),
   getAgents: () => ipcRenderer.invoke('orchbot:get-agents'),
   getAgent: (id: string) => ipcRenderer.invoke('orchbot:get-agent', id),
   createAgent: (input: CreateAgentInput) => ipcRenderer.invoke('orchbot:create-agent', input),

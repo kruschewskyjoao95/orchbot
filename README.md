@@ -19,6 +19,7 @@ O **Orchbot** é um ambiente de trabalho desktop local-first para hospedar, orqu
 - **Agente ACP genérico**: conecte um agente ACP v1 por stdio, configurando executável e argumentos na tela. Veja [como configurar ACP](docs/acp.md).
 - **Fila FIFO Durável e Crash-Safe**: tarefas são salvas no banco antes de executar; sobrevivem a reinicializações e falhas com reconciliação automática de tarefas pendentes ou interrompidas (`reconcileRunningTasks`).
 - **Recibos de Webhook**: o cabeçalho opcional `Idempotency-Key` evita criar trabalho duplicado por sete dias, inclusive após reiniciar. [Contrato e limites](docs/webhooks.md).
+- **Pacotes de Equipe**: exporte e importe agentes, grupos e skills em JSON, com revisão antes de importar e sem transportar contas ou permissões. [Como usar e limites](docs/team-packages.md).
 - **Anexos Gerenciados com SHA-256**: staging e deduplicação de arquivos em diretório gerenciado com hashing criptográfico e limite de segurança de 50 MB.
 - **Colaboração e Delegação Entre Agentes**: agentes podem delegar subtarefas para outros agentes com prevenção estrita contra ciclos e loops infinitos (`MAX_DELEGATION_DEPTH = 2`).
 - **Navegador Embarcado Supervisionado**: browser com persistência de abas em `browser-tabs.json`, partições de sessão isoladas por agente (`persist:orchbot-agent-<id>`), bloqueio de popups e protocolos inseguros, inspeção de DOM sanitizada com redação de segredos e catálogo de ferramentas `orchbot_browser.*`.

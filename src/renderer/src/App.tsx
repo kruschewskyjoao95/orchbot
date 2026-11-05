@@ -1012,6 +1012,29 @@ export const App: Component = () => {
     }
   }
 
+  const handleExportTeam = async (projectId: string | null) => {
+    try {
+      await window.orchbot.exportTeamPackage(projectId)
+    } catch (err: unknown) {
+      alert(`Erro ao exportar equipe: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleImportTeam = async () => {
+    setShowNewMenu(false)
+    try {
+      const project = await window.orchbot.importTeamPackage()
+      if (!project) return
+      await loadProjects()
+      await loadAgents()
+      await loadChannels()
+      setBoardFilterProject(project.id)
+      setActiveSection('board')
+    } catch (err: unknown) {
+      alert(`Erro ao importar equipe: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const projectOf = (agent: Agent) =>
     agent.projectId ? (projects().find((proj) => proj.id === agent.projectId) ?? null) : null
 
@@ -3315,6 +3338,14 @@ export const App: Component = () => {
                   >
                     Nova pasta de projeto
                   </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    onClick={handleImportTeam}
+                  >
+                    Importar equipe…
+                  </button>
                 </div>
               </Show>
             </div>
@@ -3380,6 +3411,15 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="btn-icon-gear small"
+                        onClick={() => handleExportTeam(project.id)}
+                        title={`Exportar equipe de ${project.name}`}
+                        aria-label={`Exportar equipe de ${project.name}`}
+                      >
+                        ↗
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-icon-gear small"
                         onClick={() => setBrainProject(project)}
                         title={`Cérebro de ${project.name}`}
                         aria-label={`Cérebro de ${project.name}`}
@@ -3409,6 +3449,15 @@ export const App: Component = () => {
                   </span>
                   <span class="project-group-name">Sua Equipe</span>
                   <span class="nav-badge">{agentsOfProject(null).length}</span>
+                  <button
+                    type="button"
+                    class="btn-icon-gear small"
+                    onClick={() => handleExportTeam(null)}
+                    title="Exportar Sua Equipe"
+                    aria-label="Exportar Sua Equipe"
+                  >
+                    ↗
+                  </button>
                 </div>
                 <For each={agentsOfProject(null)}>{(agent) => agentRow(agent)}</For>
               </div>

@@ -82,6 +82,7 @@ import { createDefaultAgentWorkspace } from './agent-workspace'
 import { createAppUpdater } from './app-updater'
 import { registerAppImageDesktop, setLinuxAutostart } from './linux-desktop'
 import { iconPath, initShell } from './shell'
+import { exportTeamPackageFile, importTeamPackageFile } from './team-package-files'
 
 let mainWindow: BrowserWindow | null = null
 let foremanReady = false
@@ -990,6 +991,12 @@ ${out.slice(-800)}`,
   })
 
   const skills = getSkillService()
+  ipcMain.handle('orchbot:export-team-package', (_event, projectId: unknown) =>
+    mainWindow ? exportTeamPackageFile(mainWindow, database, skills, projectId) : null,
+  )
+  ipcMain.handle('orchbot:import-team-package', () =>
+    mainWindow ? importTeamPackageFile(mainWindow, database, skills) : null,
+  )
   ipcMain.handle('orchbot:skills-list', () => skills.list())
   ipcMain.handle('orchbot:skills-get', (_e, slug: string) => skills.get(String(slug)))
   ipcMain.handle(

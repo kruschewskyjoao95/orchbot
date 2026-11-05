@@ -624,6 +624,8 @@ export interface OrchbotApi {
   createProject: (input: CreateProjectInput) => Promise<Project>
   updateProject: (input: UpdateProjectInput) => Promise<Project>
   deleteProject: (id: string) => Promise<boolean>
+  exportTeamPackage: (projectId: string | null) => Promise<string | null>
+  importTeamPackage: () => Promise<Project | null>
   getAgents: () => Promise<Agent[]>
   getAgent: (id: string) => Promise<Agent | null>
   createAgent: (input: CreateAgentInput) => Promise<Agent>
