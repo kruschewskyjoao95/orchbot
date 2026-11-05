@@ -1,6 +1,8 @@
 import { For, Show, createEffect, createSignal, onMount } from 'solid-js'
+import { agentAuthority, assertMcpToolSupport, mcpToolSupport } from '../../shared/authority'
 import type {
   Agent,
+  AgentMcpToolPolicy,
   McpPreset,
   McpServerInfo,
   SkillCatalogEntry,
@@ -40,6 +42,14 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   const [servers, setServers] = createSignal<McpServerInfo[]>([])
   const [presets, setPresets] = createSignal<McpPreset[]>([])
   const [mcpActive, setMcpActive] = createSignal<string[]>([])
+  const [policies, setPolicies] = createSignal<AgentMcpToolPolicy[]>([])
+  const [policyEditor, setPolicyEditor] = createSignal<{
+    serverId: string
+    agentId: string
+    allowOnly: boolean
+    allow: string
+    deny: string
+  } | null>(null)
   const [form, setForm] = createSignal<{
     id?: string
     name: string
@@ -55,7 +65,17 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   } | null>(null)
 
   const agent = () => props.agents.find((a) => a.id === agentId())
-  const mcpSupported = () => ['claude', 'codex', 'acp'].includes(agent()?.provider ?? '')
+  const mcpSupported = () => agent() && mcpToolSupport(agent()?.provider ?? 'acp') !== 'none'
+  const policyIssue = () => {
+    const a = agent()
+    if (!a) return ''
+    try {
+      for (const { policy } of policies()) assertMcpToolSupport(a.provider, policy)
+      return ''
+    } catch (e) {
+      return clean(e)
+    }
+  }
 
   const guard = async (action: () => Promise<unknown>, ok = '') => {
     setError('')
@@ -75,8 +95,17 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   }
   const loadAgentState = async () => {
     const id = agentId()
-    setActive(id ? await window.orchbot.getAgentSkills(id) : [])
-    setMcpActive(id ? await window.orchbot.getAgentMcp(id) : [])
+    const [activeSkills, selected, rules] = id
+      ? await Promise.all([
+          window.orchbot.getAgentSkills(id),
+          window.orchbot.getAgentMcp(id),
+          window.orchbot.getAgentMcpToolPolicies(id),
+        ])
+      : [[], [], []]
+    if (id !== agentId()) return
+    setActive(activeSkills)
+    setMcpActive(selected)
+    setPolicies(rules)
   }
   onMount(async () => {
     setAgentId(props.agents[0]?.id ?? '')
@@ -85,7 +114,11 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
   })
   createEffect(() => {
     agentId()
-    void loadAgentState()
+    setPolicyEditor(null)
+    setPolicies([])
+    setMcpActive([])
+    setActive([])
+    void guard(loadAgentState)
   })
 
   const toggle = (list: string[], key: string, on: boolean) =>
@@ -95,9 +128,43 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
       setActive(await window.orchbot.setAgentSkills(agentId(), toggle(active(), slug, on))),
     )
   const toggleMcp = (id: string, on: boolean) =>
-    guard(async () =>
-      setMcpActive(await window.orchbot.setAgentMcp(agentId(), toggle(mcpActive(), id, on))),
-    )
+    guard(async () => {
+      const owner = agentId()
+      await window.orchbot.setAgentMcp(owner, toggle(mcpActive(), id, on))
+      await loadAgentState()
+    })
+  const editPolicy = (serverId: string) => {
+    const policy = policies().find((p) => p.serverId === serverId)?.policy ?? { deny: [] }
+    setPolicyEditor({
+      agentId: agentId(),
+      serverId,
+      allowOnly: policy.allow !== undefined,
+      allow: policy.allow?.join('\n') ?? '',
+      deny: policy.deny.join('\n'),
+    })
+  }
+  const savePolicy = (clear = false) =>
+    guard(async () => {
+      const p = policyEditor()
+      if (!p) return
+      const names = (s: string) =>
+        s
+          .split('\n')
+          .map((n) => n.trim())
+          .filter(Boolean)
+      await window.orchbot.setAgentMcpToolPolicy(
+        p.agentId,
+        p.serverId,
+        clear
+          ? { deny: [] }
+          : {
+              ...(p.allowOnly ? { allow: names(p.allow) } : {}),
+              deny: names(p.deny),
+            },
+      )
+      setPolicyEditor(null)
+      await loadAgentState()
+    }, 'Política MCP salva. Vale a partir do próximo turno.')
 
   const editSkill = (slug: string) =>
     guard(async () => {
@@ -370,6 +437,30 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
         </Show>
 
         <Show when={tab() === 'mcp'}>
+          <Show when={agent()}>
+            {(a) => (
+              <div class="skills-note">
+                <strong>Autoridade solicitada — {a().provider}</strong>
+                <p>{agentAuthority(a()).approvals}</p>
+                <p>{agentAuthority(a()).scope}</p>
+                <p>{agentAuthority(a()).isolation}</p>
+                <p>
+                  Filtro por ferramenta:{' '}
+                  {mcpToolSupport(a().provider) === 'allow-deny'
+                    ? 'permitir e bloquear (Codex ≥ 0.166.0)'
+                    : mcpToolSupport(a().provider) === 'deny'
+                      ? 'bloquear (Claude ≥ 2.1.318)'
+                      : 'não aplicado por este adapter'}
+                  .
+                </p>
+              </div>
+            )}
+          </Show>
+          <Show when={policyIssue()}>
+            <p class="skills-warn" role="alert">
+              {policyIssue()}
+            </p>
+          </Show>
           <Show when={agent() && !mcpSupported()}>
             <div class="skills-warn">
               ⚠️ MCP por agente funciona com Claude, Codex e agentes ACP. {agent()?.name} usa{' '}
@@ -431,6 +522,14 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
                 <button
                   type="button"
                   class="btn-outline"
+                  disabled={!mcpActive().includes(s.id)}
+                  onClick={() => editPolicy(s.id)}
+                >
+                  Ferramentas…
+                </button>
+                <button
+                  type="button"
+                  class="btn-outline"
                   onClick={() =>
                     confirm(`Remover o servidor "${s.name}"?`) &&
                     guard(async () => {
@@ -448,6 +547,74 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
         </Show>
       </div>
 
+      <Show when={policyEditor()}>
+        {(p) => (
+          <dialog
+            class="modal-overlay"
+            open
+            aria-label="Permissões MCP por ferramenta"
+            onKeyDown={(e) => e.key === 'Escape' && setPolicyEditor(null)}
+          >
+            <div class="modal-content" role="document">
+              <div class="modal-header">
+                <span class="modal-title">Ferramentas MCP</span>
+                <button
+                  type="button"
+                  class="modal-close"
+                  aria-label="Fechar permissões MCP"
+                  onClick={() => setPolicyEditor(null)}
+                >
+                  ✕
+                </button>
+              </div>
+              <div class="modal-form">
+                <p>
+                  Nomes originais, um por linha. Bloqueio vence permissão. Alterações exigem o turno
+                  parado e não limitam shell, disco ou rede.
+                </p>
+                <label class="skill-toggle">
+                  <input
+                    type="checkbox"
+                    checked={p().allowOnly}
+                    disabled={agent()?.provider !== 'codex'}
+                    onChange={(e) =>
+                      setPolicyEditor({ ...p(), allowOnly: e.currentTarget.checked })
+                    }
+                  />
+                  Permitir somente as ferramentas listadas (Codex)
+                </label>
+                <label for="mcp-policy-allow">
+                  Permitidas — lista vazia bloqueia todas quando marcada
+                </label>
+                <textarea
+                  id="mcp-policy-allow"
+                  value={p().allow}
+                  disabled={!p().allowOnly || agent()?.provider !== 'codex'}
+                  onInput={(e) => setPolicyEditor({ ...p(), allow: e.currentTarget.value })}
+                />
+                <label for="mcp-policy-deny">Bloqueadas</label>
+                <textarea
+                  id="mcp-policy-deny"
+                  value={p().deny}
+                  disabled={!['codex', 'claude'].includes(agent()?.provider ?? '')}
+                  onInput={(e) => setPolicyEditor({ ...p(), deny: e.currentTarget.value })}
+                />
+                <button
+                  type="button"
+                  class="btn-primary"
+                  disabled={!['codex', 'claude'].includes(agent()?.provider ?? '')}
+                  onClick={() => savePolicy()}
+                >
+                  Salvar política
+                </button>
+                <button type="button" class="btn-outline" onClick={() => savePolicy(true)}>
+                  Remover restrições deste servidor
+                </button>
+              </div>
+            </div>
+          </dialog>
+        )}
+      </Show>
       <Show when={editing()}>
         {(e) => (
           <dialog

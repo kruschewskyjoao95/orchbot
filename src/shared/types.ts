@@ -748,6 +748,12 @@ export interface OrchbotApi {
   getMcpPresets: () => Promise<McpPreset[]>
   getAgentMcp: (agentId: string) => Promise<string[]>
   setAgentMcp: (agentId: string, serverIds: string[]) => Promise<string[]>
+  getAgentMcpToolPolicies: (agentId: string) => Promise<AgentMcpToolPolicy[]>
+  setAgentMcpToolPolicy: (
+    agentId: string,
+    serverId: string,
+    policy: McpToolPolicy,
+  ) => Promise<AgentMcpToolPolicy[]>
   draftAgent: (prompt: string, baseAgentId?: string) => Promise<AgentDraft>
   listChannels: (includeArchived?: boolean) => Promise<Channel[]>
   getChannelMessages: (channelId: string) => Promise<ChannelMessage[]>
@@ -916,6 +922,17 @@ export type DeepLink =
   | { kind: 'new-agent' }
 
 export type McpTransport = 'stdio' | 'http'
+
+export interface McpToolPolicy {
+  /** Ausente mantém o catálogo; [] não permite nenhuma ferramenta. */
+  allow?: string[]
+  deny: string[]
+}
+
+export interface AgentMcpToolPolicy {
+  serverId: string
+  policy: McpToolPolicy
+}
 
 /** O que a interface vê de um servidor MCP: nomes das variáveis, nunca os valores. */
 export interface McpServerInfo {

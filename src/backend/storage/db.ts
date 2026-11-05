@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { assertMcpToolSupport, hasMcpRestriction, parseMcpToolPolicy } from '../../shared/authority'
 import { isCustomProvider, validateCustomProviderInput } from '../../shared/custom-providers'
 import { tokensFromChars } from '../../shared/tokens'
 import { isProviderEffort } from '../../shared/types'
@@ -14,6 +15,7 @@ import {
 } from '../../shared/types'
 import type {
   Agent,
+  AgentMcpToolPolicy,
   AgentMemory,
   AgentReaction,
   Approval,
@@ -673,6 +675,7 @@ export class OrchbotDatabase {
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN system_role TEXT',
+      'ALTER TABLE agent_mcp ADD COLUMN tool_policy TEXT',
       'ALTER TABLE threads ADD COLUMN project_id TEXT',
       'ALTER TABLE approvals ADD COLUMN payload_json TEXT',
       "ALTER TABLE agent_memories ADD COLUMN kind TEXT DEFAULT 'preference'",
@@ -2496,23 +2499,74 @@ export class OrchbotDatabase {
     if (isForeman(agent) && serverIds.length > 0) {
       throw new Error('O coordenador não tem conector próprio.')
     }
+    this.requireMcpIdle(agentId)
     const known = new Set(this.listMcpServers().map((s) => s.id))
-    this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
-    const insert = this.db.prepare(
-      'INSERT OR IGNORE INTO agent_mcp (agent_id, server_id) VALUES (?, ?)',
-    )
-    for (const id of serverIds) if (known.has(id)) insert.run(agentId, id)
+    const saved = new Map(this.getAgentMcpToolPolicies(agentId).map((p) => [p.serverId, p.policy]))
+    this.transaction(() => {
+      this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO agent_mcp (agent_id, server_id, tool_policy) VALUES (?, ?, ?)',
+      )
+      for (const id of serverIds) {
+        const policy = saved.get(id)
+        if (known.has(id))
+          insert.run(
+            agentId,
+            id,
+            policy && hasMcpRestriction(policy) ? JSON.stringify(policy) : null,
+          )
+      }
+    })
     return this.listAgentMcp(agentId)
+  }
+
+  private requireMcpIdle(agentId: string): void {
+    if (
+      this.db
+        .prepare("SELECT 1 FROM task_queue WHERE agent_id = ? AND status = 'running'")
+        .get(agentId)
+    )
+      throw new Error('Pare o turno em andamento antes de alterar as permissões MCP.')
+  }
+
+  public getAgentMcpToolPolicies(agentId: string): AgentMcpToolPolicy[] {
+    const rows = this.db
+      .prepare(
+        'SELECT server_id AS serverId, tool_policy AS policy FROM agent_mcp WHERE agent_id = ?',
+      )
+      .all(agentId) as { serverId: string; policy: string | null }[]
+    return rows.map((r) => ({
+      serverId: r.serverId,
+      policy: r.policy === null ? { deny: [] } : parseMcpToolPolicy(JSON.parse(r.policy)),
+    }))
+  }
+
+  public setAgentMcpToolPolicy(
+    agentId: string,
+    serverId: string,
+    raw: unknown,
+  ): AgentMcpToolPolicy[] {
+    const agent = this.getAgent(agentId)
+    if (!agent || !this.listAgentMcp(agentId).includes(serverId))
+      throw new Error('Servidor MCP não vinculado ao agente.')
+    this.requireMcpIdle(agentId)
+    const policy = parseMcpToolPolicy(raw)
+    assertMcpToolSupport(agent.provider, policy)
+    this.db
+      .prepare('UPDATE agent_mcp SET tool_policy = ? WHERE agent_id = ? AND server_id = ?')
+      .run(hasMcpRestriction(policy) ? JSON.stringify(policy) : null, agentId, serverId)
+    return this.getAgentMcpToolPolicies(agentId)
   }
 
   /** Servidores do agente com segredos abertos, para montar a linha de comando do CLI. */
   public getAgentMcpLaunch(agentId: string): McpLaunchServer[] {
     const rows = this.db
       .prepare(
-        'SELECT s.* FROM mcp_servers s JOIN agent_mcp a ON a.server_id = s.id WHERE a.agent_id = ? ORDER BY s.name',
+        'SELECT s.*, a.tool_policy FROM mcp_servers s JOIN agent_mcp a ON a.server_id = s.id WHERE a.agent_id = ? ORDER BY s.name',
       )
       .all(agentId) as unknown as (Parameters<OrchbotDatabase['mcpInfo']>[0] & {
       secrets: string | null
+      tool_policy: string | null
     })[]
     return rows.map((r) => {
       const secrets = this.mcpSecrets(r.secrets)
@@ -2524,6 +2578,9 @@ export class OrchbotDatabase {
         url: r.url ?? undefined,
         env: secrets.env,
         bearerToken: secrets.bearer,
+        ...(r.tool_policy === null
+          ? {}
+          : { toolPolicy: parseMcpToolPolicy(JSON.parse(r.tool_policy)) }),
       }
     })
   }

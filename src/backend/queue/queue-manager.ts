@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import { assertMcpToolSupport } from '../../shared/authority'
 import {
   type Agent,
   type Approval,
@@ -51,6 +52,7 @@ import {
 import { buildThreadContext, capRulesContent } from '../context/context-builder'
 import { buildGitContext } from '../context/git-context'
 import { claudeMcp, codexMcp } from '../mcp/mcp-launch'
+import { requireMcpPolicyVersion } from '../mcp/policy-version'
 import {
   needsMemoryFollowUp,
   parseMemoryDirectives,
@@ -684,29 +686,20 @@ export class QueueManager {
   }
 
   /** MCP escolhido para o agente (Claude e Codex). Segredos vão pelo ambiente, nunca no argv. */
-  private mcpConfigFor(
-    agent: Agent,
-    task: TaskQueueItem,
-  ): { mcpServers?: McpLaunchServer[]; extraEnv?: Record<string, string> } {
+  private mcpConfigFor(agent: Agent): {
+    mcpServers?: McpLaunchServer[]
+    extraEnv?: Record<string, string>
+  } {
+    for (const { policy } of this.db.getAgentMcpToolPolicies(agent.id))
+      assertMcpToolSupport(agent.provider, policy)
     // Antigravity também fala ACP (AntigravityAdapter estende AcpAdapter).
     const viaAcp = agent.provider === 'acp' || agent.provider === 'antigravity'
     if (agent.provider !== 'claude' && agent.provider !== 'codex' && !viaAcp) return {}
-    try {
-      const mcpServers = this.db.getAgentMcpLaunch(agent.id)
-      if (mcpServers.length === 0) return {}
-      // ACP leva os servidores no próprio protocolo (session/new): sem variáveis de ambiente.
-      if (viaAcp) return { mcpServers }
-      const { env } = (agent.provider === 'claude' ? claudeMcp : codexMcp)(mcpServers)
-      return { mcpServers, extraEnv: env }
-    } catch (err) {
-      const notice = this.db.addMessage(
-        task.threadId,
-        'system',
-        `🔌 MCP desativado neste turno: ${err instanceof Error ? err.message : String(err)}`,
-      )
-      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
-      return {}
-    }
+    const mcpServers = this.db.getAgentMcpLaunch(agent.id)
+    // ACP leva os servidores no próprio protocolo (session/new): sem variáveis de ambiente.
+    if (viaAcp) return { mcpServers }
+    const { env } = (agent.provider === 'claude' ? claudeMcp : codexMcp)(mcpServers)
+    return { mcpServers, extraEnv: env }
   }
 
   /** Executa [[AGENT:*]] / [[CHANNEL:*]]; só `list` volta ao robô num novo turno. */
@@ -982,9 +975,16 @@ export class QueueManager {
     }
 
     let runtime: ReturnType<typeof resolveAccountRuntime>
+    let mcp: ReturnType<QueueManager['mcpConfigFor']>
     try {
       runtime = resolveAccountRuntime(this.db, agent.provider, agent.accountId)
+      mcp = this.mcpConfigFor(agent)
+      await requireMcpPolicyVersion(agent.provider, mcp.mcpServers ?? [], runtime.config)
     } catch (err) {
+      if (this.preTurnStopped(agentId, nextTask.id)) {
+        this.abandonPreTurn(agentId, nextTask.id)
+        return
+      }
       this.taskFallbackAttempts.delete(nextTask.id)
       const error = err instanceof Error ? err.message : 'Falha ao abrir a conta do provedor'
       this.isProcessingAgent.delete(agentId)
@@ -995,8 +995,13 @@ export class QueueManager {
       setTimeout(() => this.processNextForAgent(agentId), 50)
       return
     }
+    if (this.preTurnStopped(agentId, nextTask.id)) {
+      this.abandonPreTurn(agentId, nextTask.id)
+      return
+    }
     const speaker = withForemanProject(agent, this.db.getThread(nextTask.threadId)?.projectId)
-    const { connection, account, config } = runtime
+    const { connection, account } = runtime
+    const config = { ...runtime.config, ...mcp }
     const apiKey = config.apiKey
     const adapter = this.registry.getAdapter(agent.provider)
 
@@ -1008,6 +1013,7 @@ export class QueueManager {
           connection?.endpoint ?? '',
           apiKey ?? '',
           ...(!account.isDefault ? [account.id, config.cliProfile?.directory ?? ''] : []),
+          ...(mcp.mcpServers?.length ? [mcp.mcpServers] : []),
         ]),
       )
       .digest('hex')
@@ -1227,7 +1233,6 @@ export class QueueManager {
         providerConfig: {
           ...config,
           effort: agent.effort ?? connection.effort,
-          ...this.mcpConfigFor(agent, nextTask),
         },
       },
       {

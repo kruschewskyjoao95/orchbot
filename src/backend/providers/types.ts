@@ -1,5 +1,6 @@
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import type {
+  McpToolPolicy,
   ProviderEffort,
   ProviderInfo,
   ProviderModelCatalog,
@@ -15,6 +16,7 @@ export interface McpLaunchServer {
   url?: string
   env: Record<string, string>
   bearerToken?: string
+  toolPolicy?: McpToolPolicy
 }
 
 export interface ProviderRuntimeConfig {

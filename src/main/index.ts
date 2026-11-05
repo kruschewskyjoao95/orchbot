@@ -1043,6 +1043,14 @@ ${out.slice(-800)}`,
   ipcMain.handle('orchbot:agent-mcp-get', (_e, agentId: string) =>
     database.listAgentMcp(String(agentId)),
   )
+  ipcMain.handle('orchbot:agent-mcp-policies', (_e, agentId: string) =>
+    database.getAgentMcpToolPolicies(String(agentId)),
+  )
+  ipcMain.handle(
+    'orchbot:agent-mcp-policy-set',
+    (_e, p: { agentId: string; serverId: string; policy: unknown }) =>
+      database.setAgentMcpToolPolicy(String(p?.agentId), String(p?.serverId), p?.policy),
+  )
   ipcMain.handle('orchbot:agent-mcp-set', (_e, p: { agentId: string; ids: string[] }) =>
     database.setAgentMcp(
       String(p.agentId),

@@ -13,6 +13,7 @@ import type {
   CustomProviderId,
   DeepLink,
   DelegationInput,
+  McpToolPolicy,
   OrchbotApi,
   SaveBrainPageInput,
   SaveMcpServerInput,
@@ -221,6 +222,10 @@ const api: OrchbotApi = {
   getAgentMcp: (agentId: string) => ipcRenderer.invoke('orchbot:agent-mcp-get', agentId),
   setAgentMcp: (agentId: string, ids: string[]) =>
     ipcRenderer.invoke('orchbot:agent-mcp-set', { agentId, ids }),
+  getAgentMcpToolPolicies: (agentId: string) =>
+    ipcRenderer.invoke('orchbot:agent-mcp-policies', agentId),
+  setAgentMcpToolPolicy: (agentId: string, serverId: string, policy: McpToolPolicy) =>
+    ipcRenderer.invoke('orchbot:agent-mcp-policy-set', { agentId, serverId, policy }),
   draftAgent: (prompt: string, baseAgentId?: string) =>
     ipcRenderer.invoke('orchbot:draft-agent', { prompt, baseAgentId }),
   listChannels: (includeArchived?: boolean) =>
