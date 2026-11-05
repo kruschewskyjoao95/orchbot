@@ -203,9 +203,11 @@ export class ElectronBrowserDriver implements BrowserDriver {
       this.detachView(this.attachedTabId)
     }
 
-    main.contentView.addChildView(holder.view)
+    if (this.attachedTabId !== tabId) {
+      main.contentView.addChildView(holder.view)
+      this.attachedTabId = tabId
+    }
     holder.view.setBounds(bounds)
-    this.attachedTabId = tabId
   }
 
   public detachView(tabId: string): void {
