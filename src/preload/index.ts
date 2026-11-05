@@ -93,6 +93,14 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:browser-run-script', { agentId, tabId, script }),
   browserSetBounds: (agentId: string, tabId: string, bounds: BrowserBounds | null) =>
     ipcRenderer.invoke('orchbot:browser-set-bounds', { agentId, tabId, bounds }),
+  browserOpenPageWindow: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-open-page-window', { agentId, tabId }),
+  browserShowPageWindow: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-show-page-window', { agentId, tabId }),
+  browserDockPageWindow: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-dock-page-window', { agentId, tabId }),
+  browserPageWindowState: (agentId: string, tabId: string) =>
+    ipcRenderer.invoke('orchbot:browser-page-window-state', { agentId, tabId }),
 
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => {
     const handler = (_event: unknown, data: StreamChunkEvent) => listener(data)
@@ -131,6 +139,19 @@ const api: OrchbotApi = {
     ipcRenderer.on('orchbot:browser-tab-updated', handler)
     return () => {
       ipcRenderer.removeListener('orchbot:browser-tab-updated', handler)
+    }
+  },
+
+  onBrowserPageWindow: (
+    listener: (event: { tabId: string; state: 'visible' | 'hidden' | 'docked' }) => void,
+  ) => {
+    const handler = (
+      _event: unknown,
+      data: { tabId: string; state: 'visible' | 'hidden' | 'docked' },
+    ) => listener(data)
+    ipcRenderer.on('orchbot:browser-page-window', handler)
+    return () => {
+      ipcRenderer.removeListener('orchbot:browser-page-window', handler)
     }
   },
 

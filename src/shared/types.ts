@@ -670,6 +670,16 @@ export interface OrchbotApi {
     tabId: string,
     bounds: BrowserBounds | null,
   ) => Promise<boolean>
+  browserOpenPageWindow?: (agentId: string, tabId: string) => Promise<boolean>
+  browserShowPageWindow?: (agentId: string, tabId: string) => Promise<boolean>
+  browserDockPageWindow?: (agentId: string, tabId: string) => Promise<boolean>
+  browserPageWindowState?: (
+    agentId: string,
+    tabId: string,
+  ) => Promise<'visible' | 'hidden' | 'none'>
+  onBrowserPageWindow?: (
+    listener: (event: { tabId: string; state: 'visible' | 'hidden' | 'docked' }) => void,
+  ) => () => void
   onStreamChunk: (listener: (data: StreamChunkEvent) => void) => () => void
   onTurnFinished: (listener: (data: TurnFinishedEvent) => void) => () => void
   onTurnError: (listener: (data: TurnErrorEvent) => void) => () => void

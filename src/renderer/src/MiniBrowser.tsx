@@ -10,6 +10,7 @@ export const MiniBrowser: Component<{
   tab: BrowserTab
   scale: number
   onHide: () => void
+  onPopOut: () => void
   onCloseTab: () => void
 }> = (props) => {
   let hole: HTMLDivElement | undefined
@@ -117,8 +118,21 @@ export const MiniBrowser: Component<{
         <span class="mini-browser-title" title={props.tab.url}>
           {props.tab.isLoading ? 'Carregando…' : props.tab.title || props.tab.url}
         </span>
-        <button type="button" class="btn-outline mini-browser-btn" onClick={props.onHide}>
-          Ocultar
+        <button
+          type="button"
+          class="btn-outline mini-browser-btn"
+          title="Abre a página numa janela. Fechar a janela deixa a página rodando."
+          onClick={props.onPopOut}
+        >
+          Janela
+        </button>
+        <button
+          type="button"
+          class="btn-outline mini-browser-btn"
+          title="Tira a página da tela. Ela continua aberta para o agente."
+          onClick={props.onHide}
+        >
+          Segundo plano
         </button>
         <button
           type="button"
