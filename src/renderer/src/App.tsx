@@ -87,6 +87,7 @@ import {
   safeSnippetHtml,
   templateInstructions,
 } from './orchestration-ui'
+import { type PageWindowMode, pageWindowAction } from './page-window-action'
 import { mergeMessage, snapshotIsCurrent } from './recovery'
 
 export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
@@ -803,6 +804,11 @@ export const App: Component = () => {
   const [browserFillValue, setBrowserFillValue] = createSignal('')
   const [browserStatusMsg, setBrowserStatusMsg] = createSignal<string | null>(null)
   const [miniBrowserOpen, setMiniBrowserOpen] = createSignal(false)
+  const [browserInBackground, setBrowserInBackground] = createSignal(false)
+  const [pageWindow, setPageWindow] = createSignal<{
+    tabId: string
+    state: 'visible' | 'hidden'
+  } | null>(null)
 
   // Chat signals
   const [inputText, setInputText] = createSignal('')
@@ -1318,6 +1324,15 @@ export const App: Component = () => {
           const current = tabs.find((t) => t.id === activeTabId()) || tabs[tabs.length - 1]
           setActiveTabId(current.id)
           setBrowserUrlInput(current.url)
+          if (window.orchbot.browserPageWindowState) {
+            const state = await window.orchbot.browserPageWindowState(agentId, current.id)
+            setPageWindow(state === 'none' ? null : { tabId: current.id, state })
+            if (state === 'hidden') setBrowserInBackground(true)
+            if (state === 'visible') {
+              setBrowserInBackground(false)
+              setMiniBrowserOpen(false)
+            }
+          }
         } else {
           setActiveTabId(null)
           setBrowserInspectData(null)
@@ -1342,7 +1357,17 @@ export const App: Component = () => {
       await loadBrowserTabs(agent.id)
       setActiveTabId(tab.id)
       setBrowserUrlInput(tab.url)
-      setMiniBrowserOpen(true)
+      const hosted = pageWindow()
+      if (hosted?.tabId === tab.id) {
+        setMiniBrowserOpen(false)
+        if (hosted.state === 'hidden') {
+          await window.orchbot.browserShowPageWindow?.(agent.id, tab.id)
+        }
+        setBrowserInBackground(false)
+      } else {
+        setMiniBrowserOpen(true)
+        setBrowserInBackground(false)
+      }
       setBrowserInspectData(null)
       setBrowserScreenshotUrl(null)
     } catch (err: unknown) {
@@ -1358,9 +1383,59 @@ export const App: Component = () => {
     try {
       await window.orchbot.browserCloseTab(agent.id, tabId)
       await loadBrowserTabs(agent.id)
+      if (browserTabs().length === 0) {
+        setBrowserInBackground(false)
+        setPageWindow(null)
+      }
     } catch (err) {
       console.error('Erro ao fechar aba:', err)
     }
+  }
+
+  const handleOpenPageWindow = async (tabId: string) => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot.browserOpenPageWindow) return
+    try {
+      await window.orchbot.browserOpenPageWindow(agent.id, tabId)
+      setPageWindow({ tabId, state: 'visible' })
+      setMiniBrowserOpen(false)
+      setBrowserInBackground(false)
+    } catch (err: unknown) {
+      alert(`Erro ao abrir a janela: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleShowPageWindow = async (tabId: string) => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot.browserShowPageWindow) return
+    try {
+      await window.orchbot.browserShowPageWindow(agent.id, tabId)
+      setPageWindow({ tabId, state: 'visible' })
+      setMiniBrowserOpen(false)
+      setBrowserInBackground(false)
+    } catch (err: unknown) {
+      alert(`Erro ao mostrar a janela: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleDockPageWindow = async (tabId: string) => {
+    const agent = currentAgent()
+    if (!agent || !window.orchbot.browserDockPageWindow) return
+    try {
+      await window.orchbot.browserDockPageWindow(agent.id, tabId)
+      setPageWindow(null)
+      setBrowserInBackground(false)
+      setMiniBrowserOpen(true)
+    } catch (err: unknown) {
+      alert(`Erro ao trazer a página: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const pageWindowMode = (): PageWindowMode => {
+    const hosted = pageWindow()
+    const tabId = activeTabId()
+    if (!hosted || !tabId || hosted.tabId !== tabId) return 'none'
+    return hosted.state
   }
 
   const handleBrowserNavigate = async (action: 'back' | 'forward' | 'reload') => {
@@ -1666,10 +1741,23 @@ export const App: Component = () => {
       if (!previous || previous.url !== updatedTab.url) {
         setActiveTabId(updatedTab.id)
         setBrowserUrlInput(updatedTab.url)
-        setMiniBrowserOpen(true)
+        const hosted = pageWindow()
+        if (!browserInBackground() && hosted?.tabId !== updatedTab.id) setMiniBrowserOpen(true)
         return
       }
       if (activeTabId() === updatedTab.id) setBrowserUrlInput(updatedTab.url)
+    })
+
+    const unsubPageWindow = window.orchbot.onBrowserPageWindow?.((event) => {
+      if (!browserTabs().some((tab) => tab.id === event.tabId)) return
+      if (event.state === 'docked') {
+        if (pageWindow()?.tabId === event.tabId) setPageWindow(null)
+        return
+      }
+      if (event.tabId !== activeTabId()) return
+      setPageWindow({ tabId: event.tabId, state: event.state })
+      setMiniBrowserOpen(false)
+      setBrowserInBackground(event.state === 'hidden')
     })
 
     const unsubCronTriggered = window.orchbot.onScheduledTaskTriggered?.((task) => {
@@ -1696,6 +1784,7 @@ export const App: Component = () => {
       unsubError()
       unsubTask()
       unsubBrowserTab()
+      unsubPageWindow?.()
       unsubCronTriggered?.()
     })
   })
@@ -1720,6 +1809,8 @@ export const App: Component = () => {
       setBrowserInspectData(null)
       setBrowserScreenshotUrl(null)
       setMiniBrowserOpen(false)
+      setBrowserInBackground(false)
+      setPageWindow(null)
       setSearchResults(null)
       setSearchQuery('')
       loadThreadAndMessages(id)
@@ -5337,14 +5428,56 @@ export const App: Component = () => {
                     >
                       Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
                     </button>
-                    <Show when={browserTabs().length > 0 && !miniBrowserOpen()}>
-                      <button
-                        type="button"
-                        class="btn-mode"
-                        onClick={() => setMiniBrowserOpen(true)}
-                      >
-                        Ver página
-                      </button>
+                    <Show when={browserTabs().length > 0}>
+                      {(() => {
+                        const action = pageWindowAction({
+                          hasTab: true,
+                          panelOpen: miniBrowserOpen(),
+                          window: pageWindowMode(),
+                        })
+                        if (!action) return null
+                        const tabId = activeTabId()
+                        const title =
+                          action === 'dock'
+                            ? 'Traz a página de volta para a conversa.'
+                            : action === 'show-window'
+                              ? 'Mostra a janela da página. Fechar a janela deixa a página rodando.'
+                              : action === 'background'
+                                ? 'Tira a página da tela. Ela continua aberta para o agente.'
+                                : 'Mostra a página que continua aberta.'
+                        return (
+                          <button
+                            type="button"
+                            class="btn-mode"
+                            aria-pressed={action === 'background' || action === 'dock'}
+                            title={title}
+                            onClick={() => {
+                              if (!tabId) return
+                              if (action === 'background') {
+                                setMiniBrowserOpen(false)
+                                setBrowserInBackground(true)
+                                return
+                              }
+                              if (action === 'show-panel') {
+                                setMiniBrowserOpen(true)
+                                setBrowserInBackground(false)
+                                return
+                              }
+                              if (action === 'show-window') {
+                                void handleShowPageWindow(tabId)
+                                return
+                              }
+                              void handleDockPageWindow(tabId)
+                            }}
+                          >
+                            {action === 'dock'
+                              ? 'Na conversa'
+                              : action === 'background'
+                                ? 'Segundo plano'
+                                : 'Ver página'}
+                          </button>
+                        )
+                      })()}
                     </Show>
                   </div>
 
@@ -6803,7 +6936,11 @@ export const App: Component = () => {
                     <MiniBrowser
                       tab={tab()}
                       scale={settings().uiScale}
-                      onHide={() => setMiniBrowserOpen(false)}
+                      onHide={() => {
+                        setMiniBrowserOpen(false)
+                        setBrowserInBackground(true)
+                      }}
+                      onPopOut={() => void handleOpenPageWindow(tab().id)}
                       onCloseTab={() => void handleCloseBrowserTab(tab().id)}
                     />
                   )}

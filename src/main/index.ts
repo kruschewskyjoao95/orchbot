@@ -262,6 +262,9 @@ function getBrowserManager(): BrowserManager {
     browserManager.setOnTabUpdated((tab) => {
       mainWindow?.webContents.send('orchbot:browser-tab-updated', tab)
     })
+    browserManager.setPageWindowListener((tabId, state) => {
+      mainWindow?.webContents.send('orchbot:browser-page-window', { tabId, state })
+    })
   }
   return browserManager
 }
@@ -329,6 +332,10 @@ function createWindow(): void {
       event.preventDefault()
       mainWindow?.hide()
     }
+  })
+
+  mainWindow.on('closed', () => {
+    browserManager?.closePageWindows()
   })
 
   app.on('activate', () => {
@@ -1464,6 +1471,37 @@ ${out.slice(-800)}`,
       const { agentId, tabId, bounds } = payload
       browser.setBounds(agentId, tabId, bounds)
       return true
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-open-page-window',
+    (_event, payload: { agentId: string; tabId: string }) => {
+      browser.openPageWindow(payload.agentId, payload.tabId)
+      return true
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-show-page-window',
+    (_event, payload: { agentId: string; tabId: string }) => {
+      browser.showPageWindow(payload.agentId, payload.tabId)
+      return true
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-dock-page-window',
+    (_event, payload: { agentId: string; tabId: string }) => {
+      browser.dockPageWindow(payload.agentId, payload.tabId)
+      return true
+    },
+  )
+
+  ipcMain.handle(
+    'orchbot:browser-page-window-state',
+    (_event, payload: { agentId: string; tabId: string }) => {
+      return browser.pageWindowState(payload.agentId, payload.tabId)
     },
   )
 

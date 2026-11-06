@@ -156,6 +156,46 @@ export class BrowserManager {
     return await this.driver.runScript(tabId, script)
   }
 
+  public setPageWindowListener(
+    listener: (tabId: string, state: 'visible' | 'hidden' | 'docked') => void,
+  ): void {
+    this.driver.setPageWindowListener?.(listener)
+  }
+
+  public pageWindowState(agentId: string, tabId: string): 'visible' | 'hidden' | 'none' {
+    const tab = this.tabStore.getTab(tabId)
+    if (!tab || tab.agentId !== agentId) return 'none'
+    return this.driver.pageWindowState?.(tabId) ?? 'none'
+  }
+
+  public openPageWindow(agentId: string, tabId: string): void {
+    this.requireOwnTab(agentId, tabId)
+    if (!this.driver.openPageWindow) throw new Error('Janela da página indisponível nesta sessão.')
+    this.driver.openPageWindow(tabId)
+  }
+
+  public showPageWindow(agentId: string, tabId: string): void {
+    this.requireOwnTab(agentId, tabId)
+    if (!this.driver.showPageWindow) throw new Error('Janela da página indisponível nesta sessão.')
+    this.driver.showPageWindow(tabId)
+  }
+
+  public closePageWindows(): void {
+    this.driver.closePageWindows?.()
+  }
+
+  public dockPageWindow(agentId: string, tabId: string): void {
+    this.requireOwnTab(agentId, tabId)
+    this.driver.dockPageWindow?.(tabId)
+  }
+
+  private requireOwnTab(agentId: string, tabId: string): void {
+    const tab = this.tabStore.getTab(tabId)
+    if (!tab || tab.agentId !== agentId) {
+      throw new Error('Aba não encontrada ou não pertence ao agente')
+    }
+  }
+
   public setBounds(agentId: string, tabId: string, bounds: BrowserBounds | null): void {
     const tab = this.tabStore.getTab(tabId)
     if (!tab || tab.agentId !== agentId) return
