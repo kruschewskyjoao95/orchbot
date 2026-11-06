@@ -41,7 +41,13 @@ const sample = () => ({
     { key: 'review', name: 'Revisão', description: 'Ao revisar', body: 'Confira os fatos.' },
   ],
   channels: [
-    { title: 'Pedidos', goal: 'Atender pedidos', owner: 'lead', members: ['lead', 'writer'] },
+    {
+      title: 'Pedidos',
+      goal: 'Atender pedidos',
+      owner: 'lead',
+      members: ['lead', 'writer'],
+      instructions: 'Fale com o cliente.',
+    },
   ],
 })
 
@@ -106,6 +112,8 @@ describe('pacote mínimo de equipe', () => {
       goal: 'Atender pedidos',
       status: 'stopped',
       projectId: project.id,
+      instructions: 'Fale com o cliente.',
+      workspacePath: '',
     })
     expect(db.getAgent(channel.ownerAgentId ?? '')?.name).toBe('Ana')
     expect(channel.members.map((m) => m.agentId).sort()).toEqual(agents.map((a) => a.id).sort())
@@ -161,6 +169,7 @@ describe('pacote mínimo de equipe', () => {
     )
     expect(exportedAgain.skills.map((s) => s.body)).toEqual(pkg.skills.map((s) => s.body))
     expect(exportedAgain.channels[0].goal).toBe(pkg.channels[0].goal)
+    expect(exportedAgain.channels[0].instructions).toBe(pkg.channels[0].instructions)
     expect(second.id).not.toBe(first.id)
   })
 

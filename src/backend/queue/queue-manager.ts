@@ -42,7 +42,11 @@ import {
   parseCollabDirectives,
   stripCollabDirectives,
 } from '../collaboration/collab-protocol'
-import { CollaborationService, MAX_CHANNEL_DEPTH } from '../collaboration/collaboration-service'
+import {
+  CollaborationService,
+  MAX_CHANNEL_DEPTH,
+  channelWorkspace,
+} from '../collaboration/collaboration-service'
 import {
   type ComputerDirective,
   MAX_COMPUTER_ROUNDS,
@@ -1111,12 +1115,19 @@ export class QueueManager {
     const config = { ...runtime.config, ...mcp }
     const apiKey = config.apiKey
     const adapter = this.registry.getAdapter(agent.provider)
+    const workRoot =
+      agent.runtime === 'docker'
+        ? agent.workspacePath
+        : channelWorkspace(
+            this.db.getChannelByThread(nextTask.threadId)?.channel,
+            agent.workspacePath,
+          )
 
     const sessionScope = createHash('sha256')
       .update(
         JSON.stringify([
           agent.runtime ?? 'host',
-          path.resolve(agent.workspacePath),
+          path.resolve(workRoot),
           connection?.cliPath ?? '',
           connection?.endpoint ?? '',
           apiKey ?? '',
@@ -1128,7 +1139,7 @@ export class QueueManager {
     // Git e compactação em paralelo. O resumo só é gravado se o turno ainda for seguir depois das duas.
     const gitPromise =
       agent.runtime !== 'docker' && this.db.getSettings().gitContext
-        ? buildGitContext(agent.workspacePath, agent.contextMode ?? 'padrao').catch(() => null)
+        ? buildGitContext(workRoot, agent.contextMode ?? 'padrao').catch(() => null)
         : Promise.resolve(null)
     const compactCtrl = new AbortController()
     this.compactAbort.set(agentId, compactCtrl)
@@ -1182,7 +1193,7 @@ export class QueueManager {
     const rules =
       agent.runtime === 'docker'
         ? { exists: false, content: '', filename: '' }
-        : loadWorkspaceRules(agent.workspacePath)
+        : loadWorkspaceRules(workRoot)
     const contextSections: string[] = []
     if (agent.runtime === 'docker')
       contextSections.push(
@@ -1352,7 +1363,7 @@ export class QueueManager {
     const execution = adapter.executeTurn(
       nextTask.prompt,
       {
-        workspacePath: agent.workspacePath,
+        workspacePath: workRoot,
         extraDirs: sharedDir ? [sharedDir] : undefined,
         permission: permission,
         resumeSessionId,

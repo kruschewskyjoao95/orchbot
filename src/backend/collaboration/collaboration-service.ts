@@ -15,6 +15,15 @@ const MAX_FILE_BYTES = 25 * 1024 * 1024
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 const short = (id: string) => id.slice(0, 8)
 
+/** Pasta do turno no canal: a compartilhada, se houver; senão a do agente. */
+export function channelWorkspace(
+  channel: { workspacePath?: string } | null | undefined,
+  agentWorkspace: string,
+): string {
+  const shared = channel?.workspacePath?.trim()
+  return shared || agentWorkspace
+}
+
 export interface CollabHooks {
   enqueue: (
     agentId: string,
@@ -69,6 +78,8 @@ export class CollaborationService {
       [
         `[CANAL "${channel.title}"]`,
         channel.goal ? `Objetivo: ${channel.goal}` : '',
+        channel.instructions ? `Instruções:\n${channel.instructions}` : '',
+        channel.workspacePath ? `Pasta compartilhada: ${channel.workspacePath}` : '',
         `Participantes: ${names.map((a) => a.name + (a.id === channel.ownerAgentId ? ' (dono)' : '')).join(', ')}`,
         isOwner
           ? 'Você é o DONO da tarefa: coordene, peça trabalho aos outros com [[CHANNEL:ask]] Nome :: tarefa [[/CHANNEL]] e entregue o resultado final ao usuário. Você responde pelo andamento.'

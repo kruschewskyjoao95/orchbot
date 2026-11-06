@@ -617,6 +617,8 @@ export class OrchbotDatabase {
         status TEXT NOT NULL DEFAULT 'active',
         archived INTEGER NOT NULL DEFAULT 0,
         project_id TEXT,
+        instructions TEXT NOT NULL DEFAULT '',
+        workspace_path TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -701,6 +703,8 @@ export class OrchbotDatabase {
       'ALTER TABLE approvals ADD COLUMN options_json TEXT',
       "ALTER TABLE agent_memories ADD COLUMN kind TEXT DEFAULT 'preference'",
       'ALTER TABLE agent_memories ADD COLUMN touched_at TEXT',
+      "ALTER TABLE channels ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE channels ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         this.db.exec(alter)
@@ -2796,6 +2800,8 @@ export class OrchbotDatabase {
     status: string
     archived: number
     projectId: string | null
+    instructions: string | null
+    workspacePath: string | null
     createdAt: string
     updatedAt: string
   }): Channel {
@@ -2809,13 +2815,16 @@ export class OrchbotDatabase {
       status: row.status === 'stopped' ? 'stopped' : 'active',
       archived: row.archived === 1,
       projectId: row.projectId ?? undefined,
+      instructions: row.instructions ?? '',
+      workspacePath: row.workspacePath ?? '',
       members,
     }
   }
 
   private static CHANNEL_SELECT =
     `SELECT id, title, goal, owner_agent_id AS ownerAgentId, status, archived,
-    project_id AS projectId, created_at AS createdAt, updated_at AS updatedAt FROM channels`
+    project_id AS projectId, instructions, workspace_path AS workspacePath,
+    created_at AS createdAt, updated_at AS updatedAt FROM channels`
 
   public createChannel(input: CreateChannelInput): Channel {
     const title = input.title?.trim()
@@ -2829,7 +2838,7 @@ export class OrchbotDatabase {
     const now = new Date().toISOString()
     this.db
       .prepare(
-        'INSERT INTO channels (id, title, goal, owner_agent_id, status, archived, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
+        'INSERT INTO channels (id, title, goal, owner_agent_id, status, archived, project_id, instructions, workspace_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
       )
       .run(
         id,
@@ -2838,6 +2847,8 @@ export class OrchbotDatabase {
         owner.id,
         'active',
         owner.projectId ?? null,
+        (input.instructions ?? '').trim().slice(0, MAX_AGENT_INSTRUCTIONS),
+        (input.workspacePath ?? '').trim(),
         now,
         now,
       )

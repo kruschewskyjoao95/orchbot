@@ -22,6 +22,8 @@ export function Channels(props: {
   const [error, setError] = createSignal('')
   const [title, setTitle] = createSignal('')
   const [goal, setGoal] = createSignal('')
+  const [instructions, setInstructions] = createSignal('')
+  const [workspacePath, setWorkspacePath] = createSignal('')
   const [owner, setOwner] = createSignal('')
   const [members, setMembers] = createSignal<string[]>([])
   let logEl: HTMLDivElement | undefined
@@ -86,10 +88,14 @@ export function Channels(props: {
         goal: goal(),
         ownerAgentId: owner(),
         memberIds: members(),
+        instructions: instructions(),
+        workspacePath: workspacePath(),
       })
       setCreating(false)
       setTitle('')
       setGoal('')
+      setInstructions('')
+      setWorkspacePath('')
       setMembers([])
       setSelectedId(channel.id)
     })
@@ -124,6 +130,12 @@ export function Channels(props: {
                   <h2># {channel().title}</h2>
                   <Show when={channel().goal}>
                     <p class="channel-goal">{channel().goal}</p>
+                  </Show>
+                  <Show when={channel().instructions}>
+                    <p class="channel-goal">{channel().instructions}</p>
+                  </Show>
+                  <Show when={channel().workspacePath}>
+                    <p class="channel-owner">Pasta: {channel().workspacePath}</p>
                   </Show>
                   <p class="channel-owner">
                     Dono da tarefa: <strong>{label(agentOf(channel().ownerAgentId))}</strong> ·
@@ -300,6 +312,26 @@ export function Channels(props: {
                   value={goal()}
                   onInput={(e) => setGoal(e.currentTarget.value)}
                   placeholder="O que precisa ser entregue"
+                />
+              </div>
+              <div class="form-group">
+                <label for="ch-instructions">Instruções do grupo</label>
+                <textarea
+                  id="ch-instructions"
+                  value={instructions()}
+                  onInput={(e) => setInstructions(e.currentTarget.value)}
+                  placeholder="Regras e contexto que todos os participantes seguem"
+                  rows={3}
+                />
+              </div>
+              <div class="form-group">
+                <label for="ch-workspace">Pasta compartilhada</label>
+                <input
+                  id="ch-workspace"
+                  type="text"
+                  value={workspacePath()}
+                  onInput={(e) => setWorkspacePath(e.currentTarget.value)}
+                  placeholder="Opcional — senão cada agente usa a pasta dele"
                 />
               </div>
               <div class="form-group">
