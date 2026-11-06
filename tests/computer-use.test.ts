@@ -196,4 +196,69 @@ describe('Robô usa o computador quando habilitado', () => {
     ).toBe(true)
     queue.close()
   })
+
+  it('anexa o último screenshot da rodada no aviso do computador', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    )
+    const firstShot = path.join(tmpDir, 'primeira.png')
+    const lastShot = path.join(tmpDir, 'ultima.png')
+    fs.writeFileSync(firstShot, png)
+    fs.writeFileSync(lastShot, png)
+
+    const agent = db.createAgent({
+      name: 'Desktop',
+      provider: 'codex',
+      model: 'fake',
+      workspacePath: tmpDir,
+      computerUse: true,
+    })
+    const adapter: ProviderAdapter = {
+      id: 'codex' as SupportedProvider,
+      name: 'fake',
+      checkAvailability: async () => ({ available: true }),
+      executeTurn: (prompt, _options, callbacks) => {
+        const reply = prompt.includes('[RESULTADO DO COMPUTADOR]')
+          ? 'Vi a tela.'
+          : '[[COMPUTER:screenshot]] [[/COMPUTER]]\n[[COMPUTER:screenshot]] [[/COMPUTER]]'
+        setTimeout(() => callbacks.onDone(reply), 5)
+        return { interrupt: () => {} }
+      },
+    }
+    const registry = new ProviderRegistry()
+    registry.registerAdapter(adapter)
+    const queue = new QueueManager(db, registry, {})
+    let shots = 0
+    queue.setComputerExecutor(async () => {
+      shots += 1
+      return {
+        summary: `Screenshot ${shots}`,
+        filePath: shots === 1 ? firstShot : lastShot,
+      }
+    })
+
+    const thread = db.listThreads(agent.id)[0]
+    if (!thread) throw new Error('thread ausente')
+    queue.enqueue(agent.id, thread.id, 'fotografe duas vezes')
+
+    await vi.waitFor(
+      () => {
+        expect(db.listMessages(thread.id).some((m) => m.text.includes('Vi a tela.'))).toBe(true)
+      },
+      { timeout: 8000, interval: 50 },
+    )
+
+    const notice = db
+      .listMessages(thread.id)
+      .find((m) => m.role === 'system' && m.text.includes('Computador executou'))
+    expect(notice?.attachments).toEqual([
+      expect.objectContaining({
+        fileName: 'ultima.png',
+        filePath: lastShot,
+        mimeType: 'image/png',
+      }),
+    ])
+    queue.close()
+  })
 })

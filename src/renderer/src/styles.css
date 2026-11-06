@@ -1510,6 +1510,25 @@ button {
   gap: 6px;
   margin-top: 10px;
 }
+.message-image-btn {
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  max-width: 100%;
+  text-align: left;
+}
+.message-image {
+  max-width: min(100%, 520px);
+  max-height: 360px;
+  border-radius: 8px;
+  display: block;
+  object-fit: contain;
+}
+.attachment-loading {
+  font-size: 12px;
+  color: var(--text-muted);
+}
 .attachment-card {
   display: flex;
   align-items: center;
@@ -1785,6 +1804,48 @@ button {
   font-size: 11px;
   color: var(--text-muted);
   margin-left: auto;
+}
+
+/* ---------- Computador ---------- */
+.computer-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-main);
+  overflow: hidden;
+  min-height: 0;
+}
+.computer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.computer-toolbar-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.computer-preview-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: #0b1018;
+  min-height: 0;
+}
+.computer-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.computer-preview-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 24px;
+  text-align: center;
 }
 
 /* ---------- Browser ---------- */

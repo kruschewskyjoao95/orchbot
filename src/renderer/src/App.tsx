@@ -4,9 +4,11 @@ import {
   Show,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   onCleanup,
   onMount,
+  untrack,
 } from 'solid-js'
 import { describeCron } from '../../backend/cron/cron-parser'
 import { isForeman } from '../../backend/orchestration/foreman'
@@ -20,6 +22,7 @@ import type {
   AgentRole,
   AppSettings,
   Approval,
+  Attachment,
   AutonomyLevel,
   BrowserPageContent,
   BrowserTab,
@@ -68,6 +71,7 @@ import { ProviderAccounts } from './ProviderAccounts'
 import { SkillsPlugins } from './SkillsPlugins'
 import { AGENT_STATE_LABEL, type AgentState, stateFromQueue, stateFromTask } from './agent-state'
 import { mergeChatItems, waitingOnYou } from './approval-card'
+import { startComputerPreview } from './computer-preview'
 import { focusDialog } from './dialog-focus'
 import {
   COWORKER_TEMPLATES,
@@ -336,6 +340,27 @@ const Switch: Component<{
     <span class="switch-knob" />
   </button>
 )
+
+const AttachmentImage: Component<{ att: Attachment }> = (props) => {
+  const [url] = createResource(
+    () => props.att.filePath,
+    (filePath) => window.orchbot.readImageDataUrl(filePath),
+  )
+  return (
+    <Show when={url()} fallback={<span class="attachment-loading">Carregando imagem…</span>}>
+      {(src) => (
+        <button
+          type="button"
+          class="message-image-btn"
+          title="Clique para abrir o arquivo"
+          onClick={() => void window.orchbot.openAttachment(props.att.filePath)}
+        >
+          <img src={src()} alt={props.att.fileName} class="message-image" />
+        </button>
+      )}
+    </Show>
+  )
+}
 
 /** Só aparece quando o texto passa do limite: mostra quanto tem e quanto pode. */
 function OverLimitCounter(props: { id: string; text: string }) {
@@ -775,8 +800,34 @@ export const App: Component = () => {
     ProviderInfo
   > | null>(null)
 
-  // Modo de visualização principal: 'chat' | 'browser'
-  const [mainViewMode, setMainViewMode] = createSignal<'chat' | 'browser'>('chat')
+  // Modo de visualização principal: 'chat' | 'browser' | 'computer'
+  const [mainViewMode, setMainViewMode] = createSignal<'chat' | 'browser' | 'computer'>('chat')
+  const [computerPreviewUrl, setComputerPreviewUrl] = createSignal<string | null>(null)
+  const [computerPreviewOn, setComputerPreviewOn] = createSignal(false)
+  const [computerPreviewError, setComputerPreviewError] = createSignal('')
+  let stopComputerPreviewFn: (() => void) | undefined
+
+  const stopComputerPreviewSession = () => {
+    stopComputerPreviewFn?.()
+    stopComputerPreviewFn = undefined
+    setComputerPreviewOn(false)
+  }
+
+  const startComputerPreviewSession = () => {
+    stopComputerPreviewSession()
+    setComputerPreviewError('')
+    setComputerPreviewOn(true)
+    stopComputerPreviewFn = startComputerPreview({
+      capture: () => window.orchbot.computerPreviewFrame(),
+      onFrame: (url) => {
+        setComputerPreviewUrl(url)
+        setComputerPreviewError('')
+      },
+      onError: (message) => setComputerPreviewError(message),
+    })
+  }
+
+  onCleanup(() => stopComputerPreviewSession())
 
   // Fila FIFO signals
   const [tasks, setTasks] = createSignal<TaskQueueItem[]>([])
@@ -1821,6 +1872,12 @@ export const App: Component = () => {
       setMiniBrowserOpen(false)
       setBrowserInBackground(false)
       setPageWindow(null)
+      untrack(() => {
+        stopComputerPreviewSession()
+        setComputerPreviewUrl(null)
+        setComputerPreviewError('')
+        if (mainViewMode() === 'computer') setMainViewMode('chat')
+      })
       setSearchResults(null)
       setSearchQuery('')
       loadThreadAndMessages(id)
@@ -1836,6 +1893,18 @@ export const App: Component = () => {
     const id = selectedAgentId()
     return agents().find((a) => a.id === id) || null
   }
+
+  const computerUseOn = () => {
+    const agent = currentAgent()
+    return Boolean(agent && effectiveCapabilities(agent, settings()).computerUse)
+  }
+
+  createEffect(() => {
+    if (!computerUseOn() && mainViewMode() === 'computer') {
+      stopComputerPreviewSession()
+      setMainViewMode('chat')
+    }
+  })
 
   const currentActiveTab = () => {
     const id = activeTabId()
@@ -5529,7 +5598,10 @@ export const App: Component = () => {
                     <button
                       type="button"
                       class={`btn-mode ${mainViewMode() === 'chat' ? 'active' : ''}`}
-                      onClick={() => setMainViewMode('chat')}
+                      onClick={() => {
+                        stopComputerPreviewSession()
+                        setMainViewMode('chat')
+                      }}
                     >
                       Conversa
                     </button>
@@ -5537,6 +5609,7 @@ export const App: Component = () => {
                       type="button"
                       class={`btn-mode ${mainViewMode() === 'browser' ? 'active' : ''}`}
                       onClick={() => {
+                        stopComputerPreviewSession()
                         setMainViewMode('browser')
                         const a = currentAgent()
                         if (a) loadBrowserTabs(a.id)
@@ -5544,6 +5617,15 @@ export const App: Component = () => {
                     >
                       Navegador {browserTabs().length > 0 ? `(${browserTabs().length})` : ''}
                     </button>
+                    <Show when={computerUseOn()}>
+                      <button
+                        type="button"
+                        class={`btn-mode ${mainViewMode() === 'computer' ? 'active' : ''}`}
+                        onClick={() => setMainViewMode('computer')}
+                      >
+                        Computador
+                      </button>
+                    </Show>
                     <Show when={browserTabs().length > 0}>
                       {(() => {
                         const action = pageWindowAction({
@@ -6249,20 +6331,27 @@ export const App: Component = () => {
                                   <div class="message-attachments-list">
                                     <For each={msg.attachments}>
                                       {(att) => (
-                                        <button
-                                          type="button"
-                                          class="attachment-card"
-                                          onClick={() => handleOpenFile(att.filePath)}
-                                          title="Clique para abrir o arquivo"
+                                        <Show
+                                          when={att.mimeType.startsWith('image/')}
+                                          fallback={
+                                            <button
+                                              type="button"
+                                              class="attachment-card"
+                                              onClick={() => handleOpenFile(att.filePath)}
+                                              title="Clique para abrir o arquivo"
+                                            >
+                                              <span class="attachment-icon">📎</span>
+                                              <div class="attachment-info">
+                                                <span class="attachment-name">{att.fileName}</span>
+                                                <span class="attachment-size">
+                                                  {formatFileSize(att.fileSize)}
+                                                </span>
+                                              </div>
+                                            </button>
+                                          }
                                         >
-                                          <span class="attachment-icon">📎</span>
-                                          <div class="attachment-info">
-                                            <span class="attachment-name">{att.fileName}</span>
-                                            <span class="attachment-size">
-                                              {formatFileSize(att.fileSize)}
-                                            </span>
-                                          </div>
-                                        </button>
+                                          <AttachmentImage att={att} />
+                                        </Show>
                                       )}
                                     </For>
                                   </div>
@@ -7052,6 +7141,51 @@ export const App: Component = () => {
                           )}
                         </Show>
                       </div>
+                    </div>
+                  </div>
+                </Show>
+                <Show when={mainViewMode() === 'computer'}>
+                  <div class="computer-workspace">
+                    <div class="computer-toolbar">
+                      <button
+                        type="button"
+                        class="btn-mode"
+                        classList={{ active: computerPreviewOn() }}
+                        onClick={() =>
+                          computerPreviewOn()
+                            ? stopComputerPreviewSession()
+                            : startComputerPreviewSession()
+                        }
+                      >
+                        {computerPreviewOn() ? 'Parar tela' : 'Mostrar esta tela'}
+                      </button>
+                      <span class="computer-toolbar-hint">
+                        Só mostra a tela deste computador. O agente continua usando grim, hyprctl e
+                        wtype.
+                      </span>
+                    </div>
+                    <Show when={computerPreviewError()}>
+                      <div class="error-banner" style={{ margin: '10px 16px 0 16px' }}>
+                        <span>{computerPreviewError()}</span>
+                      </div>
+                    </Show>
+                    <div class="computer-preview-stage">
+                      <Show
+                        when={computerPreviewUrl()}
+                        fallback={
+                          <p class="computer-preview-empty">
+                            Clique em Mostrar esta tela para ver o que o agente vê.
+                          </p>
+                        }
+                      >
+                        {(src) => (
+                          <img
+                            src={src()}
+                            alt="Tela deste computador"
+                            class="computer-preview-img"
+                          />
+                        )}
+                      </Show>
                     </div>
                   </div>
                 </Show>
