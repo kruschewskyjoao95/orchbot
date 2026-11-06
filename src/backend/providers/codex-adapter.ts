@@ -54,6 +54,8 @@ export class CodexAdapter implements ProviderAdapter {
       : ['exec', '--skip-git-repo-check', '--json']
     const servers = options.providerConfig?.mcpServers
     if (servers?.length) args.push(...codexMcp(servers).args)
+    if (options.providerConfig?.docker && !options.permission)
+      args.push('--dangerously-bypass-approvals-and-sandbox')
     // exec resume has no -C flag; cwd sets the workspace for both commands.
     if (options.model) args.push('-m', options.model)
     const effort = options.providerConfig?.effort

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { assertMcpToolSupport, parseMcpToolPolicy } from '../../shared/authority'
 import type { McpLaunchServer } from '../providers/types'
 
 /** Variáveis que um servidor MCP nunca pode sobrescrever no processo do CLI. */
@@ -41,7 +42,13 @@ export function claudeMcp(servers: McpLaunchServer[]): {
 } {
   const env: Record<string, string> = {}
   const mcpServers: Record<string, unknown> = {}
+  const blocked: string[] = []
   servers.forEach((s, i) => {
+    if (s.toolPolicy) {
+      const policy = parseMcpToolPolicy(s.toolPolicy)
+      assertMcpToolSupport('claude', policy)
+      blocked.push(...policy.deny.map((name) => `mcp__${s.name}__${name}`))
+    }
     if (s.transport === 'http') {
       const headers: Record<string, string> = {}
       if (s.bearerToken) {
@@ -58,7 +65,15 @@ export function claudeMcp(servers: McpLaunchServer[]): {
       mcpServers[s.name] = { command: s.command, args: s.args, env: own }
     }
   })
-  return { args: ['--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers })], env }
+  return {
+    args: [
+      '--strict-mcp-config',
+      '--mcp-config',
+      JSON.stringify({ mcpServers }),
+      ...(blocked.length ? ['--disallowedTools', blocked.join(',')] : []),
+    ],
+    env,
+  }
 }
 
 /**
@@ -74,6 +89,13 @@ export function codexMcp(servers: McpLaunchServer[]): {
   const env: Record<string, string> = {}
   servers.forEach((s, i) => {
     const key = `mcp_servers.${s.name}`
+    if (s.toolPolicy) {
+      const policy = parseMcpToolPolicy(s.toolPolicy)
+      assertMcpToolSupport('codex', policy)
+      if (policy.allow !== undefined)
+        args.push('-c', `${key}.enabled_tools=${JSON.stringify(policy.allow)}`)
+      args.push('-c', `${key}.disabled_tools=${JSON.stringify(policy.deny)}`)
+    }
     if (s.transport === 'http') {
       args.push('-c', `${key}.url=${JSON.stringify(s.url)}`)
       if (s.bearerToken) {
@@ -123,6 +145,7 @@ export function acpMcp(
   const out: AcpMcpServer[] = []
   const skipped: string[] = []
   for (const s of servers) {
+    if (s.toolPolicy) assertMcpToolSupport('acp', parseMcpToolPolicy(s.toolPolicy))
     if (s.transport === 'http') {
       if (!caps?.http) {
         skipped.push(s.name)

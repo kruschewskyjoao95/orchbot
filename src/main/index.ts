@@ -9,6 +9,7 @@ import { executeBrowserTool } from '../backend/browser/browser-tools'
 import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
 import { draftAgent, draftTeam } from '../backend/collaboration/agent-drafter'
 import { checkComputerUse, executeComputerAction } from '../backend/computer/computer-tools'
+import { startControlServer } from '../backend/control/server'
 import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
 import { buildDiagnostics } from '../backend/diagnostics/diagnostics'
@@ -34,6 +35,7 @@ import { OpenAiCompatibleAdapter } from '../backend/providers/openai-compatible-
 import { ProviderRegistry } from '../backend/providers/registry'
 import { QueueManager } from '../backend/queue/queue-manager'
 import { loadWorkspaceRules } from '../backend/rag/workspace-rules'
+import { dockerStatus, validateDockerAgent } from '../backend/runtime/docker'
 import { detectLocalRuntimes } from '../backend/runtimes/local-runtimes'
 import { SkillService, slugify } from '../backend/skills/skill-service'
 import { AttachmentManager } from '../backend/storage/attachment-manager'
@@ -82,6 +84,7 @@ import { createDefaultAgentWorkspace } from './agent-workspace'
 import { createAppUpdater } from './app-updater'
 import { registerAppImageDesktop, setLinuxAutostart } from './linux-desktop'
 import { iconPath, initShell } from './shell'
+import { exportTeamPackageFile, importTeamPackageFile } from './team-package-files'
 
 let mainWindow: BrowserWindow | null = null
 let foremanReady = false
@@ -92,6 +95,27 @@ let attachmentManager: AttachmentManager | null = null
 let delegationService: DelegationService | null = null
 let browserManager: BrowserManager | null = null
 let cronScheduler: CronScheduler | null = null
+let controlServer: Awaited<ReturnType<typeof startControlServer>> | null = null
+let controlError: string | undefined
+const controlFile = () => path.join(app.getPath('userData'), 'control.json')
+let controlChange = Promise.resolve()
+function configureControl(enabled: boolean): Promise<void> {
+  const change = controlChange.then(async () => {
+    if (enabled && !controlServer)
+      controlServer = await startControlServer(getDatabase(), getQueueManager(), controlFile())
+    if (!enabled && controlServer) {
+      await controlServer.close()
+      controlServer = null
+    }
+    if (!enabled) fs.rmSync(controlFile(), { force: true })
+    controlError = undefined
+  })
+  controlChange = change.catch((error) => {
+    controlError = error.message
+  })
+  return change
+}
+
 let webhookServer: import('node:http').Server | null = null
 
 function getDatabase(): OrchbotDatabase {
@@ -189,16 +213,28 @@ function getQueueManager(): QueueManager {
         return signal.aborted ? undefined : request.options[result.response - 1]?.optionId
       },
       onStreamChunk: (event) => {
-        mainWindow?.webContents.send('orchbot:stream-chunk', event)
+        mainWindow?.webContents.send('orchbot:stream-chunk', {
+          ...event,
+          revision: queueManager?.revision,
+        })
       },
       onTurnFinished: (event) => {
-        mainWindow?.webContents.send('orchbot:turn-finished', event)
+        mainWindow?.webContents.send('orchbot:turn-finished', {
+          ...event,
+          revision: queueManager?.revision,
+        })
       },
       onTurnError: (event) => {
-        mainWindow?.webContents.send('orchbot:turn-error', event)
+        mainWindow?.webContents.send('orchbot:turn-error', {
+          ...event,
+          revision: queueManager?.revision,
+        })
       },
       onTaskStatusChanged: (event) => {
-        mainWindow?.webContents.send('orchbot:task-status-changed', event)
+        mainWindow?.webContents.send('orchbot:task-status-changed', {
+          ...event,
+          revision: queueManager?.revision,
+        })
       },
     })
   }
@@ -322,6 +358,9 @@ function registerIpcHandlers(): void {
   const database = getDatabase()
   const providerRegistry = getProviderRegistry()
   const queue = getQueueManager()
+  ipcMain.handle('orchbot:thread-snapshot', (_event, threadId: string) =>
+    queue.threadSnapshot(String(threadId)),
+  )
   const attachments = getAttachmentManager()
   const delegation = getDelegationService()
   const browser = getBrowserManager()
@@ -588,11 +627,36 @@ ${out.slice(-800)}`,
     return checkComputerUse()
   })
 
+  ipcMain.handle('orchbot:control-status', () => ({
+    enabled: !!controlServer,
+    file: controlFile(),
+    error: controlError,
+  }))
+  ipcMain.handle('orchbot:docker-status', () => dockerStatus())
+  ipcMain.handle('orchbot:set-agent-runtime', async (_event, id: string, runtime: unknown) => {
+    const agent = database.getAgent(String(id))
+    if (!agent) throw new Error('Agente não encontrado.')
+    if (runtime === 'docker') {
+      validateDockerAgent(
+        agent,
+        resolveAccountRuntime(database, agent.provider, agent.accountId).config,
+      )
+      await dockerStatus()
+    }
+    return database.setAgentRuntime(String(id), runtime)
+  })
+
   ipcMain.handle('orchbot:get-settings', () => {
     return database.getSettings()
   })
 
-  ipcMain.handle('orchbot:update-settings', (_event, patch: Partial<AppSettings>) => {
+  ipcMain.handle('orchbot:update-settings', async (_event, patch: Partial<AppSettings>) => {
+    if (patch?.controlEnabled !== undefined) {
+      if (typeof patch.controlEnabled !== 'boolean') throw new Error('Controle externo inválido.')
+      await configureControl(patch.controlEnabled)
+    }
+    if (patch?.autoRouteChannels !== undefined && typeof patch.autoRouteChannels !== 'boolean')
+      throw new Error('Routing inválido.')
     const next = database.updateSettings(patch ?? {})
     applySettings(next)
     return next
@@ -990,6 +1054,12 @@ ${out.slice(-800)}`,
   })
 
   const skills = getSkillService()
+  ipcMain.handle('orchbot:export-team-package', (_event, projectId: unknown) =>
+    mainWindow ? exportTeamPackageFile(mainWindow, database, skills, projectId) : null,
+  )
+  ipcMain.handle('orchbot:import-team-package', () =>
+    mainWindow ? importTeamPackageFile(mainWindow, database, skills) : null,
+  )
   ipcMain.handle('orchbot:skills-list', () => skills.list())
   ipcMain.handle('orchbot:skills-get', (_e, slug: string) => skills.get(String(slug)))
   ipcMain.handle(
@@ -1036,6 +1106,14 @@ ${out.slice(-800)}`,
   ipcMain.handle('orchbot:agent-mcp-get', (_e, agentId: string) =>
     database.listAgentMcp(String(agentId)),
   )
+  ipcMain.handle('orchbot:agent-mcp-policies', (_e, agentId: string) =>
+    database.getAgentMcpToolPolicies(String(agentId)),
+  )
+  ipcMain.handle(
+    'orchbot:agent-mcp-policy-set',
+    (_e, p: { agentId: string; serverId: string; policy: unknown }) =>
+      database.setAgentMcpToolPolicy(String(p?.agentId), String(p?.serverId), p?.policy),
+  )
   ipcMain.handle('orchbot:agent-mcp-set', (_e, p: { agentId: string; ids: string[] }) =>
     database.setAgentMcp(
       String(p.agentId),
@@ -1063,7 +1141,7 @@ ${out.slice(-800)}`,
   )
   ipcMain.handle(
     'orchbot:create-webhook-trigger',
-    (_e, p: { agentId: string; title: string; instruction: string }) => {
+    (_e, p: { agentId: string; title: string; instruction: string; githubRepository?: string }) => {
       const instruction = String(p?.instruction ?? '').slice(0, 8000)
       if (!instruction.trim())
         throw new Error('Escreva o que o robô deve fazer quando for chamado.')
@@ -1071,6 +1149,7 @@ ${out.slice(-800)}`,
         String(p?.agentId),
         String(p?.title ?? '').slice(0, 80),
         instruction,
+        p.githubRepository,
       )
     },
   )
@@ -1428,6 +1507,7 @@ if (gotLock)
     setManagedCliRoot(path.join(app.getPath('userData'), 'cli'))
     if (ensureForeman(getDatabase())) foremanReady = true
     registerIpcHandlers()
+    void configureControl(getDatabase().getSettings().controlEnabled === true).catch(console.error)
     createWindow()
     startWebhookServer(getDatabase(), getQueueManager())
       .then((server) => {
@@ -1465,6 +1545,7 @@ if (gotLock)
 
 app.on('before-quit', () => {
   ;(app as unknown as { isQuitting?: boolean }).isQuitting = true
+  void controlServer?.close()
   queueManager?.close()
   registry?.interruptAll()
 })

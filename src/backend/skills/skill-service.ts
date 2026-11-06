@@ -360,6 +360,8 @@ export class SkillService {
           return `[${label}] ${s.name} (v${s.version})\n${s.body}`
         }
         if (d.action === 'install') {
+          if (agent.runtime === 'docker')
+            return `[${label}] leia a skill dentro do container e envie uma proposta inline com SKILL:create; o host não lê arquivos de workspaces Docker.`
           const root = fs.realpathSync(agent.workspacePath)
           const src = fs.realpathSync(path.resolve(root, d.target))
           if (src !== root && !src.startsWith(root + path.sep))
