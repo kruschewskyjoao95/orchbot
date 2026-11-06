@@ -298,6 +298,7 @@ describe('pacote mínimo de equipe', () => {
     'model',
     'workspacePath',
     'autonomyLevel',
+    'runtime',
     'browserAccess',
     'localScripts',
     'computerUse',
