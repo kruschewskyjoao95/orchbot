@@ -22,7 +22,7 @@ const SOURCE: Record<string, string> = {
   installed: 'pasta',
 }
 
-export function SkillsPlugins(props: { agents: Agent[] }) {
+export function SkillsPlugins(props: { agents: Agent[]; onAgentUpdated?: (agent: Agent) => void }) {
   const [tab, setTab] = createSignal<'skills' | 'catalog' | 'mcp'>('skills')
   const [agentId, setAgentId] = createSignal('')
   const [error, setError] = createSignal('')
@@ -440,6 +440,43 @@ export function SkillsPlugins(props: { agents: Agent[] }) {
           <Show when={agent()}>
             {(a) => (
               <div class="skills-note">
+                <label for="agent-runtime">Onde este colega executa</label>
+                <select
+                  id="agent-runtime"
+                  value={a().runtime ?? 'host'}
+                  onChange={async (event) => {
+                    const select = event.currentTarget
+                    const runtime = select.value as 'host' | 'docker'
+                    try {
+                      const updated = await window.orchbot.setAgentRuntime(a().id, runtime)
+                      props.onAgentUpdated?.(updated)
+                      setInfo(
+                        runtime === 'docker'
+                          ? await window.orchbot.getDockerStatus()
+                          : 'Execução no host selecionada.',
+                      )
+                      setError('')
+                    } catch (error) {
+                      setError(clean(error))
+                      select.value = a().runtime ?? 'host'
+                    }
+                  }}
+                >
+                  <option value="host">Linux do usuário (host)</option>
+                  <option
+                    value="docker"
+                    disabled={
+                      !['codex', 'claude'].includes(a().provider) || a().role === 'orchestrator'
+                    }
+                  >
+                    Container Docker com Chromium
+                  </option>
+                </select>
+                <p>
+                  Docker: conta com chave de API, imagem orchbot-runtime:1 e pasta dedicada. Apenas
+                  o workspace é montado; rede tem acesso à internet/LAN. Sessão descartada por
+                  turno. Não é uma VM.
+                </p>
                 <strong>Autoridade solicitada — {a().provider}</strong>
                 <p>{agentAuthority(a()).approvals}</p>
                 <p>{agentAuthority(a()).scope}</p>

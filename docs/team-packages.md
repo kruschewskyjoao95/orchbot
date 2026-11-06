@@ -72,3 +72,7 @@ banco e removem as skills e pastas recém-criadas; falhas de limpeza são report
 Uma queda abrupta do processo pode deixar arquivos de skills ou pastas sem
 vínculos, pois filesystem e SQLite não compartilham uma transação. Não há diário
 de recuperação ou sincronização de pacotes nesta versão.
+
+O pacote também não transporta runtime Docker, broker GitHub ou habilitação do
+controle externo. Configure a execução local após importar; colegas importados
+começam no runtime host. [Configuração e fronteira Docker](control-and-runtime.md).

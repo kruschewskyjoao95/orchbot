@@ -41,3 +41,7 @@ aceitar uma chamada com chave.
 A garantia é deduplicar o aceite da entrega nessa janela. Ela não garante que
 um agente ou serviço externo execute cada efeito uma única vez, nem autentica
 o fornecedor do evento além do token local do gatilho.
+
+Para GitHub, use a rota assinada `/github/UUID`, com repositório único e colega
+Docker; essa rota não usa token na URL nem aceita bypass pela rota genérica.
+[Configuração do broker e limites](control-and-runtime.md#github-configuração-e-contrato).

@@ -20,6 +20,7 @@ export interface McpLaunchServer {
 }
 
 export interface ProviderRuntimeConfig {
+  docker?: { workspacePath: string }
   /** MCP configurado para este agente (só Claude e Codex aplicam). */
   mcpServers?: McpLaunchServer[]
   /** Variáveis extras do processo filho (segredos de MCP; nunca vão no argv). */

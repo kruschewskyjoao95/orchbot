@@ -164,6 +164,8 @@ export type ExternalLinksMode = 'default-browser' | 'embedded'
 export type SteerMode = 'fila' | 'imediato'
 
 export interface AppSettings {
+  controlEnabled?: boolean
+  autoRouteChannels?: boolean
   theme: AppTheme
   language: string
   uiScale: number
@@ -212,6 +214,8 @@ export const MAX_AGENT_INSTRUCTIONS = 2000
 export const CONSENT_VERSION = 1
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  controlEnabled: false,
+  autoRouteChannels: false,
   theme: 'dark',
   language: 'pt-BR',
   uiScale: 100,
@@ -348,6 +352,7 @@ export interface UpdateProjectInput {
 }
 
 export interface Agent {
+  runtime?: 'host' | 'docker'
   id: string
   name: string
   role?: AgentRole
@@ -467,6 +472,7 @@ export type TaskStatus =
   | 'interrupted'
 
 export interface TaskQueueItem {
+  requiredRuntime?: 'docker' | null
   id: string
   agentId: string
   threadId: string
@@ -553,22 +559,26 @@ export interface ProviderInfo {
 }
 
 export interface StreamChunkEvent {
+  revision?: number
   threadId: string
   chunk: string
   fullText: string
 }
 
 export interface TurnFinishedEvent {
+  revision?: number
   threadId: string
   message: Message
 }
 
 export interface TurnErrorEvent {
+  revision?: number
   threadId: string
   error: string
 }
 
 export interface TaskStatusChangedEvent {
+  revision?: number
   task: TaskQueueItem
 }
 
@@ -612,6 +622,10 @@ export interface BrowserBounds {
 }
 
 export interface OrchbotApi {
+  getControlStatus: () => Promise<{ enabled: boolean; file: string; error?: string }>
+  getDockerStatus: () => Promise<string>
+  setAgentRuntime: (id: string, runtime: 'host' | 'docker') => Promise<Agent>
+  getThreadSnapshot: (threadId: string) => Promise<ThreadSnapshot>
   getComputerUseStatus: () => Promise<ComputerUseStatus>
   getProviderUpdates: () => Promise<ProviderUpdateInfo[]>
   runProviderUpdate: (
@@ -792,10 +806,19 @@ export interface OrchbotApi {
     agentId: string,
     title: string,
     instruction: string,
+    githubRepository?: string,
   ) => Promise<WebhookTrigger>
   deleteWebhookTrigger: (id: string) => Promise<boolean>
   /** Endereço local do servidor de webhooks; null se ele não conseguiu abrir a porta. */
   getWebhookBaseUrl: () => Promise<string | null>
+}
+
+export interface ThreadSnapshot {
+  revision: number
+  threadId: string
+  messages: Message[]
+  tasks: TaskQueueItem[]
+  streamingText: string
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'declined'
@@ -817,6 +840,7 @@ export interface Approval {
 
 /** URL local que dispara um robô; o token na URL é a credencial. */
 export interface WebhookTrigger {
+  githubRepository?: string | null
   id: string
   agentId: string
   title: string
