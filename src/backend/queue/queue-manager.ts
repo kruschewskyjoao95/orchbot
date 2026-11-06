@@ -129,11 +129,20 @@ export type BrowserExecutor = (
   args: Record<string, unknown>,
 ) => Promise<unknown>
 
+export type ComputerExecutorResult = string | { summary: string; filePath?: string }
+
 export type ComputerExecutor = (
   agentId: string,
   action: string,
   args: Record<string, unknown>,
-) => Promise<string>
+) => Promise<ComputerExecutorResult>
+
+function unwrapComputerResult(result: ComputerExecutorResult): {
+  summary: string
+  filePath?: string
+} {
+  return typeof result === 'string' ? { summary: result } : result
+}
 
 const MAX_MEMORY_ROUNDS = 3
 
@@ -465,34 +474,50 @@ export class QueueManager {
       'system',
       `🖥️ Computador executou ${directives.length} comando(s). Lendo o resultado…`,
     )
+    this.attachComputerScreenshot(notice, results.lastScreenshot)
     this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
 
-    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`, 'computer')
+    this.addFollowUp(task, `[RESULTADO DO COMPUTADOR]\n${results.lines.join('\n\n')}`, 'computer')
+  }
+
+  private attachComputerScreenshot(message: Message, filePath: string | undefined): void {
+    if (!filePath || !fs.existsSync(filePath)) return
+    const buf = fs.readFileSync(filePath)
+    const hash = createHash('sha256').update(buf).digest('hex')
+    const attachment = this.db.addAttachment(
+      message.id,
+      path.basename(filePath),
+      filePath,
+      buf.length,
+      'image/png',
+      hash,
+    )
+    message.attachments = [...(message.attachments ?? []), attachment]
   }
 
   private async collectComputerResults(
     agentId: string,
     directives: ComputerDirective[],
-  ): Promise<string[]> {
+  ): Promise<{ lines: string[]; lastScreenshot?: string }> {
     if (this.db.getAgent(agentId)?.runtime === 'docker')
-      return ['Computador do host bloqueado para agentes Docker.']
-    if (!this.computerExecutor) return []
-    const results: string[] = []
+      return { lines: ['Computador do host bloqueado para agentes Docker.'] }
+    if (!this.computerExecutor) return { lines: [] }
+    const lines: string[] = []
+    let lastScreenshot: string | undefined
     for (const directive of directives) {
       try {
-        const summary = await this.computerExecutor(
-          agentId,
-          directive.action,
-          argsForComputer(directive),
+        const { summary, filePath } = unwrapComputerResult(
+          await this.computerExecutor(agentId, directive.action, argsForComputer(directive)),
         )
-        results.push(`[${directive.action}] ${summary.slice(0, 1500)}`)
+        if (filePath) lastScreenshot = filePath
+        lines.push(`[${directive.action}] ${summary.slice(0, 1500)}`)
       } catch (err: unknown) {
-        results.push(
+        lines.push(
           `[${directive.action}] Erro: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     }
-    return results
+    return { lines, lastScreenshot }
   }
 
   private addFollowUp(
@@ -693,13 +718,21 @@ export class QueueManager {
       task,
       approval.threadId,
       `🖥️ Computador executou ${payload.directives.length} comando(s). Lendo o resultado…`,
+      (notice) => this.attachComputerScreenshot(notice, results.lastScreenshot),
     )
-    return `[RESULTADO DO COMPUTADOR]\n${results.join('\n\n')}`
+    return `[RESULTADO DO COMPUTADOR]\n${results.lines.join('\n\n')}`
   }
 
-  private postRuntimeNotice(task: TaskQueueItem | null, threadId: string, text: string): void {
+  private postRuntimeNotice(
+    task: TaskQueueItem | null,
+    threadId: string,
+    text: string,
+    prepare?: (notice: Message) => void,
+  ): Message {
     const notice = this.db.addMessage(threadId, 'system', text)
+    prepare?.(notice)
     if (task) this.events?.onTurnFinished?.({ threadId, message: notice, task })
+    return notice
   }
 
   /** Cadeia: o resultado final de um pedido segue para o próximo robô configurado. */

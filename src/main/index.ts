@@ -8,7 +8,11 @@ import { BrowserManager } from '../backend/browser/browser-manager'
 import { executeBrowserTool } from '../backend/browser/browser-tools'
 import { ElectronBrowserDriver } from '../backend/browser/electron-driver'
 import { draftAgent, draftTeam } from '../backend/collaboration/agent-drafter'
-import { checkComputerUse, executeComputerAction } from '../backend/computer/computer-tools'
+import {
+  checkComputerUse,
+  executeComputerAction,
+  takeScreenshot,
+} from '../backend/computer/computer-tools'
 import { startControlServer } from '../backend/control/server'
 import { CronScheduler } from '../backend/cron/scheduler'
 import { DelegationService } from '../backend/delegation/delegation-service'
@@ -191,7 +195,7 @@ function getQueueManager(): QueueManager {
       }
       const outDir = path.join(app.getPath('userData'), 'computer-screenshots')
       const result = await executeComputerAction(action, args, outDir)
-      return result.summary
+      return { summary: result.summary, filePath: result.filePath }
     })
 
     // Configura os eventos de streaming e ciclo de vida para repassar à janela
@@ -300,6 +304,19 @@ function applySettings(settings: AppSettings): void {
     // Sem permissão para gravar o autostart: a preferência fica salva
   }
   if (!settings.quickConnection) providerStatusCache = null
+}
+
+function fileToImageDataUrl(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  const mime =
+    ext === '.jpg' || ext === '.jpeg'
+      ? 'image/jpeg'
+      : ext === '.gif'
+        ? 'image/gif'
+        : ext === '.webp'
+          ? 'image/webp'
+          : 'image/png'
+  return `data:${mime};base64,${fs.readFileSync(filePath).toString('base64')}`
 }
 
 function createWindow(): void {
@@ -632,6 +649,26 @@ ${out.slice(-800)}`,
 
   ipcMain.handle('orchbot:get-computer-use-status', async () => {
     return checkComputerUse()
+  })
+
+  ipcMain.handle('orchbot:computer-preview-frame', async () => {
+    const outDir = path.join(app.getPath('userData'), 'computer-preview')
+    const result = await takeScreenshot(outDir, await checkComputerUse())
+    if (!result.filePath) throw new Error('Screenshot sem arquivo.')
+    const dataUrl = fileToImageDataUrl(result.filePath)
+    await fs.promises.unlink(result.filePath).catch(() => {})
+    return dataUrl
+  })
+
+  ipcMain.handle('orchbot:read-image-data-url', (_event, filePath: string) => {
+    if (typeof filePath !== 'string') throw new Error('Caminho inválido')
+    const root = app.getPath('userData')
+    const resolved = path.resolve(filePath)
+    const rel = path.relative(root, resolved)
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+      throw new Error('Imagem fora da pasta do Orchbot.')
+    }
+    return fileToImageDataUrl(resolved)
   })
 
   ipcMain.handle('orchbot:control-status', () => ({

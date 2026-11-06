@@ -37,6 +37,9 @@ const api: OrchbotApi = {
   setAgentRuntime: (id, runtime) => ipcRenderer.invoke('orchbot:set-agent-runtime', id, runtime),
   getThreadSnapshot: (threadId: string) => ipcRenderer.invoke('orchbot:thread-snapshot', threadId),
   getComputerUseStatus: () => ipcRenderer.invoke('orchbot:get-computer-use-status'),
+  computerPreviewFrame: () => ipcRenderer.invoke('orchbot:computer-preview-frame'),
+  readImageDataUrl: (filePath: string) =>
+    ipcRenderer.invoke('orchbot:read-image-data-url', filePath),
   getProviderUpdates: () => ipcRenderer.invoke('orchbot:get-provider-updates'),
   runProviderUpdate: (providerId: SupportedProvider) =>
     ipcRenderer.invoke('orchbot:run-provider-update', providerId),

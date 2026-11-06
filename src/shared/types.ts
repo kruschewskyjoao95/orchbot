@@ -636,6 +636,8 @@ export interface OrchbotApi {
   setAgentRuntime: (id: string, runtime: 'host' | 'docker') => Promise<Agent>
   getThreadSnapshot: (threadId: string) => Promise<ThreadSnapshot>
   getComputerUseStatus: () => Promise<ComputerUseStatus>
+  computerPreviewFrame: () => Promise<string>
+  readImageDataUrl: (filePath: string) => Promise<string>
   getProviderUpdates: () => Promise<ProviderUpdateInfo[]>
   runProviderUpdate: (
     providerId: SupportedProvider,
