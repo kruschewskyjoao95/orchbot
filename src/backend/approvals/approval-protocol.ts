@@ -88,6 +88,13 @@ export function runtimeApprovalDonePrompt(approval: Approval, resultSection: str
     .join('\n')
 }
 const BLOCK_RE = /\[\[APROVAR\]\]([\s\S]*?)\[\[\/APROVAR\]\]/g
+const QUESTION_RE = /\[\[PERGUNTAR\]\]([\s\S]*?)\[\[\/PERGUNTAR\]\]/g
+const MAX_QUESTION_OPTIONS = 6
+
+export interface QuestionRequest {
+  text: string
+  options: string[]
+}
 
 export function parseApprovalRequests(text: string): string[] {
   return [...text.matchAll(BLOCK_RE)].map((m) => (m[1] ?? '').trim()).filter(Boolean)
@@ -95,6 +102,34 @@ export function parseApprovalRequests(text: string): string[] {
 
 export function stripApprovalRequests(text: string): string {
   return text.replace(BLOCK_RE, '').trim()
+}
+
+export function parseQuestionRequests(text: string): QuestionRequest[] {
+  const questions: QuestionRequest[] = []
+  for (const match of text.matchAll(QUESTION_RE)) {
+    const body = (match[1] ?? '').trim()
+    if (!body) continue
+    const options: string[] = []
+    const questionLines: string[] = []
+    for (const line of body.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const option = trimmed.match(/^[-*]\s+(.+)$/)
+      if (option?.[1]) {
+        if (options.length < MAX_QUESTION_OPTIONS) options.push(option[1].trim())
+        continue
+      }
+      questionLines.push(trimmed)
+    }
+    const question = questionLines.join(' ').trim()
+    if (!question) continue
+    questions.push({ text: question, options })
+  }
+  return questions
+}
+
+export function stripQuestionRequests(text: string): string {
+  return text.replace(QUESTION_RE, '').trim()
 }
 
 export const APPROVAL_INSTRUCTIONS = [
@@ -105,9 +140,29 @@ export const APPROVAL_INSTRUCTIONS = [
   '[[/APROVAR]]',
   'Depois do bloco, encerre a resposta e NÃO execute a ação. Você receberá [RESPOSTA DA APROVAÇÃO] com APROVADO ou RECUSADO.',
   'Junte tudo que precisa de aprovação num único bloco por turno. Leituras, pesquisas e rascunhos não precisam de aprovação.',
+  'Para perguntar algo que só a pessoa pode responder (escolha, confirmação, um dado), use:',
+  '[[PERGUNTAR]]',
+  'a pergunta',
+  '- opção 1',
+  '- opção 2',
+  '[[/PERGUNTAR]]',
+  'Sem opções, a pessoa responde em texto livre. Depois do bloco, encerre e espere [RESPOSTA DA PERGUNTA].',
 ].join('\n')
 
 export function approvalAnswerPrompt(approval: Approval): string {
+  if (approval.kind === 'question') {
+    const answered = approval.status === 'approved'
+    return [
+      `[RESPOSTA DA PERGUNTA] ${answered ? 'RESPONDIDO' : 'PULADO'}`,
+      `Pergunta: ${approval.text}`,
+      answered
+        ? `Resposta da pessoa: ${approval.note || '(sem texto)'}`
+        : 'A pessoa pulou esta pergunta. Siga sem essa escolha ou pergunte de outro jeito.',
+      answered ? 'Continue com essa escolha.' : '',
+    ]
+      .filter(Boolean)
+      .join('\n')
+  }
   const approved = approval.status === 'approved'
   return [
     `[RESPOSTA DA APROVAÇÃO] ${approved ? 'APROVADO' : 'RECUSADO'}`,

@@ -778,6 +778,7 @@ export interface OrchbotApi {
   onScheduledTaskTriggered: (listener: (task: ScheduledTask) => void) => () => void
   draftTeam: (prompt: string) => Promise<AgentDraft[]>
   listApprovals: () => Promise<Approval[]>
+  listThreadApprovals: (threadId: string) => Promise<Approval[]>
   decideApproval: (id: string, approved: boolean, note?: string) => Promise<Approval>
   listWebhookTriggers: (agentId: string) => Promise<WebhookTrigger[]>
   createWebhookTrigger: (
@@ -791,8 +792,9 @@ export interface OrchbotApi {
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'declined'
+export type ApprovalKind = 'permission' | 'question'
 
-/** Pedido do robô para fazer algo que mexe no mundo real (enviar, pagar, apagar). */
+/** Pedido do robô: permissão para agir, ou pergunta que só a pessoa responde. */
 export interface Approval {
   id: string
   agentId: string
@@ -800,6 +802,9 @@ export interface Approval {
   taskId?: string
   text: string
   status: ApprovalStatus
+  kind: ApprovalKind
+  /** Escolhas da pergunta [[PERGUNTAR]]. Ausente na permissão. */
+  options?: string[]
   note?: string
   /** Ações do runtime seguradas no modo cauteloso. Ausente no pedido [[APROVAR]] só de texto. */
   payloadJson?: string

@@ -15,10 +15,12 @@ import {
   type RuntimeApprovalPayload,
   approvalAnswerPrompt,
   parseApprovalRequests,
+  parseQuestionRequests,
   parseRuntimePayload,
   runtimeApprovalDonePrompt,
   runtimeApprovalText,
   stripApprovalRequests,
+  stripQuestionRequests,
 } from '../approvals/approval-protocol'
 import { parseBrainDirectives, stripBrainDirectives } from '../brain/brain-protocol'
 import { BrainService } from '../brain/brain-service'
@@ -502,11 +504,6 @@ export class QueueManager {
       note?.trim() || undefined,
     )
     const task = approval.taskId ? this.db.getTask(approval.taskId) : null
-    this.db.addMessage(
-      approval.threadId,
-      'user',
-      `${approved ? '✅ Aprovado' : '❌ Recusado'}: ${approval.text}${approval.note ? `\n${approval.note}` : ''}`,
-    )
     const payload = approved ? parseRuntimePayload(approval.payloadJson) : undefined
     if (approved && approval.payloadJson) {
       if (payload) this.replayRuntimeApproval(approval, task, payload)
@@ -523,26 +520,23 @@ export class QueueManager {
     return approval
   }
 
-  /** Card de aprovação. payloadJson guarda as ações que o runtime executa depois do aprovado. */
+  /** Card no fio. payloadJson guarda as ações que o runtime executa depois do aprovado. */
   private openApproval(
     task: TaskQueueItem,
     agent: { id: string; name: string },
     text: string,
     payloadJson?: string,
+    extra?: { kind?: Approval['kind']; options?: string[] },
   ): void {
-    const approval = this.db.createApproval({
+    this.db.createApproval({
       agentId: agent.id,
       threadId: task.threadId,
       taskId: task.id,
       text,
       payloadJson,
+      kind: extra?.kind,
+      options: extra?.options,
     })
-    const notice = this.db.addMessage(
-      task.threadId,
-      'system',
-      `✋ ${agent.name} pede sua aprovação: ${approval.text.slice(0, 200)}`,
-    )
-    this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
   }
 
   private continueAfterApproval(
@@ -1401,13 +1395,16 @@ export class QueueManager {
             const collabDirectives = parseCollabDirectives(fullText)
             const skillDirectives = this.skills ? parseSkillDirectives(fullText) : []
             const approvalRequests = parseApprovalRequests(fullText)
-            const stripped = stripApprovalRequests(
-              stripSkillDirectives(
-                stripCollabDirectives(
-                  stripBrainDirectives(
-                    stripMemoryDirectives(
-                      stripComputerDirectives(
-                        stripNewChatDirectives(stripBrowserDirectives(fullText)),
+            const questionRequests = parseQuestionRequests(fullText)
+            const stripped = stripQuestionRequests(
+              stripApprovalRequests(
+                stripSkillDirectives(
+                  stripCollabDirectives(
+                    stripBrainDirectives(
+                      stripMemoryDirectives(
+                        stripComputerDirectives(
+                          stripNewChatDirectives(stripBrowserDirectives(fullText)),
+                        ),
                       ),
                     ),
                   ),
@@ -1435,7 +1432,10 @@ export class QueueManager {
               nextTask.threadId,
               'assistant',
               visibleText.trim() ||
-                (approvalRequests.length > 0 || holdBrowser || holdComputer
+                (approvalRequests.length > 0 ||
+                questionRequests.length > 0 ||
+                holdBrowser ||
+                holdComputer
                   ? '✋ Preciso da sua aprovação antes de continuar.'
                   : brainDirectives.length > 0 &&
                       memoryDirectives.length === 0 &&
@@ -1453,8 +1453,13 @@ export class QueueManager {
                           : '(Nenhum conteúdo retornado)'),
             )
 
-            // 1a. Pedido de aprovação: texto [[APROVAR]] ou ação mutável no modo cauteloso.
+            // 1a. Pedido no fio: [[APROVAR]], [[PERGUNTAR]] ou ação mutável no modo cauteloso.
             for (const text of approvalRequests) this.openApproval(nextTask, agent, text)
+            for (const question of questionRequests)
+              this.openApproval(nextTask, agent, question.text, undefined, {
+                kind: 'question',
+                options: question.options,
+              })
             if (holdBrowser) {
               const payload: RuntimeApprovalPayload = {
                 kind: 'browser',
