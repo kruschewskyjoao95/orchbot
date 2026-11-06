@@ -27,7 +27,13 @@ interface TeamPackage {
     skills: string[]
   }[]
   skills: { key: string; name: string; description: string; body: string }[]
-  channels: { title: string; goal: string; owner: string; members: string[] }[]
+  channels: {
+    title: string
+    goal: string
+    owner: string
+    members: string[]
+    instructions: string
+  }[]
 }
 
 function record(value: unknown, fields: string[]): Record<string, unknown> {
@@ -113,13 +119,19 @@ export function parseTeamPackage(source: string): TeamPackage {
   if (!agents.length) throw new Error('A equipe precisa de ao menos um agente.')
   unique(agents.map((a) => a.key))
   const channels = list(root.channels, 40).map((value) => {
-    const c = record(value, ['title', 'goal', 'owner', 'members'])
+    const c = record(value, ['title', 'goal', 'owner', 'members', 'instructions'])
     const members = list(c.members, 20).map((key) => text(key, 80))
     unique(members)
     const owner = text(c.owner, 80)
     if (!members.includes(owner) || members.some((key) => !agents.some((a) => a.key === key)))
       throw new Error('Dono ou participante do canal não existe na equipe.')
-    return { title: text(c.title, 120), goal: text(c.goal, 2000, false), owner, members }
+    return {
+      title: text(c.title, 120),
+      goal: text(c.goal, 2000, false),
+      owner,
+      members,
+      instructions: text(c.instructions ?? '', MAX_AGENT_INSTRUCTIONS, false),
+    }
   })
   return {
     format: 'orchbot.team',
@@ -178,6 +190,7 @@ export function exportTeamPackage(
         goal: c.goal,
         owner: agentKeys.get(c.ownerAgentId ?? '') ?? '',
         members: c.members.map((m) => agentKeys.get(m.agentId) ?? ''),
+        instructions: c.instructions,
       })),
   }
   return JSON.stringify(parseTeamPackage(JSON.stringify(pkg)), null, 2)
@@ -263,6 +276,7 @@ export function importTeamPackage(
           goal: c.goal,
           ownerAgentId: ids.get(c.owner) ?? '',
           memberIds: c.members.map((key) => ids.get(key) ?? ''),
+          instructions: c.instructions,
         })
         db.updateChannel(channel.id, { status: 'stopped' })
       }

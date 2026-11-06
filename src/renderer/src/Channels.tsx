@@ -22,8 +22,13 @@ export function Channels(props: {
   const [error, setError] = createSignal('')
   const [title, setTitle] = createSignal('')
   const [goal, setGoal] = createSignal('')
+  const [instructions, setInstructions] = createSignal('')
+  const [workspacePath, setWorkspacePath] = createSignal('')
   const [owner, setOwner] = createSignal('')
   const [members, setMembers] = createSignal<string[]>([])
+  const [editingContext, setEditingContext] = createSignal(false)
+  const [editInstructions, setEditInstructions] = createSignal('')
+  const [editWorkspace, setEditWorkspace] = createSignal('')
   let logEl: HTMLDivElement | undefined
 
   const selected = () => channels().find((c) => c.id === selectedId()) ?? null
@@ -67,6 +72,7 @@ export function Channels(props: {
   })
   createEffect(() => {
     selectedId()
+    setEditingContext(false)
     void refresh()
   })
   // Abrir "Novo grupo" já sugere o primeiro agente como dono.
@@ -86,10 +92,14 @@ export function Channels(props: {
         goal: goal(),
         ownerAgentId: owner(),
         memberIds: members(),
+        instructions: instructions(),
+        workspacePath: workspacePath(),
       })
       setCreating(false)
       setTitle('')
       setGoal('')
+      setInstructions('')
+      setWorkspacePath('')
       setMembers([])
       setSelectedId(channel.id)
     })
@@ -124,6 +134,17 @@ export function Channels(props: {
                   <h2># {channel().title}</h2>
                   <Show when={channel().goal}>
                     <p class="channel-goal">{channel().goal}</p>
+                  </Show>
+                  <Show
+                    when={channel().instructions || channel().workspacePath}
+                    fallback={<p class="channel-owner">Sem pacote de contexto.</p>}
+                  >
+                    <Show when={channel().instructions}>
+                      <p class="channel-goal">{channel().instructions}</p>
+                    </Show>
+                    <Show when={channel().workspacePath}>
+                      <p class="channel-owner">Pasta: {channel().workspacePath}</p>
+                    </Show>
                   </Show>
                   <p class="channel-owner">
                     Dono da tarefa: <strong>{label(agentOf(channel().ownerAgentId))}</strong> ·
@@ -180,6 +201,17 @@ export function Channels(props: {
                     <button
                       type="button"
                       class="btn-outline"
+                      onClick={() => {
+                        setEditInstructions(channel().instructions)
+                        setEditWorkspace(channel().workspacePath)
+                        setEditingContext(true)
+                      }}
+                    >
+                      Contexto
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-outline"
                       onClick={() =>
                         guard(() => window.orchbot.controlChannel(channel().id, 'archive'))
                       }
@@ -200,6 +232,53 @@ export function Channels(props: {
                   </Show>
                 </div>
               </header>
+              <Show when={editingContext()}>
+                <form
+                  class="channel-context-form"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const id = channel().id
+                    void guard(async () => {
+                      await window.orchbot.updateChannelContext(id, {
+                        instructions: editInstructions(),
+                        workspacePath: editWorkspace(),
+                      })
+                      setEditingContext(false)
+                    })
+                  }}
+                >
+                  <div class="form-group">
+                    <label for="ch-edit-instructions">Instruções do grupo</label>
+                    <textarea
+                      id="ch-edit-instructions"
+                      value={editInstructions()}
+                      onInput={(e) => setEditInstructions(e.currentTarget.value)}
+                      rows={3}
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="ch-edit-workspace">Pasta compartilhada</label>
+                    <input
+                      id="ch-edit-workspace"
+                      type="text"
+                      value={editWorkspace()}
+                      onInput={(e) => setEditWorkspace(e.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="channel-controls">
+                    <button type="submit" class="btn-primary">
+                      Salvar contexto
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-outline"
+                      onClick={() => setEditingContext(false)}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              </Show>
 
               <div class="channel-log" ref={logEl}>
                 <For each={messages()}>
@@ -300,6 +379,26 @@ export function Channels(props: {
                   value={goal()}
                   onInput={(e) => setGoal(e.currentTarget.value)}
                   placeholder="O que precisa ser entregue"
+                />
+              </div>
+              <div class="form-group">
+                <label for="ch-instructions">Instruções do grupo</label>
+                <textarea
+                  id="ch-instructions"
+                  value={instructions()}
+                  onInput={(e) => setInstructions(e.currentTarget.value)}
+                  placeholder="Regras e contexto que todos os participantes seguem"
+                  rows={3}
+                />
+              </div>
+              <div class="form-group">
+                <label for="ch-workspace">Pasta compartilhada</label>
+                <input
+                  id="ch-workspace"
+                  type="text"
+                  value={workspacePath()}
+                  onInput={(e) => setWorkspacePath(e.currentTarget.value)}
+                  placeholder="Opcional — senão cada agente usa a pasta dele"
                 />
               </div>
               <div class="form-group">

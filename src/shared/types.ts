@@ -800,6 +800,10 @@ export interface OrchbotApi {
     action: 'stop' | 'resume' | 'archive' | 'restore' | 'reassign',
     agentId?: string,
   ) => Promise<Channel>
+  updateChannelContext: (
+    channelId: string,
+    pack: { instructions?: string; workspacePath?: string },
+  ) => Promise<Channel>
   listMemories: (agentId: string) => Promise<AgentMemory[]>
   addMemory: (agentId: string, text: string) => Promise<AgentMemory>
   deleteMemory: (agentId: string, id: string) => Promise<boolean>
@@ -892,6 +896,10 @@ export interface Channel {
   status: ChannelStatus
   archived: boolean
   projectId?: string
+  /** Instruções compartilhadas do grupo; entram no contexto de cada turno no canal. */
+  instructions: string
+  /** Pasta compartilhada do grupo; vazia usa o workspace de cada agente. */
+  workspacePath: string
   members: ChannelMember[]
   createdAt: string
   updatedAt: string
@@ -912,6 +920,8 @@ export interface CreateChannelInput {
   goal?: string
   ownerAgentId: string
   memberIds?: string[]
+  instructions?: string
+  workspacePath?: string
 }
 
 export interface AgentDraft {

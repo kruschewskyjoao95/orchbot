@@ -64,8 +64,9 @@ do pacote. Campos desconhecidos, inclusive campos de autoridade, versões não
 suportadas e referências inválidas são recusados antes de qualquer gravação.
 
 Limites por pacote: 2 MiB, 20 agentes, 40 skills e 40 grupos. Instruções de agente
-seguem o limite atual do aplicativo (2.000 caracteres); cada skill tem até
-40 KiB de corpo. O pacote não é compatível diretamente com arquivos OpenMausBot.
+e de canal seguem o limite atual do aplicativo (2.000 caracteres); cada skill tem até
+40 KiB de corpo. A pasta compartilhada do canal fica nesta instalação e não viaja
+no pacote. O pacote não é compatível diretamente com arquivos OpenMausBot.
 
 Os registros SQLite são criados numa transação. Falhas de importação desfazem o
 banco e removem as skills e pastas recém-criadas; falhas de limpeza são reportadas.

@@ -266,6 +266,8 @@ const api: OrchbotApi = {
     ipcRenderer.invoke('orchbot:channel-post', { channelId, text }),
   controlChannel: (channelId: string, action: string, agentId?: string) =>
     ipcRenderer.invoke('orchbot:channel-control', { channelId, action, agentId }),
+  updateChannelContext: (channelId, pack) =>
+    ipcRenderer.invoke('orchbot:channel-context', { channelId, ...pack }),
   listMemories: (agentId: string) => ipcRenderer.invoke('orchbot:memory-list', agentId),
   addMemory: (agentId: string, text: string) =>
     ipcRenderer.invoke('orchbot:memory-add', { agentId, text }),
