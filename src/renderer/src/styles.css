@@ -591,6 +591,19 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.agent-item.unread .agent-item-name {
+  font-weight: 700;
+}
+.agent-status-dot.unread {
+  background: var(--accent, #3b82f6);
+}
+.agent-context-menu {
+  position: fixed;
+  right: auto;
+  top: 0;
+  z-index: 60;
+  min-width: 180px;
+}
 .list-search {
   display: flex;
   align-items: center;

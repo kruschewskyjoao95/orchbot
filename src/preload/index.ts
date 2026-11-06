@@ -55,6 +55,7 @@ const api: OrchbotApi = {
   getAgent: (id: string) => ipcRenderer.invoke('orchbot:get-agent', id),
   createAgent: (input: CreateAgentInput) => ipcRenderer.invoke('orchbot:create-agent', input),
   updateAgent: (input: UpdateAgentInput) => ipcRenderer.invoke('orchbot:update-agent', input),
+  duplicateAgent: (id: string) => ipcRenderer.invoke('orchbot:duplicate-agent', id),
   deleteAgent: (id: string) => ipcRenderer.invoke('orchbot:delete-agent', id),
   getThreads: (agentId: string) => ipcRenderer.invoke('orchbot:get-threads', agentId),
   createThread: (agentId: string, title?: string, projectId?: string) =>

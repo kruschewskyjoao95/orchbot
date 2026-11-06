@@ -85,6 +85,7 @@ import {
 } from './orchestration-ui'
 import { type PageWindowMode, pageWindowAction } from './page-window-action'
 import { mergeMessage, snapshotIsCurrent } from './recovery'
+import { agentPreview, isAgentUnread, sortSidebarAgents } from './sidebar-row'
 
 export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
   codex: 'gpt-6.1-sol',
@@ -492,6 +493,9 @@ export const App: Component = () => {
   const [settingsQuery, setSettingsQuery] = createSignal('')
   const [listQuery, setListQuery] = createSignal('')
   const [showNewMenu, setShowNewMenu] = createSignal(false)
+  const [agentMenu, setAgentMenu] = createSignal<{ agentId: string; x: number; y: number } | null>(
+    null,
+  )
 
   // Canais na barra lateral (a tela de canal só mostra o escolhido)
   const [sidebarChannels, setSidebarChannels] = createSignal<Channel[]>([])
@@ -1060,7 +1064,7 @@ export const App: Component = () => {
     )
   }
   const foreman = createMemo(() => agents().find((a) => isForeman(a)))
-  const coworkers = () => agents().filter((a) => !isForeman(a))
+  const coworkers = () => sortSidebarAgents(agents().filter((a) => !isForeman(a)))
   const agentsOfProject = (projectId: string | null) =>
     coworkers().filter((a) => (a.projectId ?? null) === projectId && agentMatchesQuery(a))
 
@@ -1664,12 +1668,18 @@ export const App: Component = () => {
       // Respostas de agentes em canais mudam o resumo do canal na barra lateral.
       void loadChannels()
       void loadApprovals()
-      if (activeThread() && data.threadId === activeThread()?.id) {
+      const ownerId = selectedAgentId()
+      if (activeThread() && data.threadId === activeThread()?.id && ownerId) {
         setMessages((prev) => mergeMessage(prev, data.message))
         void loadThreadApprovals(data.threadId)
         setStreamingText('')
         setIsStreaming(false)
         scrollToBottom()
+        void window.orchbot
+          .updateAgent({ id: ownerId, unread: false })
+          .then(() => void loadAgents())
+      } else {
+        void loadAgents()
       }
     })
 
@@ -3253,30 +3263,84 @@ export const App: Component = () => {
     setSelectedAgentId(agentId)
     setActiveSection('agents')
     if (agentStates()[agentId] === 'responded') setAgentState(agentId, 'idle')
+    if (agents().find((agent) => agent.id === agentId)?.unread) {
+      setAgents((prev) =>
+        prev.map((agent) => (agent.id === agentId ? { ...agent, unread: false } : agent)),
+      )
+      void window.orchbot.updateAgent({ id: agentId, unread: false })
+    }
+  }
+
+  const menuAgent = () => agents().find((agent) => agent.id === agentMenu()?.agentId)
+
+  const withMenuAgent = (action: (agent: Agent) => void | Promise<void>) => {
+    const agent = menuAgent()
+    if (agent) void action(agent)
+  }
+
+  const pinAgent = async (agent: Agent) => {
+    await window.orchbot.updateAgent({ id: agent.id, pinned: !agent.pinned })
+    setAgentMenu(null)
+    await loadAgents()
+  }
+
+  const toggleUnread = async (agent: Agent) => {
+    await window.orchbot.updateAgent({ id: agent.id, unread: !agent.unread })
+    setAgentMenu(null)
+    await loadAgents()
+  }
+
+  const duplicateAgent = async (agent: Agent) => {
+    try {
+      const copy = await window.orchbot.duplicateAgent(agent.id)
+      setAgentMenu(null)
+      await loadAgents()
+      openAgent(copy.id)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const agentRow = (agent: Agent) => {
     const state = () => agentStates()[agent.id] ?? 'idle'
     const waiting = () => pendingApprovalIds().has(agent.id)
+    const unread = () => isAgentUnread({ unread: agent.unread, pendingApproval: waiting() })
+    const preview = () =>
+      waiting() ? 'Precisa da sua aprovação' : agentPreview(agent.lastMessage, agent.description)
     const statusLabel = () =>
       waiting() && state() === 'idle' ? 'Aguardando você' : AGENT_STATE_LABEL[state()]
+    const awaiting = () => state() !== 'idle' || waiting()
     return (
       <button
         type="button"
         class="agent-item"
         classList={{
           active: selectedAgentId() === agent.id && activeSection() === 'agents',
+          unread: unread(),
+          pinned: Boolean(agent.pinned),
         }}
         onClick={() => openAgent(agent.id)}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setAgentMenu({ agentId: agent.id, x: event.clientX, y: event.clientY })
+        }}
         title={agent.name}
-        aria-label={`${agent.name}${statusLabel() ? `: ${statusLabel()}` : ''}`}
+        aria-label={`${agent.name}${
+          awaiting() ? `: ${statusLabel()}` : unread() ? ': não lido' : ''
+        }`}
       >
         <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
           {agent.avatar || initialsOf(agent.name)}
-          <Show when={state() !== 'idle' || waiting()}>
+          <Show when={awaiting() || unread()}>
             <span
-              class={`agent-status-dot ${waiting() && state() === 'idle' ? 'paused' : state()}`}
-              title={statusLabel()}
+              class={`agent-status-dot ${
+                waiting() && state() === 'idle'
+                  ? 'paused'
+                  : unread() && state() === 'idle'
+                    ? 'unread'
+                    : state()
+              }`}
+              title={awaiting() ? statusLabel() : 'Não lido'}
             />
           </Show>
         </span>
@@ -3284,17 +3348,20 @@ export const App: Component = () => {
           <div class="agent-item-top">
             <span class="agent-item-name">{agent.name}</span>
             <Show
-              when={state() !== 'idle' || waiting()}
-              fallback={<span class="agent-item-date">{formatShortDate(agent.updatedAt)}</span>}
+              when={awaiting()}
+              fallback={
+                <span class="agent-item-date">
+                  {agent.pinned ? '📌 ' : ''}
+                  {formatShortDate(agent.updatedAt)}
+                </span>
+              }
             >
               <span class={`agent-state ${waiting() && state() === 'idle' ? 'paused' : state()}`}>
                 {statusLabel()}
               </span>
             </Show>
           </div>
-          <div class="agent-item-workspace">
-            {waiting() ? 'Precisa da sua aprovação' : agent.description || 'Pronto para ajudar'}
-          </div>
+          <div class="agent-item-workspace">{preview()}</div>
         </span>
       </button>
     )
@@ -3338,6 +3405,49 @@ export const App: Component = () => {
         customTheme={settings().customTheme}
         effectiveTheme={effectiveTheme() === 'light' ? 'light' : 'dark'}
       />
+      <Show when={agentMenu() && menuAgent()}>
+        <button
+          type="button"
+          class="menu-backdrop"
+          tabIndex={-1}
+          aria-label="Fechar menu do agente"
+          onClick={() => setAgentMenu(null)}
+        />
+        <div
+          class="dropdown-menu agent-context-menu"
+          role="menu"
+          style={{
+            top: `${agentMenu()?.y ?? 0}px`,
+            left: `${agentMenu()?.x ?? 0}px`,
+          }}
+        >
+          <button
+            type="button"
+            class="dropdown-item"
+            role="menuitem"
+            onClick={() => withMenuAgent(pinAgent)}
+          >
+            {menuAgent()?.pinned ? 'Desafixar' : 'Fixar'}
+          </button>
+          <button
+            type="button"
+            class="dropdown-item"
+            role="menuitem"
+            onClick={() => withMenuAgent(toggleUnread)}
+          >
+            {menuAgent()?.unread ? 'Marcar como lido' : 'Marcar como não lido'}
+          </button>
+          <button
+            type="button"
+            class="dropdown-item"
+            role="menuitem"
+            disabled={isForeman(menuAgent())}
+            onClick={() => withMenuAgent(duplicateAgent)}
+          >
+            Duplicar
+          </button>
+        </div>
+      </Show>
       <nav class="icon-rail" aria-label="Navegação principal">
         <button
           type="button"
