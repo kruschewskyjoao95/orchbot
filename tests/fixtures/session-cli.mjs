@@ -4,6 +4,10 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs
 import path from 'node:path'
 
 const args = process.argv.slice(2)
+if (args[0] === '--version') {
+  process.stdout.write(process.env.ORCHBOT_TEST_CLI_VERSION || 'codex-cli 0.166.0')
+  process.exit(0)
+}
 const provider = args[0] === 'exec' ? 'codex' : 'claude'
 const modelFlag = provider === 'codex' ? '-m' : '--model'
 const mode = args[args.indexOf(modelFlag) + 1] || 'normal'

@@ -46,7 +46,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     if (options.providerConfig?.effort) args.push('--effort', options.providerConfig.effort)
     // Instruções em arquivo e prompt por stdin: o argv tem limite de 128 KB por argumento (E2BIG).
     let instructionsDir: string | undefined
-    if (options.instructions) {
+    if (options.instructions && !options.providerConfig?.docker) {
       try {
         instructionsDir = fs.mkdtempSync(path.join(tmpdir(), 'orchbot-claude-'))
         const file = path.join(instructionsDir, 'instructions.md')
@@ -77,7 +77,13 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     for (const dir of options.extraDirs ?? []) args.push('--add-dir', dir)
     const servers = options.providerConfig?.mcpServers
-    if (servers?.length) args.push(...claudeMcp(servers).args)
+    if (servers) args.push(...claudeMcp(servers).args)
+    if (options.providerConfig?.docker && !options.permission)
+      args.push('--dangerously-skip-permissions')
+    const effectivePrompt =
+      options.providerConfig?.docker && options.instructions
+        ? `[Instruções do Sistema: ${options.instructions}]\n\n${prompt}`
+        : prompt
     if (options.permission) {
       // O CLI pergunta ao host por stdin/stdout; manual ignora o modo padrão da conta (ex.: auto).
       args.push(
@@ -88,8 +94,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         '--permission-mode',
         'manual',
       )
-      return runSessionCli('claude', args, options, done, prompt)
+      return runSessionCli('claude', args, options, done, effectivePrompt)
     }
-    return runSessionCli('claude', args, options, done, undefined, prompt)
+    return runSessionCli('claude', args, options, done, undefined, effectivePrompt)
   }
 }

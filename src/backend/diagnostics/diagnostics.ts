@@ -1,4 +1,5 @@
 import os from 'node:os'
+import { agentAuthority } from '../../shared/authority'
 import { redactSecrets } from '../browser/sanitizer'
 import type { OrchbotDatabase } from '../storage/db'
 
@@ -56,6 +57,19 @@ export function buildDiagnostics(db: OrchbotDatabase, extra: DiagnosticsExtra) {
   const failed = rows(
     "SELECT status, error, completed_at AS at FROM task_queue WHERE status IN ('failed','interrupted') ORDER BY completed_at DESC LIMIT 15",
   ) as { status: string; error: string | null; at: string | null }[]
+  const mcpPolicies = (agentId: string) => {
+    try {
+      return {
+        valid: true,
+        servers: db.getAgentMcpToolPolicies(agentId).map(({ policy }) => ({
+          allowCount: policy.allow?.length ?? null,
+          denyCount: policy.deny.length,
+        })),
+      }
+    } catch {
+      return { valid: false, servers: [] }
+    }
+  }
 
   return {
     generatedAt: new Date().toISOString(),
@@ -99,6 +113,8 @@ export function buildDiagnostics(db: OrchbotDatabase, extra: DiagnosticsExtra) {
       role: a.role ?? 'worker',
       hasAccount: Boolean(a.accountId),
       paused: db.listPausedAgentIds().includes(a.id),
+      authority: agentAuthority(a),
+      mcpPolicies: mcpPolicies(a.id),
     })),
     connections: db.listConnections().map((c) => ({
       provider: c.providerId,
