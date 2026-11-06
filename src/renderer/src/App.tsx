@@ -51,6 +51,7 @@ import {
   MAX_AGENT_INSTRUCTIONS,
   effectiveCapabilities,
 } from '../../shared/types'
+import { ApprovalCard } from './ApprovalCard'
 import { BrainPanel } from './Brain'
 import { Channels } from './Channels'
 import {
@@ -65,13 +66,8 @@ import { MiniBrowser } from './MiniBrowser'
 import { ModelPicker } from './ModelPicker'
 import { ProviderAccounts } from './ProviderAccounts'
 import { SkillsPlugins } from './SkillsPlugins'
-import {
-  AGENT_STATE_LABEL,
-  type AgentState,
-  needsYou,
-  stateFromQueue,
-  stateFromTask,
-} from './agent-state'
+import { AGENT_STATE_LABEL, type AgentState, stateFromQueue, stateFromTask } from './agent-state'
+import { mergeChatItems, waitingOnYou } from './approval-card'
 import { focusDialog } from './dialog-focus'
 import {
   COWORKER_TEMPLATES,
@@ -381,6 +377,7 @@ export const App: Component = () => {
   const [boardEffort, setBoardEffort] = createSignal<ProviderEffort | ''>('')
   const [boardDispatchMsg, setBoardDispatchMsg] = createSignal<string | null>(null)
   const [approvals, setApprovals] = createSignal<Approval[]>([])
+  const [threadApprovals, setThreadApprovals] = createSignal<Approval[]>([])
   const [teamDraft, setTeamDraft] = createSignal<AgentDraft[] | null>(null)
   const [teamDrafting, setTeamDrafting] = createSignal(false)
   const [showAutomationModal, setShowAutomationModal] = createSignal(false)
@@ -1308,10 +1305,12 @@ export const App: Component = () => {
             threads[0]
           setActiveThread(selected)
           await recoverThread(selected.id)
+          await loadThreadApprovals(selected.id)
           setTimeout(scrollToBottom, 50)
         } else {
           setActiveThread(null)
           setMessages([])
+          setThreadApprovals([])
         }
       }
     } catch (err) {
@@ -1672,6 +1671,7 @@ export const App: Component = () => {
       const ownerId = selectedAgentId()
       if (activeThread() && data.threadId === activeThread()?.id && ownerId) {
         setMessages((prev) => mergeMessage(prev, data.message))
+        void loadThreadApprovals(data.threadId)
         setStreamingText('')
         setIsStreaming(false)
         scrollToBottom()
@@ -2756,40 +2756,20 @@ export const App: Component = () => {
     if (window.orchbot) setApprovals(await window.orchbot.listApprovals())
   }
 
-  const decideApproval = async (approval: Approval, approved: boolean) => {
+  const loadThreadApprovals = async (threadId: string) => {
+    if (window.orchbot) setThreadApprovals(await window.orchbot.listThreadApprovals(threadId))
+  }
+
+  const decideApproval = async (approval: Approval, approved: boolean, note?: string) => {
     try {
-      await window.orchbot.decideApproval(approval.id, approved)
+      await window.orchbot.decideApproval(approval.id, approved, note)
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : String(err))
     }
     await loadApprovals()
+    const threadId = activeThread()?.id
+    if (threadId) await loadThreadApprovals(threadId)
   }
-
-  const ApprovalCard = (p: { approval: Approval }) => (
-    <div class="approval-card">
-      <strong>
-        ✋ {agents().find((a) => a.id === p.approval.agentId)?.name ?? 'Um agente'} pede sua
-        aprovação
-      </strong>
-      <div class="approval-card-text">{p.approval.text}</div>
-      <div class="approval-card-actions">
-        <button
-          type="button"
-          class="btn-primary"
-          onClick={() => void decideApproval(p.approval, true)}
-        >
-          Aprovar
-        </button>
-        <button
-          type="button"
-          class="btn-secondary"
-          onClick={() => void decideApproval(p.approval, false)}
-        >
-          Recusar
-        </button>
-      </div>
-    </div>
-  )
 
   const handleDraftTeam = async () => {
     const prompt = boardForemanPrompt().trim()
@@ -2989,6 +2969,7 @@ export const App: Component = () => {
     setIsStreaming(false)
     if (window.orchbot) {
       await recoverThread(thread.id)
+      await loadThreadApprovals(thread.id)
       setTimeout(scrollToBottom, 50)
     }
   }
@@ -3270,8 +3251,13 @@ export const App: Component = () => {
     handleSendMessage(e)
   }
 
+  const pendingApprovalIds = () => new Set(approvals().map((item) => item.agentId))
+
   /** Agentes que precisam de atenção do usuário. */
-  const needsYouAgents = () => coworkers().filter((a) => needsYou(agentStates()[a.id] ?? 'idle'))
+  const needsYouAgents = () =>
+    coworkers().filter((a) =>
+      waitingOnYou(agentStates()[a.id] ?? 'idle', pendingApprovalIds().has(a.id)),
+    )
 
   const openAgent = (agentId: string) => {
     setSelectedAgentId(agentId)
@@ -3317,9 +3303,13 @@ export const App: Component = () => {
 
   const agentRow = (agent: Agent) => {
     const state = () => agentStates()[agent.id] ?? 'idle'
-    const pending = () => approvals().some((item) => item.agentId === agent.id)
-    const unread = () => isAgentUnread({ unread: agent.unread, pendingApproval: pending() })
-    const preview = () => agentPreview(agent.lastMessage, agent.description)
+    const waiting = () => pendingApprovalIds().has(agent.id)
+    const unread = () => isAgentUnread({ unread: agent.unread, pendingApproval: waiting() })
+    const preview = () =>
+      waiting() ? 'Precisa da sua aprovação' : agentPreview(agent.lastMessage, agent.description)
+    const statusLabel = () =>
+      waiting() && state() === 'idle' ? 'Aguardando você' : AGENT_STATE_LABEL[state()]
+    const awaiting = () => state() !== 'idle' || waiting()
     return (
       <button
         type="button"
@@ -3335,14 +3325,22 @@ export const App: Component = () => {
           setAgentMenu({ agentId: agent.id, x: event.clientX, y: event.clientY })
         }}
         title={agent.name}
-        aria-label={`${agent.name}${unread() ? ': não lido' : state() !== 'idle' ? `: ${AGENT_STATE_LABEL[state()]}` : ''}`}
+        aria-label={`${agent.name}${
+          awaiting() ? `: ${statusLabel()}` : unread() ? ': não lido' : ''
+        }`}
       >
         <span class="agent-avatar" style={{ background: agentColor(agent.name) }}>
           {agent.avatar || initialsOf(agent.name)}
-          <Show when={state() !== 'idle' || unread()}>
+          <Show when={awaiting() || unread()}>
             <span
-              class={`agent-status-dot ${unread() && state() === 'idle' ? 'unread' : state()}`}
-              title={unread() ? 'Não lido' : AGENT_STATE_LABEL[state()]}
+              class={`agent-status-dot ${
+                waiting() && state() === 'idle'
+                  ? 'paused'
+                  : unread() && state() === 'idle'
+                    ? 'unread'
+                    : state()
+              }`}
+              title={awaiting() ? statusLabel() : 'Não lido'}
             />
           </Show>
         </span>
@@ -3350,7 +3348,7 @@ export const App: Component = () => {
           <div class="agent-item-top">
             <span class="agent-item-name">{agent.name}</span>
             <Show
-              when={state() !== 'idle'}
+              when={awaiting()}
               fallback={
                 <span class="agent-item-date">
                   {agent.pinned ? '📌 ' : ''}
@@ -3358,7 +3356,9 @@ export const App: Component = () => {
                 </span>
               }
             >
-              <span class={`agent-state ${state()}`}>{AGENT_STATE_LABEL[state()]}</span>
+              <span class={`agent-state ${waiting() && state() === 'idle' ? 'paused' : state()}`}>
+                {statusLabel()}
+              </span>
             </Show>
           </div>
           <div class="agent-item-workspace">{preview()}</div>
@@ -5107,7 +5107,17 @@ export const App: Component = () => {
               {/* Aprovações pendentes */}
               <Show when={approvals().length > 0}>
                 <div class="board-approvals-wrap">
-                  <For each={approvals()}>{(a) => <ApprovalCard approval={a} />}</For>
+                  <For each={approvals()}>
+                    {(a) => (
+                      <ApprovalCard
+                        approval={a}
+                        agents={agents()}
+                        onDecide={(approval, approved, note) =>
+                          void decideApproval(approval, approved, note)
+                        }
+                      />
+                    )}
+                  </For>
                 </div>
               </Show>
 
@@ -6163,8 +6173,20 @@ export const App: Component = () => {
                         </div>
                       }
                     >
-                      <For each={visibleMessages()}>
-                        {(msg) => {
+                      <For each={mergeChatItems(visibleMessages(), threadApprovals())}>
+                        {(item) => {
+                          if (item.type === 'approval') {
+                            return (
+                              <ApprovalCard
+                                approval={item.approval}
+                                agents={agents()}
+                                onDecide={(approval, approved, note) =>
+                                  void decideApproval(approval, approved, note)
+                                }
+                              />
+                            )
+                          }
+                          const msg = item.message
                           const structured = () => parseStructuredMessage(msg.text)
                           return (
                             <div class={`message-row ${msg.role}`}>
@@ -6292,10 +6314,6 @@ export const App: Component = () => {
                       </button>
                     </div>
                   </Show>
-
-                  <For each={approvals().filter((a) => a.threadId === activeThread()?.id)}>
-                    {(a) => <ApprovalCard approval={a} />}
-                  </For>
 
                   {/* Barra de input do chat — Simples e Intuitiva */}
                   <div class="chat-input-container">

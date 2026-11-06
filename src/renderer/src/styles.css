@@ -5558,6 +5558,29 @@ dialog.modal-overlay,
 .approval-card-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.approval-card.settled {
+  border-color: var(--border, #2a2a2a);
+  opacity: 0.85;
+}
+.approval-card-receipt {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.approval-card-free {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.approval-card-free input {
+  flex: 1;
+  min-width: 140px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2a2a);
+  background: var(--bg-input, transparent);
+  color: inherit;
 }
 .board-team-member {
   display: flex;

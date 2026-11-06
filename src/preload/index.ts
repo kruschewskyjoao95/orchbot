@@ -283,6 +283,8 @@ const api: OrchbotApi = {
   indexWorkspace: (agentId: string) => ipcRenderer.invoke('orchbot:index-workspace', agentId),
   draftTeam: (prompt: string) => ipcRenderer.invoke('orchbot:draft-team', prompt),
   listApprovals: () => ipcRenderer.invoke('orchbot:list-approvals'),
+  listThreadApprovals: (threadId: string) =>
+    ipcRenderer.invoke('orchbot:list-thread-approvals', threadId),
   decideApproval: (id: string, approved: boolean, note?: string) =>
     ipcRenderer.invoke('orchbot:decide-approval', { id, approved, note }),
   listWebhookTriggers: (agentId: string) =>

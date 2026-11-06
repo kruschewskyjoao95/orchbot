@@ -471,6 +471,8 @@ export class OrchbotDatabase {
         task_id TEXT,
         text TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
+        kind TEXT NOT NULL DEFAULT 'permission',
+        options_json TEXT,
         note TEXT,
         created_at TEXT NOT NULL,
         decided_at TEXT
@@ -695,6 +697,8 @@ export class OrchbotDatabase {
       'ALTER TABLE agent_mcp ADD COLUMN tool_policy TEXT',
       'ALTER TABLE threads ADD COLUMN project_id TEXT',
       'ALTER TABLE approvals ADD COLUMN payload_json TEXT',
+      "ALTER TABLE approvals ADD COLUMN kind TEXT DEFAULT 'permission'",
+      'ALTER TABLE approvals ADD COLUMN options_json TEXT',
       "ALTER TABLE agent_memories ADD COLUMN kind TEXT DEFAULT 'preference'",
       'ALTER TABLE agent_memories ADD COLUMN touched_at TEXT',
     ]) {
@@ -3426,17 +3430,29 @@ export class OrchbotDatabase {
     threadId: string
     taskId?: string
     text: string
+    kind?: Approval['kind']
+    options?: string[]
     payloadJson?: string
   }): Approval {
+    const options = input.options
+      ?.map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 6)
     const approval: Approval = {
       id: randomUUID(),
-      ...input,
+      agentId: input.agentId,
+      threadId: input.threadId,
+      taskId: input.taskId,
+      text: input.text,
       status: 'pending',
+      kind: input.kind === 'question' ? 'question' : 'permission',
+      options: options && options.length > 0 ? options : undefined,
+      payloadJson: input.payloadJson,
       createdAt: new Date().toISOString(),
     }
     this.db
       .prepare(
-        'INSERT INTO approvals (id, agent_id, thread_id, task_id, text, status, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO approvals (id, agent_id, thread_id, task_id, text, status, kind, options_json, created_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         approval.id,
@@ -3445,6 +3461,8 @@ export class OrchbotDatabase {
         approval.taskId ?? null,
         approval.text,
         approval.status,
+        approval.kind,
+        approval.options ? JSON.stringify(approval.options) : null,
         approval.createdAt,
         approval.payloadJson ?? null,
       )
@@ -3452,15 +3470,34 @@ export class OrchbotDatabase {
   }
 
   private static readonly APPROVAL_COLS =
-    'id, agent_id AS agentId, thread_id AS threadId, task_id AS taskId, text, status, note, payload_json AS payloadJson, created_at AS createdAt, decided_at AS decidedAt'
+    'id, agent_id AS agentId, thread_id AS threadId, task_id AS taskId, text, status, kind, options_json AS optionsJson, note, payload_json AS payloadJson, created_at AS createdAt, decided_at AS decidedAt'
 
-  private static normalizeApproval(row: Approval): Approval {
+  private static parseApprovalOptions(raw: unknown): string[] | undefined {
+    if (typeof raw !== 'string' || !raw) return undefined
+    try {
+      const value = JSON.parse(raw) as unknown
+      if (!Array.isArray(value)) return undefined
+      const options = value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 6)
+      return options.length > 0 ? options : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private static normalizeApproval(row: Approval & { optionsJson?: string | null }): Approval {
+    const { optionsJson, ...rest } = row
     return {
-      ...row,
-      taskId: row.taskId ?? undefined,
-      note: row.note ?? undefined,
-      payloadJson: row.payloadJson ?? undefined,
-      decidedAt: row.decidedAt ?? undefined,
+      ...rest,
+      taskId: rest.taskId ?? undefined,
+      kind: rest.kind === 'question' ? 'question' : 'permission',
+      options: OrchbotDatabase.parseApprovalOptions(optionsJson),
+      note: rest.note ?? undefined,
+      payloadJson: rest.payloadJson ?? undefined,
+      decidedAt: rest.decidedAt ?? undefined,
     }
   }
 
@@ -3477,6 +3514,15 @@ export class OrchbotDatabase {
         `SELECT ${OrchbotDatabase.APPROVAL_COLS} FROM approvals WHERE status = 'pending' ORDER BY created_at`,
       )
       .all() as unknown as Approval[]
+    return rows.map(OrchbotDatabase.normalizeApproval)
+  }
+
+  public listThreadApprovals(threadId: string): Approval[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ${OrchbotDatabase.APPROVAL_COLS} FROM approvals WHERE thread_id = ? ORDER BY created_at`,
+      )
+      .all(threadId) as unknown as Approval[]
     return rows.map(OrchbotDatabase.normalizeApproval)
   }
 
