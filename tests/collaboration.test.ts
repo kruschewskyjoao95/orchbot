@@ -198,6 +198,35 @@ describe('colaboração entre agentes e canais', () => {
     expect(channelWorkspace({ workspacePath: '  ' }, a.workspacePath)).toBe(a.workspacePath)
   })
 
+  it('canal antigo vazio herda a pasta do dono e aceita o pacote depois', () => {
+    const ch = svc.createChannel({
+      title: 'Legado',
+      goal: 'Manter o que já existe',
+      ownerAgentId: a.id,
+      memberIds: [b.id],
+    })
+    expect(ch.instructions).toBe('')
+    expect(ch.workspacePath).toBe('')
+    expect(db.backfillChannelWorkspace()).toBe(1)
+    expect(db.getChannel(ch.id)?.workspacePath).toBe(a.workspacePath)
+
+    const shared = path.join(ws, 'depois')
+    fs.mkdirSync(shared)
+    const updated = svc.setContext(ch.id, {
+      instructions: 'Agora usamos o checklist.',
+      workspacePath: shared,
+    })
+    expect(updated).toMatchObject({
+      instructions: 'Agora usamos o checklist.',
+      workspacePath: shared,
+    })
+    const ownerThread = updated.members.find((m) => m.agentId === a.id)?.threadId
+    if (!ownerThread) throw new Error('thread do dono ausente')
+    const briefing = svc.contextSections(a, ownerThread).join('\n')
+    expect(briefing).toContain('Agora usamos o checklist.')
+    expect(briefing).toContain(shared)
+  })
+
   it('rascunho de agente cai no modo local sem provedor disponível', async () => {
     const registry = {
       getAdapter: () => ({ checkAvailability: async () => ({ available: false }) }),

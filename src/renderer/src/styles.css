@@ -4655,6 +4655,13 @@ dialog.modal-overlay,
   gap: 8px;
   justify-content: flex-end;
 }
+.channel-context-form {
+  padding: 12px 20px 16px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .channel-log {
   flex: 1;
   overflow-y: auto;

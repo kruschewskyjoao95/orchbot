@@ -26,6 +26,9 @@ export function Channels(props: {
   const [workspacePath, setWorkspacePath] = createSignal('')
   const [owner, setOwner] = createSignal('')
   const [members, setMembers] = createSignal<string[]>([])
+  const [editingContext, setEditingContext] = createSignal(false)
+  const [editInstructions, setEditInstructions] = createSignal('')
+  const [editWorkspace, setEditWorkspace] = createSignal('')
   let logEl: HTMLDivElement | undefined
 
   const selected = () => channels().find((c) => c.id === selectedId()) ?? null
@@ -69,6 +72,7 @@ export function Channels(props: {
   })
   createEffect(() => {
     selectedId()
+    setEditingContext(false)
     void refresh()
   })
   // Abrir "Novo grupo" já sugere o primeiro agente como dono.
@@ -131,11 +135,16 @@ export function Channels(props: {
                   <Show when={channel().goal}>
                     <p class="channel-goal">{channel().goal}</p>
                   </Show>
-                  <Show when={channel().instructions}>
-                    <p class="channel-goal">{channel().instructions}</p>
-                  </Show>
-                  <Show when={channel().workspacePath}>
-                    <p class="channel-owner">Pasta: {channel().workspacePath}</p>
+                  <Show
+                    when={channel().instructions || channel().workspacePath}
+                    fallback={<p class="channel-owner">Sem pacote de contexto.</p>}
+                  >
+                    <Show when={channel().instructions}>
+                      <p class="channel-goal">{channel().instructions}</p>
+                    </Show>
+                    <Show when={channel().workspacePath}>
+                      <p class="channel-owner">Pasta: {channel().workspacePath}</p>
+                    </Show>
                   </Show>
                   <p class="channel-owner">
                     Dono da tarefa: <strong>{label(agentOf(channel().ownerAgentId))}</strong> ·
@@ -192,6 +201,17 @@ export function Channels(props: {
                     <button
                       type="button"
                       class="btn-outline"
+                      onClick={() => {
+                        setEditInstructions(channel().instructions)
+                        setEditWorkspace(channel().workspacePath)
+                        setEditingContext(true)
+                      }}
+                    >
+                      Contexto
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-outline"
                       onClick={() =>
                         guard(() => window.orchbot.controlChannel(channel().id, 'archive'))
                       }
@@ -212,6 +232,53 @@ export function Channels(props: {
                   </Show>
                 </div>
               </header>
+              <Show when={editingContext()}>
+                <form
+                  class="channel-context-form"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    const id = channel().id
+                    void guard(async () => {
+                      await window.orchbot.updateChannelContext(id, {
+                        instructions: editInstructions(),
+                        workspacePath: editWorkspace(),
+                      })
+                      setEditingContext(false)
+                    })
+                  }}
+                >
+                  <div class="form-group">
+                    <label for="ch-edit-instructions">Instruções do grupo</label>
+                    <textarea
+                      id="ch-edit-instructions"
+                      value={editInstructions()}
+                      onInput={(e) => setEditInstructions(e.currentTarget.value)}
+                      rows={3}
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="ch-edit-workspace">Pasta compartilhada</label>
+                    <input
+                      id="ch-edit-workspace"
+                      type="text"
+                      value={editWorkspace()}
+                      onInput={(e) => setEditWorkspace(e.currentTarget.value)}
+                    />
+                  </div>
+                  <div class="channel-controls">
+                    <button type="submit" class="btn-primary">
+                      Salvar contexto
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-outline"
+                      onClick={() => setEditingContext(false)}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              </Show>
 
               <div class="channel-log" ref={logEl}>
                 <For each={messages()}>

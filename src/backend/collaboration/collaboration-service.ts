@@ -376,6 +376,16 @@ export class CollaborationService {
     return this.mustGet(channelId)
   }
 
+  public setContext(
+    channelId: string,
+    pack: { instructions?: string; workspacePath?: string },
+  ): Channel {
+    this.mustGet(channelId)
+    this.db.updateChannel(channelId, pack)
+    this.hooks.changed?.()
+    return this.mustGet(channelId)
+  }
+
   private mustGet(id: string): Channel {
     const channel = this.db.getChannel(id)
     if (!channel) throw new Error('Canal não encontrado.')

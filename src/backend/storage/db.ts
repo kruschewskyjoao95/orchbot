@@ -704,13 +704,18 @@ export class OrchbotDatabase {
       "ALTER TABLE agent_memories ADD COLUMN kind TEXT DEFAULT 'preference'",
       'ALTER TABLE agent_memories ADD COLUMN touched_at TEXT',
       "ALTER TABLE channels ADD COLUMN instructions TEXT NOT NULL DEFAULT ''",
-      "ALTER TABLE channels ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         this.db.exec(alter)
       } catch {
         // Ignora se a coluna já existir no banco
       }
+    }
+    try {
+      this.db.exec("ALTER TABLE channels ADD COLUMN workspace_path TEXT NOT NULL DEFAULT ''")
+      this.backfillChannelWorkspace()
+    } catch {
+      // Coluna já existia: canais novos deixam a pasta vazia de propósito.
     }
 
     try {
@@ -2928,7 +2933,13 @@ export class OrchbotDatabase {
 
   public updateChannel(
     id: string,
-    patch: { status?: ChannelStatus; archived?: boolean; ownerAgentId?: string },
+    patch: {
+      status?: ChannelStatus
+      archived?: boolean
+      ownerAgentId?: string
+      instructions?: string
+      workspacePath?: string
+    },
   ): void {
     const now = new Date().toISOString()
     if (patch.status)
@@ -2943,6 +2954,29 @@ export class OrchbotDatabase {
       this.db
         .prepare('UPDATE channels SET owner_agent_id = ?, updated_at = ? WHERE id = ?')
         .run(patch.ownerAgentId, now, id)
+    if (patch.instructions !== undefined)
+      this.db
+        .prepare('UPDATE channels SET instructions = ?, updated_at = ? WHERE id = ?')
+        .run(patch.instructions.trim().slice(0, MAX_AGENT_INSTRUCTIONS), now, id)
+    if (patch.workspacePath !== undefined)
+      this.db
+        .prepare('UPDATE channels SET workspace_path = ?, updated_at = ? WHERE id = ?')
+        .run(patch.workspacePath.trim(), now, id)
+  }
+
+  /** Canais que existiam antes da coluna herdam a pasta do dono. */
+  public backfillChannelWorkspace(): number {
+    const result = this.db
+      .prepare(
+        `UPDATE channels
+         SET workspace_path = COALESCE(
+           (SELECT workspace_path FROM agents WHERE id = channels.owner_agent_id),
+           ''
+         )
+         WHERE TRIM(workspace_path) = '' AND owner_agent_id IS NOT NULL`,
+      )
+      .run()
+    return Number(result.changes)
   }
 
   /** Reatribuir para quem ainda não participa: entra no canal com uma conversa própria. */

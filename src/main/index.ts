@@ -1241,6 +1241,11 @@ ${out.slice(-800)}`,
       }
     },
   )
+  ipcMain.handle(
+    'orchbot:channel-context',
+    (_e, p: { channelId: string; instructions?: string; workspacePath?: string }) =>
+      queue.collab.setContext(String(p?.channelId), p),
+  )
   ipcMain.handle('orchbot:memory-list', (_e, agentId: string) => database.listMemories(agentId))
   ipcMain.handle('orchbot:memory-add', (_e, p: { agentId: string; text: string }) => {
     if (!p?.agentId || typeof p.text !== 'string' || !p.text.trim())

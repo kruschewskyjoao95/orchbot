@@ -800,6 +800,10 @@ export interface OrchbotApi {
     action: 'stop' | 'resume' | 'archive' | 'restore' | 'reassign',
     agentId?: string,
   ) => Promise<Channel>
+  updateChannelContext: (
+    channelId: string,
+    pack: { instructions?: string; workspacePath?: string },
+  ) => Promise<Channel>
   listMemories: (agentId: string) => Promise<AgentMemory[]>
   addMemory: (agentId: string, text: string) => Promise<AgentMemory>
   deleteMemory: (agentId: string, id: string) => Promise<boolean>
