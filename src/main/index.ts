@@ -1134,6 +1134,9 @@ ${out.slice(-800)}`,
     draftTeam(database, providerRegistry, String(prompt ?? '')),
   )
   ipcMain.handle('orchbot:list-approvals', () => database.listPendingApprovals())
+  ipcMain.handle('orchbot:list-thread-approvals', (_e, threadId: string) =>
+    database.listThreadApprovals(String(threadId ?? '')),
+  )
   ipcMain.handle(
     'orchbot:decide-approval',
     (_e, p: { id: string; approved: boolean; note?: string }) =>

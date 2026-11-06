@@ -64,8 +64,10 @@ describe('aprovações', () => {
 
     const [approval] = db.listPendingApprovals()
     expect(approval.text).toBe('Enviar e-mail para ana@ex.com')
+    expect(approval.kind).toBe('permission')
     const visible = db.listMessages(thread).find((m) => m.role === 'assistant')
     expect(visible?.text).toBe('Rascunho pronto.')
+    expect(db.listMessages(thread).filter((m) => m.role === 'system')).toHaveLength(0)
     expect(prompts).toHaveLength(1)
 
     queue.decideApproval(approval.id, true)
@@ -73,8 +75,44 @@ describe('aprovações', () => {
     expect(prompts[1]).toContain('APROVADO')
     expect(prompts[1]).toContain('Pode executar exatamente o que foi aprovado')
     expect(db.listPendingApprovals()).toHaveLength(0)
+    expect(db.listThreadApprovals(thread)).toHaveLength(1)
+    expect(db.listThreadApprovals(thread)[0].status).toBe('approved')
+    expect(
+      db.listMessages(thread).some((m) => m.role === 'user' && m.text.includes('Aprovado')),
+    ).toBe(false)
     // Duplo clique não dispara outro turno.
     expect(() => queue.decideApproval(approval.id, false)).toThrow('já foi respondido')
+  })
+
+  it('para numa pergunta, guarda as opções e continua com a escolha', async () => {
+    queue.close()
+    const fake = scriptedRegistry((p) =>
+      p.startsWith('[RESPOSTA DA PERGUNTA]')
+        ? 'Vou usar staging.'
+        : 'Preciso de uma escolha.\n[[PERGUNTAR]]\nQual ambiente?\n- produção\n- staging\n[[/PERGUNTAR]]',
+    )
+    prompts = fake.prompts
+    queue = new QueueManager(db, fake.registry)
+
+    const agent = mk(db, 'Ana')
+    const thread = firstThread(db, agent)
+    queue.enqueue(agent.id, thread, 'publica')
+    await vi.waitFor(() => expect(db.listPendingApprovals()).toHaveLength(1))
+
+    const [question] = db.listPendingApprovals()
+    expect(question.kind).toBe('question')
+    expect(question.text).toBe('Qual ambiente?')
+    expect(question.options).toEqual(['produção', 'staging'])
+    expect(db.listMessages(thread).find((m) => m.role === 'assistant')?.text).toBe(
+      'Preciso de uma escolha.',
+    )
+
+    queue.decideApproval(question.id, true, 'staging')
+    await vi.waitFor(() => expect(prompts).toHaveLength(2))
+    expect(prompts[1]).toContain('[RESPOSTA DA PERGUNTA]')
+    expect(prompts[1]).toContain('staging')
+    expect(prompts[1]).not.toContain('APROVADO')
+    expect(db.listPendingApprovals()).toHaveLength(0)
   })
 })
 
