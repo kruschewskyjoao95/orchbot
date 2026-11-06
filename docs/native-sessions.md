@@ -18,3 +18,6 @@ Quando começa uma sessão sem vínculo, o Orchbot fornece um resumo do históri
 Se o CLI não encontrar mais a sessão, retornar outro ID ou falhar depois de produzir uma resposta parcial, o turno aparece como falha. O Orchbot não repete automaticamente o pedido em uma sessão nova: o CLI pode já ter executado ações. Você pode usar **Reiniciar sessão CLI** na barra do robô ou abrir outra conversa. O botão remove apenas o vínculo no Orchbot, preserva as mensagens e exige que o turno ativo já tenha encerrado. A próxima mensagem começa uma sessão nova com resumo local. Repetir uma tarefa deve considerar o que o CLI já executou.
 
 Esta etapa cobre apenas os adapters nativos de Codex e Claude. ACP e APIs OpenAI-compatible mantêm o comportamento documentado em suas integrações.
+
+No runtime Docker, cada execução é descartável: não se salva/retoma sessão nativa.
+A continuidade vem do histórico local do Orchbot. [Runtime e limites](control-and-runtime.md).

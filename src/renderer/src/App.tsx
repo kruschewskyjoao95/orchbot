@@ -87,6 +87,7 @@ import {
   safeSnippetHtml,
   templateInstructions,
 } from './orchestration-ui'
+import { mergeMessage, snapshotIsCurrent } from './recovery'
 
 export const DEFAULT_PROVIDER_MODELS: Record<SupportedProvider, string> = {
   codex: 'gpt-6.1-sol',
@@ -381,8 +382,14 @@ export const App: Component = () => {
   const [teamDraft, setTeamDraft] = createSignal<AgentDraft[] | null>(null)
   const [teamDrafting, setTeamDrafting] = createSignal(false)
   const [showAutomationModal, setShowAutomationModal] = createSignal(false)
+  const [controlStatus, setControlStatus] = createSignal('')
   const [webhooks, setWebhooks] = createSignal<WebhookTrigger[]>([])
   const [webhookBase, setWebhookBase] = createSignal<string | null>(null)
+  const [githubRepository, setGithubRepository] = createSignal('')
+  const webhookUrl = (w: WebhookTrigger) =>
+    w.githubRepository
+      ? `${(webhookBase() ?? '').replace(/\/t$/, '')}/github/${w.id}`
+      : `${webhookBase() ?? ''}/${w.id}/${w.token}`
   const [webhookTitle, setWebhookTitle] = createSignal('')
   const [webhookInstruction, setWebhookInstruction] = createSignal('')
   const [allAgentQueues, setAllAgentQueues] = createSignal<Record<string, TaskQueueItem[]>>({})
@@ -548,6 +555,7 @@ export const App: Component = () => {
       if (window.orchbot) setSettings(await window.orchbot.updateSettings(patch))
     } catch (err) {
       console.error('Erro ao salvar configurações:', err)
+      if (window.orchbot) setSettings(await window.orchbot.getSettings())
     }
   }
 
@@ -1012,6 +1020,29 @@ export const App: Component = () => {
     }
   }
 
+  const handleExportTeam = async (projectId: string | null) => {
+    try {
+      await window.orchbot.exportTeamPackage(projectId)
+    } catch (err: unknown) {
+      alert(`Erro ao exportar equipe: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleImportTeam = async () => {
+    setShowNewMenu(false)
+    try {
+      const project = await window.orchbot.importTeamPackage()
+      if (!project) return
+      await loadProjects()
+      await loadAgents()
+      await loadChannels()
+      setBoardFilterProject(project.id)
+      setActiveSection('board')
+    } catch (err: unknown) {
+      alert(`Erro ao importar equipe: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const projectOf = (agent: Agent) =>
     agent.projectId ? (projects().find((proj) => proj.id === agent.projectId) ?? null) : null
 
@@ -1225,10 +1256,39 @@ export const App: Component = () => {
     }
   }
 
+  let snapshotThreadId: string | undefined
+  let appliedSnapshotRevision = 0
+  let observedRevision = 0
+  let recoveryRequest = 0
+  const recoverThread = async (threadId: string) => {
+    if (!window.orchbot) return
+    const requestedAgent = selectedAgentId()
+    const request = ++recoveryRequest
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const snapshot = await window.orchbot.getThreadSnapshot(threadId)
+      if (
+        request !== recoveryRequest ||
+        activeThread()?.id !== threadId ||
+        selectedAgentId() !== requestedAgent
+      )
+        return
+      if (!snapshotIsCurrent(snapshot, activeThread()?.id, observedRevision)) continue
+      snapshotThreadId = threadId
+      appliedSnapshotRevision = snapshot.revision
+      setMessages(snapshot.messages)
+      setStreamingText(snapshot.streamingText)
+      setIsStreaming(snapshot.tasks.some((task) => task.status === 'running'))
+      const owner = selectedAgentId()
+      if (owner) await loadQueue(owner)
+      return
+    }
+  }
+
   const loadThreadAndMessages = async (agentId: string, preferredThreadId?: string) => {
     try {
       if (window.orchbot) {
         const threads = await window.orchbot.getThreads(agentId)
+        if (selectedAgentId() !== agentId) return
         setAgentThreads(threads)
         if (threads.length > 0) {
           const activeId = activeThread()?.id
@@ -1237,8 +1297,7 @@ export const App: Component = () => {
             (activeId && threads.find((t) => t.id === activeId)) ||
             threads[0]
           setActiveThread(selected)
-          const msgs = await window.orchbot.getMessages(selected.id)
-          setMessages(msgs)
+          await recoverThread(selected.id)
           setTimeout(scrollToBottom, 50)
         } else {
           setActiveThread(null)
@@ -1505,6 +1564,13 @@ export const App: Component = () => {
 
     // Registra listeners de streaming IPC
     const unsubChunk = window.orchbot.onStreamChunk((data) => {
+      if (
+        data.threadId === snapshotThreadId &&
+        data.revision !== undefined &&
+        data.revision <= appliedSnapshotRevision
+      )
+        return
+      observedRevision = Math.max(observedRevision, data.revision ?? 0)
       if (activeThread() && data.threadId === activeThread()?.id) {
         setStreamingText(data.fullText)
         setIsStreaming(true)
@@ -1514,11 +1580,18 @@ export const App: Component = () => {
 
     void loadApprovals()
     const unsubFinished = window.orchbot.onTurnFinished((data) => {
+      if (
+        data.threadId === snapshotThreadId &&
+        data.revision !== undefined &&
+        data.revision <= appliedSnapshotRevision
+      )
+        return
+      observedRevision = Math.max(observedRevision, data.revision ?? 0)
       // Respostas de agentes em canais mudam o resumo do canal na barra lateral.
       void loadChannels()
       void loadApprovals()
       if (activeThread() && data.threadId === activeThread()?.id) {
-        setMessages((prev) => [...prev, data.message])
+        setMessages((prev) => mergeMessage(prev, data.message))
         setStreamingText('')
         setIsStreaming(false)
         scrollToBottom()
@@ -1526,6 +1599,13 @@ export const App: Component = () => {
     })
 
     const unsubError = window.orchbot.onTurnError((data) => {
+      if (
+        data.threadId === snapshotThreadId &&
+        data.revision !== undefined &&
+        data.revision <= appliedSnapshotRevision
+      )
+        return
+      observedRevision = Math.max(observedRevision, data.revision ?? 0)
       if (activeThread() && data.threadId === activeThread()?.id) {
         setChatError(data.error)
         setIsStreaming(false)
@@ -1534,6 +1614,13 @@ export const App: Component = () => {
     })
 
     const unsubTask = window.orchbot.onTaskStatusChanged((data) => {
+      if (
+        data.task.threadId === snapshotThreadId &&
+        data.revision !== undefined &&
+        data.revision <= appliedSnapshotRevision
+      )
+        return
+      observedRevision = Math.max(observedRevision, data.revision ?? 0)
       const owner = data.task.agentId
       const isOpen = owner === selectedAgentId() && activeSection() === 'agents'
       setAgentState(owner, stateFromTask(agentStates()[owner] ?? 'idle', data.task, isOpen))
@@ -1549,6 +1636,8 @@ export const App: Component = () => {
       })
       const agentId = selectedAgentId()
       if (agentId && data.task.agentId === agentId) {
+        if (!agentThreads().some((thread) => thread.id === data.task.threadId))
+          void loadThreadAndMessages(agentId, activeThread()?.id)
         setTasks((prev) => {
           const index = prev.findIndex((t) => t.id === data.task.id)
           if (index >= 0) {
@@ -1590,7 +1679,18 @@ export const App: Component = () => {
       }
     })
 
+    const recoverOnFocus = () => {
+      if (document.visibilityState === 'hidden') return
+      const agentId = selectedAgentId()
+      if (agentId) void loadThreadAndMessages(agentId, activeThread()?.id)
+      void loadApprovals()
+      void loadChannels()
+    }
+    window.addEventListener('focus', recoverOnFocus)
+    document.addEventListener('visibilitychange', recoverOnFocus)
     onCleanup(() => {
+      window.removeEventListener('focus', recoverOnFocus)
+      document.removeEventListener('visibilitychange', recoverOnFocus)
       unsubChunk()
       unsubFinished()
       unsubError()
@@ -2263,7 +2363,7 @@ export const App: Component = () => {
     try {
       if (window.orchbot) {
         const res = await window.orchbot.sendMessage(thread.id, text, filePaths)
-        setMessages((prev) => [...prev, res.userMessage])
+        setMessages((prev) => mergeMessage(prev, res.userMessage))
         setTasks((prev) => [res.task, ...prev])
         scrollToBottom()
       }
@@ -2663,7 +2763,13 @@ export const App: Component = () => {
     const agent = currentAgent()
     if (!agent) return
     try {
-      await window.orchbot.createWebhookTrigger(agent.id, webhookTitle(), webhookInstruction())
+      await window.orchbot.createWebhookTrigger(
+        agent.id,
+        webhookTitle(),
+        webhookInstruction(),
+        githubRepository().trim() || undefined,
+      )
+      setGithubRepository('')
       setWebhookTitle('')
       setWebhookInstruction('')
       setWebhooks(await window.orchbot.listWebhookTriggers(agent.id))
@@ -2781,8 +2887,7 @@ export const App: Component = () => {
     setStreamingText('')
     setIsStreaming(false)
     if (window.orchbot) {
-      const msgs = await window.orchbot.getMessages(thread.id)
-      setMessages(msgs)
+      await recoverThread(thread.id)
       setTimeout(scrollToBottom, 50)
     }
   }
@@ -3315,6 +3420,14 @@ export const App: Component = () => {
                   >
                     Nova pasta de projeto
                   </button>
+                  <button
+                    type="button"
+                    class="dropdown-item"
+                    role="menuitem"
+                    onClick={handleImportTeam}
+                  >
+                    Importar equipe…
+                  </button>
                 </div>
               </Show>
             </div>
@@ -3380,6 +3493,15 @@ export const App: Component = () => {
                       <button
                         type="button"
                         class="btn-icon-gear small"
+                        onClick={() => handleExportTeam(project.id)}
+                        title={`Exportar equipe de ${project.name}`}
+                        aria-label={`Exportar equipe de ${project.name}`}
+                      >
+                        ↗
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-icon-gear small"
                         onClick={() => setBrainProject(project)}
                         title={`Cérebro de ${project.name}`}
                         aria-label={`Cérebro de ${project.name}`}
@@ -3409,6 +3531,15 @@ export const App: Component = () => {
                   </span>
                   <span class="project-group-name">Sua Equipe</span>
                   <span class="nav-badge">{agentsOfProject(null).length}</span>
+                  <button
+                    type="button"
+                    class="btn-icon-gear small"
+                    onClick={() => handleExportTeam(null)}
+                    title="Exportar Sua Equipe"
+                    aria-label="Exportar Sua Equipe"
+                  >
+                    ↗
+                  </button>
                 </div>
                 <For each={agentsOfProject(null)}>{(agent) => agentRow(agent)}</For>
               </div>
@@ -4236,6 +4367,65 @@ export const App: Component = () => {
                           </div>
                           <div class="settings-row">
                             <div>
+                              <div class="settings-row-title">Controle externo por CLI/MCP</div>
+                              <div class="settings-row-desc">
+                                Quem tem o arquivo de conexão pode enviar tarefas e ler resultados
+                                com as permissões dos agentes.
+                              </div>
+                              <button
+                                type="button"
+                                class="btn-secondary"
+                                onClick={async () => {
+                                  try {
+                                    const status = await window.orchbot.getControlStatus()
+                                    setControlStatus(
+                                      `${status.enabled ? 'Ativo' : 'Desligado'} · ${status.file}${status.error ? ` · ${status.error}` : ''}`,
+                                    )
+                                  } catch (error) {
+                                    setControlStatus(String(error))
+                                  }
+                                }}
+                              >
+                                Ver conexão
+                              </button>
+                              <output>{controlStatus()}</output>
+                            </div>
+                            <Switch
+                              pressed={settings().controlEnabled === true}
+                              label="Controle externo por CLI/MCP"
+                              onChange={async () => {
+                                try {
+                                  await updateSettings({
+                                    controlEnabled: !settings().controlEnabled,
+                                  })
+                                  const status = await window.orchbot.getControlStatus()
+                                  setControlStatus(
+                                    `${status.enabled ? 'Ativo' : 'Desligado'} · ${status.file}`,
+                                  )
+                                } catch (error) {
+                                  setControlStatus(String(error))
+                                }
+                              }}
+                            />
+                          </div>
+                          <div class="settings-row">
+                            <div>
+                              <div class="settings-row-title">Routing automático nos canais</div>
+                              <div class="settings-row-desc">
+                                Usa dois termos exclusivos do nome/descrição de um colega. Se houver
+                                dúvida, mantém o dono da tarefa. Uma @menção exata tem prioridade.
+                              </div>
+                            </div>
+                            <Switch
+                              pressed={settings().autoRouteChannels === true}
+                              label="Routing automático nos canais"
+                              onChange={() =>
+                                updateSettings({ autoRouteChannels: !settings().autoRouteChannels })
+                              }
+                            />
+                          </div>
+                          <div class="settings-row">
+                            <div>
                               <div class="settings-row-title">
                                 Restaurar o último espaço de trabalho ao iniciar
                               </div>
@@ -4989,7 +5179,12 @@ export const App: Component = () => {
           />
         </Show>
         <Show when={activeSection() === 'skills'}>
-          <SkillsPlugins agents={coworkers()} />
+          <SkillsPlugins
+            agents={coworkers()}
+            onAgentUpdated={(agent) =>
+              setAgents((prev) => prev.map((a) => (a.id === agent.id ? agent : a)))
+            }
+          />
         </Show>
         <Show when={activeSection() === 'agents'}>
           <Show
@@ -7818,9 +8013,10 @@ export const App: Component = () => {
                     }
                   >
                     <span class="settings-section-desc">
-                      Um POST nesta URL faz o agente trabalhar, com o conteúdo recebido. A URL é a
-                      senha: não compartilhe. Ela só responde neste computador; para receber da
-                      internet, use um túnel (ex.: cloudflared).
+                      Webhooks genéricos usam uma URL secreta: não compartilhe. GitHub usa
+                      assinatura e um segredo separado. O servidor só responde neste computador;
+                      para receber da internet, configure um túnel HTTPS que preserve corpo e
+                      cabeçalhos.
                     </span>
                   </Show>
                   <For each={webhooks()}>
@@ -7828,16 +8024,25 @@ export const App: Component = () => {
                       <div class="webhook-row">
                         <div>
                           <strong>{w.title}</strong>
-                          <code>{`${webhookBase() ?? ''}/${w.id}/${w.token}`}</code>
+                          <code>{webhookUrl(w)}</code>
+                          <Show when={w.githubRepository}>
+                            <p>
+                              GitHub: {w.githubRepository} · issues/PRs → fila Docker → resultado
+                              nesta conversa.
+                            </p>
+                            <button
+                              type="button"
+                              class="btn-secondary"
+                              onClick={() => void navigator.clipboard.writeText(w.token)}
+                            >
+                              Copiar segredo de assinatura
+                            </button>
+                          </Show>
                         </div>
                         <button
                           type="button"
                           class="btn-secondary"
-                          onClick={() =>
-                            void navigator.clipboard.writeText(
-                              `${webhookBase() ?? ''}/${w.id}/${w.token}`,
-                            )
-                          }
+                          onClick={() => void navigator.clipboard.writeText(webhookUrl(w))}
                         >
                           Copiar
                         </button>
@@ -7852,6 +8057,17 @@ export const App: Component = () => {
                     )}
                   </For>
                   <form class="webhook-form" onSubmit={handleCreateWebhook}>
+                    <label for="github-repository">GitHub (opcional): repositório permitido</label>
+                    <input
+                      id="github-repository"
+                      placeholder="dono/repo · vazio para webhook genérico"
+                      value={githubRepository()}
+                      onInput={(event) => setGithubRepository(event.currentTarget.value)}
+                    />
+                    <p>
+                      GitHub requer colega Docker. Configure a URL e o segredo em uma GitHub App com
+                      leitura de Issues e Pull requests. Só recebe eventos; não publica no GitHub.
+                    </p>
                     <input
                       placeholder="Nome (ex.: Novo pedido na loja)"
                       value={webhookTitle()}
