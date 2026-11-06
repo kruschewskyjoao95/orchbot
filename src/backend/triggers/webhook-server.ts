@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import type { WebhookTrigger } from '../../shared/types'
 import type { QueueManager } from '../queue/queue-manager'
 import type { OrchbotDatabase } from '../storage/db'
+import { githubPayload, githubSignature } from './github'
 
 export const WEBHOOK_PORT = Number(process.env.ORCHBOT_WEBHOOK_PORT) || 47821
 const MAX_BODY = 1024 * 1024
@@ -54,10 +55,40 @@ export function startWebhookServer(
     }
     const notFound = () => send(404, { error: 'Not found' })
     const match = /^\/t\/([\w-]{1,64})\/([\w-]{1,128})$/.exec((req.url ?? '').split('?')[0] ?? '')
-    const trigger = match && req.method === 'POST' ? db.getWebhookTrigger(match[1] ?? '') : null
-    if (!trigger || !timingSafeEqual(digest(trigger.token), digest(match?.[2] ?? ''))) {
+    const github = /^\/github\/([\w-]{1,64})$/.exec((req.url ?? '').split('?')[0] ?? '')
+    const trigger =
+      (github || match) && req.method === 'POST'
+        ? db.getWebhookTrigger((github || match)?.[1] ?? '')
+        : null
+    if (
+      !trigger ||
+      (github
+        ? !trigger.githubRepository
+        : trigger.githubRepository ||
+          !timingSafeEqual(digest(trigger.token), digest(match?.[2] ?? '')))
+    ) {
       req.resume()
       return notFound()
+    }
+    const deliveryHeader = github ? 'x-github-delivery' : 'idempotency-key'
+    const deliveryId = req.headers[deliveryHeader]
+    if (
+      github &&
+      (typeof deliveryId !== 'string' ||
+        req.headersDistinct['x-hub-signature-256']?.length !== 1 ||
+        req.headersDistinct['x-github-event']?.length !== 1)
+    ) {
+      req.resume()
+      return send(400, { error: 'GitHub headers required' })
+    }
+    if (
+      deliveryId !== undefined &&
+      (typeof deliveryId !== 'string' ||
+        !/^[\x21-\x7e]{1,200}$/.test(deliveryId) ||
+        req.headersDistinct[deliveryHeader]?.length !== 1)
+    ) {
+      req.resume()
+      return send(400, { error: 'Idempotency-Key must be 1-200 visible ASCII characters' })
     }
     const chunks: Buffer[] = []
     let size = 0
@@ -70,18 +101,27 @@ export function startWebhookServer(
     })
     req.on('end', () => {
       if (size > MAX_BODY || res.writableEnded) return
+      const raw = Buffer.concat(chunks)
+      let body = raw.toString('utf8')
+      if (github) {
+        if (!githubSignature(trigger.token, raw, req.headers['x-hub-signature-256']))
+          return send(401, { error: 'Invalid GitHub signature' })
+        try {
+          const payload = githubPayload(trigger, req.headers, raw)
+          if (payload === null) return send(202, { ignored: true })
+          body = payload
+        } catch {
+          return send(400, { error: 'Invalid or unauthorized GitHub payload' })
+        }
+        if (db.getAgent(trigger.agentId)?.runtime !== 'docker')
+          return send(409, { error: 'GitHub target requires Docker' })
+      }
       try {
-        const prompt = triggerPrompt(
-          trigger,
-          String(req.headers['content-type'] ?? ''),
-          Buffer.concat(chunks).toString('utf8'),
-        )
-        const thread = db.createThread(trigger.agentId, `Gatilho: ${trigger.title}`)
-        db.addMessage(thread.id, 'user', prompt)
-        queue.enqueue(trigger.agentId, thread.id, prompt)
-        send(202, { threadId: thread.id })
+        const prompt = triggerPrompt(trigger, String(req.headers['content-type'] ?? ''), body)
+        const threadId = queue.enqueueWebhook(trigger.id, deliveryId, prompt)
+        send(202, { threadId })
       } catch {
-        notFound()
+        send(503, { error: 'Webhook could not be accepted; retry later' })
       }
     })
   })

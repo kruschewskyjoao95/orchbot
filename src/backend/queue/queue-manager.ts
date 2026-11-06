@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import { assertMcpToolSupport } from '../../shared/authority'
 import {
   type Agent,
   type Approval,
   type Message,
   type StreamChunkEvent,
   type TaskQueueItem,
+  type ThreadSnapshot,
   effectiveCapabilities,
 } from '../../shared/types'
 import {
@@ -53,6 +55,7 @@ import {
 import { buildThreadContext, capRulesContent } from '../context/context-builder'
 import { buildGitContext } from '../context/git-context'
 import { claudeMcp, codexMcp } from '../mcp/mcp-launch'
+import { requireMcpPolicyVersion } from '../mcp/policy-version'
 import {
   needsMemoryFollowUp,
   parseMemoryDirectives,
@@ -74,6 +77,7 @@ import { resolveAccountRuntime } from '../providers/account-config'
 import type { ProviderRegistry } from '../providers/registry'
 import type { McpLaunchServer, TurnUsage } from '../providers/types'
 import { loadWorkspaceRules } from '../rag/workspace-rules'
+import { BROWSER_MCP, validateDockerAgent } from '../runtime/docker'
 import {
   needsSkillFollowUp,
   parseSkillDirectives,
@@ -155,12 +159,15 @@ export class QueueManager {
   /** Qual contador essa continuação sobe. Memória não gasta navegador nem computador. */
   private followUpBump = new Map<string, { browser: boolean; computer: boolean; memory: boolean }>()
   private consentCheck: (() => boolean) | null = null
+  public revision = 0
+  private streams = new Map<string, { taskId: string; text: string }>()
 
   constructor(
     private db: OrchbotDatabase,
     private registry: ProviderRegistry,
     private events?: Partial<QueueManagerEvents>,
   ) {
+    this.setEvents(events ?? {})
     this.memory = new MemoryService(db)
     this.brain = new BrainService(db)
     this.collab = new CollaborationService(db, {
@@ -179,8 +186,54 @@ export class QueueManager {
     for (const ctrl of this.compactAbort.values()) ctrl.abort()
   }
 
-  public setEvents(events: QueueManagerEvents): void {
-    this.events = events
+  public setEvents(events: Partial<QueueManagerEvents>): void {
+    this.events = {
+      ...events,
+      onStreamChunk: (event) => {
+        this.revision++
+        const task = this.db
+          .listOpenTasksForThread(event.threadId)
+          .find((t) => t.status === 'running')
+        if (task) this.streams.set(event.threadId, { taskId: task.id, text: event.fullText })
+        events.onStreamChunk?.(event)
+      },
+      onTaskStatusChanged: (event) => {
+        this.revision++
+        if (event.task.status === 'running') this.streams.delete(event.task.threadId)
+        if (
+          event.task.status !== 'running' &&
+          event.task.status !== 'pending' &&
+          this.streams.get(event.task.threadId)?.taskId === event.task.id
+        )
+          this.streams.delete(event.task.threadId)
+        events.onTaskStatusChanged?.(event)
+      },
+      onTurnFinished: (event) => {
+        this.revision++
+        events.onTurnFinished?.(event)
+      },
+      onTurnError: (event) => {
+        this.revision++
+        events.onTurnError?.(event)
+      },
+    }
+  }
+
+  public threadSnapshot(threadId: string): ThreadSnapshot {
+    const thread = this.db.getThread(threadId)
+    if (!thread) throw new Error('Conversa não encontrada.')
+    const tasks = this.db.listTasks(thread.agentId).filter((t) => t.threadId === threadId)
+    const stream = this.streams.get(threadId)
+    return {
+      revision: this.revision,
+      threadId,
+      messages: this.db.listMessages(threadId),
+      tasks,
+      streamingText:
+        stream && tasks.some((t) => t.id === stream.taskId && t.status === 'running')
+          ? stream.text
+          : '',
+    }
   }
 
   public setBrowserExecutor(executor: BrowserExecutor): void {
@@ -259,14 +312,33 @@ export class QueueManager {
       computerRounds,
       memoryRounds,
     )
+    this.scheduleTask(task)
+    return task
+  }
+
+  public enqueueControl(
+    requestId: string,
+    agentId: string,
+    prompt: string,
+  ): { threadId: string; taskId: string } {
+    const { threadId, taskId, task } = this.db.acceptControl(requestId, agentId, prompt)
+    if (task) this.scheduleTask(task)
+    return { threadId, taskId }
+  }
+
+  public enqueueWebhook(triggerId: string, deliveryId: string | undefined, prompt: string): string {
+    const { threadId, task } = this.db.acceptWebhook(triggerId, deliveryId, prompt)
+    if (task) this.scheduleTask(task)
+    return threadId
+  }
+
+  private scheduleTask(task: TaskQueueItem): void {
     this.events?.onTaskStatusChanged?.({ task })
 
     // Dispara processamento
     setTimeout(() => {
-      this.processNextForAgent(agentId)
+      this.processNextForAgent(task.agentId)
     }, 0)
-
-    return task
   }
 
   /** Interrompe o turno ativo de uma thread (orientar enquanto trabalha). */
@@ -402,6 +474,8 @@ export class QueueManager {
     agentId: string,
     directives: ComputerDirective[],
   ): Promise<string[]> {
+    if (this.db.getAgent(agentId)?.runtime === 'docker')
+      return ['Computador do host bloqueado para agentes Docker.']
     if (!this.computerExecutor) return []
     const results: string[] = []
     for (const directive of directives) {
@@ -630,6 +704,7 @@ export class QueueManager {
 
   /** Cadeia: o resultado final de um pedido segue para o próximo robô configurado. */
   private handOff(task: TaskQueueItem, agent: Agent, result: string): void {
+    if (agent.runtime === 'docker') return
     const next = agent.handoffAgentId ? this.db.getAgent(agent.handoffAgentId) : null
     if (!next || next.id === agent.id || !result.trim() || this.isClosed || !this.db.isOpen())
       return
@@ -669,29 +744,20 @@ export class QueueManager {
   }
 
   /** MCP escolhido para o agente (Claude e Codex). Segredos vão pelo ambiente, nunca no argv. */
-  private mcpConfigFor(
-    agent: Agent,
-    task: TaskQueueItem,
-  ): { mcpServers?: McpLaunchServer[]; extraEnv?: Record<string, string> } {
+  private mcpConfigFor(agent: Agent): {
+    mcpServers?: McpLaunchServer[]
+    extraEnv?: Record<string, string>
+  } {
+    for (const { policy } of this.db.getAgentMcpToolPolicies(agent.id))
+      assertMcpToolSupport(agent.provider, policy)
     // Antigravity também fala ACP (AntigravityAdapter estende AcpAdapter).
     const viaAcp = agent.provider === 'acp' || agent.provider === 'antigravity'
     if (agent.provider !== 'claude' && agent.provider !== 'codex' && !viaAcp) return {}
-    try {
-      const mcpServers = this.db.getAgentMcpLaunch(agent.id)
-      if (mcpServers.length === 0) return {}
-      // ACP leva os servidores no próprio protocolo (session/new): sem variáveis de ambiente.
-      if (viaAcp) return { mcpServers }
-      const { env } = (agent.provider === 'claude' ? claudeMcp : codexMcp)(mcpServers)
-      return { mcpServers, extraEnv: env }
-    } catch (err) {
-      const notice = this.db.addMessage(
-        task.threadId,
-        'system',
-        `🔌 MCP desativado neste turno: ${err instanceof Error ? err.message : String(err)}`,
-      )
-      this.events?.onTurnFinished?.({ threadId: task.threadId, message: notice, task })
-      return {}
-    }
+    const mcpServers = this.db.getAgentMcpLaunch(agent.id)
+    // ACP leva os servidores no próprio protocolo (session/new): sem variáveis de ambiente.
+    if (viaAcp) return { mcpServers }
+    const { env } = (agent.provider === 'claude' ? claudeMcp : codexMcp)(mcpServers)
+    return { mcpServers, extraEnv: env }
   }
 
   /** Executa [[AGENT:*]] / [[CHANNEL:*]]; só `list` volta ao robô num novo turno. */
@@ -700,7 +766,7 @@ export class QueueManager {
     agent: Agent,
     directives: ReturnType<typeof parseCollabDirectives>,
   ): void {
-    if (directives.length === 0) return
+    if (directives.length === 0 || agent.runtime === 'docker') return
     const rounds = task.memoryRounds ?? 0
     const { lines, followUp } = this.collab.run(
       agent,
@@ -807,6 +873,8 @@ export class QueueManager {
     agentId: string,
     directives: BrowserDirective[],
   ): Promise<string[]> {
+    if (this.db.getAgent(agentId)?.runtime === 'docker')
+      return ['Browser do host bloqueado para agentes Docker. Use o MCP interno.']
     if (!this.browserExecutor) return []
     const results: string[] = []
     for (const directive of directives) {
@@ -967,9 +1035,30 @@ export class QueueManager {
     }
 
     let runtime: ReturnType<typeof resolveAccountRuntime>
+    let mcp: ReturnType<QueueManager['mcpConfigFor']>
     try {
+      if (nextTask.requiredRuntime === 'docker' && agent.runtime !== 'docker')
+        throw new Error('Esta conversa exige Docker; execução no host bloqueada.')
       runtime = resolveAccountRuntime(this.db, agent.provider, agent.accountId)
+      mcp = this.mcpConfigFor(agent)
+      if (agent.runtime === 'docker') {
+        validateDockerAgent(agent, runtime.config)
+        runtime.config = { ...runtime.config, docker: { workspacePath: agent.workspacePath } }
+        // Pacotes stdio do host não existem na imagem; não há fallback para executá-los fora dela.
+        if (mcp.mcpServers?.some((server) => server.transport === 'stdio'))
+          throw new Error(
+            'No container, vincule apenas MCP HTTP; o Playwright interno é adicionado pelo Orchbot.',
+          )
+        if (mcp.mcpServers?.some((server) => server.name === BROWSER_MCP.name))
+          throw new Error('Nome MCP orchbot_browser reservado para o navegador do container.')
+        if (agent.browserAccess !== false) mcp.mcpServers = [...(mcp.mcpServers ?? []), BROWSER_MCP]
+      }
+      await requireMcpPolicyVersion(agent.provider, mcp.mcpServers ?? [], runtime.config)
     } catch (err) {
+      if (this.preTurnStopped(agentId, nextTask.id)) {
+        this.abandonPreTurn(agentId, nextTask.id)
+        return
+      }
       this.taskFallbackAttempts.delete(nextTask.id)
       const error = err instanceof Error ? err.message : 'Falha ao abrir a conta do provedor'
       this.isProcessingAgent.delete(agentId)
@@ -980,26 +1069,34 @@ export class QueueManager {
       setTimeout(() => this.processNextForAgent(agentId), 50)
       return
     }
+    if (this.preTurnStopped(agentId, nextTask.id)) {
+      this.abandonPreTurn(agentId, nextTask.id)
+      return
+    }
     const speaker = withForemanProject(agent, this.db.getThread(nextTask.threadId)?.projectId)
-    const { connection, account, config } = runtime
+    const { connection, account } = runtime
+    const config = { ...runtime.config, ...mcp }
     const apiKey = config.apiKey
     const adapter = this.registry.getAdapter(agent.provider)
 
     const sessionScope = createHash('sha256')
       .update(
         JSON.stringify([
+          agent.runtime ?? 'host',
           path.resolve(agent.workspacePath),
           connection?.cliPath ?? '',
           connection?.endpoint ?? '',
           apiKey ?? '',
           ...(!account.isDefault ? [account.id, config.cliProfile?.directory ?? ''] : []),
+          ...(mcp.mcpServers?.length ? [mcp.mcpServers] : []),
         ]),
       )
       .digest('hex')
     // Git e compactação em paralelo. O resumo só é gravado se o turno ainda for seguir depois das duas.
-    const gitPromise = this.db.getSettings().gitContext
-      ? buildGitContext(agent.workspacePath, agent.contextMode ?? 'padrao').catch(() => null)
-      : Promise.resolve(null)
+    const gitPromise =
+      agent.runtime !== 'docker' && this.db.getSettings().gitContext
+        ? buildGitContext(agent.workspacePath, agent.contextMode ?? 'padrao').catch(() => null)
+        : Promise.resolve(null)
     const compactCtrl = new AbortController()
     this.compactAbort.set(agentId, compactCtrl)
     let markCompactReady = () => {}
@@ -1043,13 +1140,21 @@ export class QueueManager {
         task: nextTask,
       })
     }
-    const resumeSessionId = adapter.supportsSessionResume
-      ? this.db.getProviderSession(nextTask.threadId, agent.provider, sessionScope)
-      : undefined
+    const resumeSessionId =
+      agent.runtime !== 'docker' && adapter.supportsSessionResume
+        ? this.db.getProviderSession(nextTask.threadId, agent.provider, sessionScope)
+        : undefined
 
     // 1. Diretrizes do Projeto (ORCHBOT.md / AGENTS.md)
-    const rules = loadWorkspaceRules(agent.workspacePath)
+    const rules =
+      agent.runtime === 'docker'
+        ? { exists: false, content: '', filename: '' }
+        : loadWorkspaceRules(agent.workspacePath)
     const contextSections: string[] = []
+    if (agent.runtime === 'docker')
+      contextSections.push(
+        'Leia ORCHBOT.md/AGENTS.md e consulte o estado Git dentro do container; o host não lê arquivos do workspace para montar este contexto.',
+      )
 
     if (rules.exists && rules.content) {
       contextSections.push(
@@ -1125,7 +1230,7 @@ export class QueueManager {
     }
 
     // 4b. Pasta compartilhada do projeto: todos leem e escrevem, sem copiar entre workspaces
-    const sharedDir = this.sharedDirFor(speaker.projectId)
+    const sharedDir = agent.runtime === 'docker' ? undefined : this.sharedDirFor(speaker.projectId)
     if (sharedDir) {
       contextSections.push(
         `[PASTA COMPARTILHADA DO PROJETO]\n${sharedDir}\nTodo colega deste projeto lê e escreve aqui. Para passar um arquivo a alguém, salve nesta pasta e diga o nome, sem mandar cópia.`,
@@ -1135,7 +1240,9 @@ export class QueueManager {
     // 5. Nível de Autonomia do Agente
     if (agent.autonomyLevel === 'cautious') {
       contextSections.push(
-        `[NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO]\nVocê está operando em Modo Cauteloso. Clique, preenchimento e fechar aba no navegador, e abrir app, clicar, digitar e teclas no computador, ficam parados: o Orchbot abre um card e só executa depois que a pessoa aprovar, mesmo que você não peça. Pode ler na hora (abrir página, inspecionar, screenshot, listar janelas). Para e-mail, publicar, pagar ou apagar fora desses comandos, use o bloco [[APROVAR]] e pare.${CAUTIOUS_TERMINAL[agent.provider] ?? ''}`,
+        agent.runtime === 'docker'
+          ? 'MODO CAUTELOSO NO CONTAINER: respeite as permissões nativas do CLI. No Codex, read-only afeta o terminal, não impede efeitos externos do MCP/browser. Para publicar, pagar, enviar ou apagar em serviços remotos, peça [[APROVAR]] e pare. O browser e computador do host são bloqueados.'
+          : `[NÍVEL DE AUTONOMIA: 🛡️ MODO CAUTELOSO]\nVocê está operando em Modo Cauteloso. Clique, preenchimento e fechar aba no navegador, e abrir app, clicar, digitar e teclas no computador, ficam parados: o Orchbot abre um card e só executa depois que a pessoa aprovar, mesmo que você não peça. Pode ler na hora (abrir página, inspecionar, screenshot, listar janelas). Para e-mail, publicar, pagar ou apagar fora desses comandos, use o bloco [[APROVAR]] e pare.${CAUTIOUS_TERMINAL[agent.provider] ?? ''}`,
       )
     } else {
       contextSections.push(
@@ -1170,7 +1277,7 @@ export class QueueManager {
     }
 
     // 6c. Uso do computador (padrão do computador + override do robô)
-    if (caps.computerUse) {
+    if (agent.runtime !== 'docker' && caps.computerUse) {
       contextSections.push(buildComputerInstructions(agent.name))
     }
 
@@ -1178,12 +1285,21 @@ export class QueueManager {
     const brainSection = this.brain.contextSection(speaker)
     if (brainSection) contextSections.push(brainSection)
     contextSections.push(...this.memory.contextSections(agentId))
-    contextSections.push(...this.collab.contextSections(agent, nextTask.threadId))
+    if (agent.runtime !== 'docker')
+      contextSections.push(...this.collab.contextSections(agent, nextTask.threadId))
+    else
+      contextSections.push(
+        'RUNTIME DOCKER: não delegue nem passe tarefas para agentes do host; trabalhe nesta pasta e devolva o resultado ao Orchbot.',
+      )
     if (this.skills) contextSections.push(this.skills.contextSection(agentId))
 
     // 7. Navegador embutido do robô
     if (agent.browserAccess !== false) {
-      contextSections.push(buildBrowserInstructions(agent.name))
+      contextSections.push(
+        agent.runtime === 'docker'
+          ? 'Use o MCP orchbot_browser para navegar dentro do container. O browser do desktop e o computador do host não estão disponíveis. A sessão do container é descartada ao terminar; salve artefatos na pasta de trabalho.'
+          : buildBrowserInstructions(agent.name),
+      )
     }
 
     const effectiveInstructions =
@@ -1212,7 +1328,6 @@ export class QueueManager {
         providerConfig: {
           ...config,
           effort: agent.effort ?? connection.effort,
-          ...this.mcpConfigFor(agent, nextTask),
         },
       },
       {
@@ -1236,7 +1351,12 @@ export class QueueManager {
         },
         onSessionId: (sessionId) => {
           nativeSessionId = sessionId
-          if (!this.isClosed && this.db.isOpen() && this.db.getThread(nextTask.threadId))
+          if (
+            agent.runtime !== 'docker' &&
+            !this.isClosed &&
+            this.db.isOpen() &&
+            this.db.getThread(nextTask.threadId)
+          )
             this.db.saveProviderSession(nextTask.threadId, agent.provider, sessionScope, sessionId)
         },
         onInterrupted: () => {
@@ -1296,7 +1416,7 @@ export class QueueManager {
             return
           }
           // Failover transparente de cota (429 Too Many Requests / Quota Exceeded)
-          if (isQuotaOrRateLimitError(error)) {
+          if (agent.runtime !== 'docker' && isQuotaOrRateLimitError(error)) {
             const tried = this.taskFallbackAttempts.get(nextTask.id) ?? new Set<string>()
             tried.add(account.id)
             this.taskFallbackAttempts.set(nextTask.id, tried)

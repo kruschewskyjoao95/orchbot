@@ -1,5 +1,6 @@
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import type {
+  McpToolPolicy,
   ProviderEffort,
   ProviderInfo,
   ProviderModelCatalog,
@@ -15,9 +16,11 @@ export interface McpLaunchServer {
   url?: string
   env: Record<string, string>
   bearerToken?: string
+  toolPolicy?: McpToolPolicy
 }
 
 export interface ProviderRuntimeConfig {
+  docker?: { workspacePath: string }
   /** MCP configurado para este agente (só Claude e Codex aplicam). */
   mcpServers?: McpLaunchServer[]
   /** Variáveis extras do processo filho (segredos de MCP; nunca vão no argv). */

@@ -86,6 +86,14 @@ export interface BrowserDriver {
   runScript(tabId: string, script: string): Promise<unknown>
   attachView?(tabId: string, bounds: BrowserBounds): void
   detachView?(tabId: string): void
+  openPageWindow?(tabId: string): void
+  showPageWindow?(tabId: string): void
+  dockPageWindow?(tabId: string): void
+  pageWindowState?(tabId: string): 'visible' | 'hidden' | 'none'
+  closePageWindows?(): void
+  setPageWindowListener?(
+    listener: (tabId: string, state: 'visible' | 'hidden' | 'docked') => void,
+  ): void
 }
 
 interface MockTabState {

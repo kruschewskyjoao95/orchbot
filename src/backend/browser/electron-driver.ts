@@ -1,4 +1,4 @@
-import { type BrowserWindow, WebContentsView, session } from 'electron'
+import { BrowserWindow, WebContentsView, app, session } from 'electron'
 import type { BrowserBounds, BrowserPageContent } from '../../shared/types'
 import {
   type BrowserDriver,
@@ -33,8 +33,11 @@ interface ElectronTabHolder {
 
 export class ElectronBrowserDriver implements BrowserDriver {
   private tabs = new Map<string, ElectronTabHolder>()
+  private pageWindows = new Map<string, BrowserWindow>()
+  private hostedOnWindow = new Set<string>()
   private getMainWindow: () => BrowserWindow | null
   private attachedTabId: string | null = null
+  private onPageWindowState?: (tabId: string, state: 'visible' | 'hidden' | 'docked') => void
 
   constructor(getMainWindow: () => BrowserWindow | null) {
     this.getMainWindow = getMainWindow
@@ -89,6 +92,14 @@ export class ElectronBrowserDriver implements BrowserDriver {
       title,
     })
 
+    view.webContents.on('page-title-updated', (_event, nextTitle) => {
+      const current = this.tabs.get(tabId)
+      if (!current) return
+      current.title = nextTitle
+      const win = this.pageWindows.get(tabId)
+      if (win && !win.isDestroyed()) win.setTitle(nextTitle || current.url)
+    })
+
     return { title, url }
   }
 
@@ -96,6 +107,7 @@ export class ElectronBrowserDriver implements BrowserDriver {
     const holder = this.tabs.get(tabId)
     if (!holder) return
 
+    this.destroyPageWindow(tabId)
     if (this.attachedTabId === tabId) {
       this.detachView(tabId)
     }
@@ -193,6 +205,8 @@ export class ElectronBrowserDriver implements BrowserDriver {
   }
 
   public attachView(tabId: string, bounds: BrowserBounds): void {
+    if (this.hostedOnWindow.has(tabId)) return
+
     const main = this.getMainWindow()
     if (!main) return
 
@@ -211,6 +225,11 @@ export class ElectronBrowserDriver implements BrowserDriver {
   }
 
   public detachView(tabId: string): void {
+    if (this.hostedOnWindow.has(tabId)) {
+      if (this.attachedTabId === tabId) this.attachedTabId = null
+      return
+    }
+
     const main = this.getMainWindow()
     if (!main) return
 
@@ -226,5 +245,126 @@ export class ElectronBrowserDriver implements BrowserDriver {
     if (this.attachedTabId === tabId) {
       this.attachedTabId = null
     }
+  }
+
+  public setPageWindowListener(
+    listener: (tabId: string, state: 'visible' | 'hidden' | 'docked') => void,
+  ): void {
+    this.onPageWindowState = listener
+  }
+
+  public pageWindowState(tabId: string): 'visible' | 'hidden' | 'none' {
+    if (!this.hostedOnWindow.has(tabId)) return 'none'
+    const win = this.pageWindows.get(tabId)
+    if (!win || win.isDestroyed()) return 'none'
+    return win.isVisible() ? 'visible' : 'hidden'
+  }
+
+  public openPageWindow(tabId: string): void {
+    const holder = this.tabs.get(tabId)
+    if (!holder) throw new Error('Aba não encontrada')
+    this.detachView(tabId)
+    const win = this.ensurePageWindow(tabId, holder.title || holder.url)
+    win.contentView.addChildView(holder.view)
+    this.hostedOnWindow.add(tabId)
+    this.fitPageWindow(win, holder.view)
+    win.show()
+    win.focus()
+    this.onPageWindowState?.(tabId, 'visible')
+  }
+
+  public showPageWindow(tabId: string): void {
+    if (!this.hostedOnWindow.has(tabId)) {
+      this.openPageWindow(tabId)
+      return
+    }
+    const win = this.pageWindows.get(tabId)
+    if (!win || win.isDestroyed()) {
+      this.hostedOnWindow.delete(tabId)
+      this.openPageWindow(tabId)
+      return
+    }
+    win.show()
+    win.focus()
+    this.onPageWindowState?.(tabId, 'visible')
+  }
+
+  public dockPageWindow(tabId: string): void {
+    const holder = this.tabs.get(tabId)
+    const win = this.pageWindows.get(tabId)
+    this.hostedOnWindow.delete(tabId)
+    if (holder && win && !win.isDestroyed()) {
+      try {
+        win.contentView.removeChildView(holder.view)
+      } catch {
+        // A view já não estava nessa janela.
+      }
+      win.hide()
+    }
+    this.onPageWindowState?.(tabId, 'docked')
+  }
+
+  private ensurePageWindow(tabId: string, title: string): BrowserWindow {
+    const existing = this.pageWindows.get(tabId)
+    if (existing && !existing.isDestroyed()) {
+      existing.setTitle(title)
+      return existing
+    }
+    const win = new BrowserWindow({
+      width: 960,
+      height: 700,
+      minWidth: 320,
+      minHeight: 240,
+      title,
+      autoHideMenuBar: true,
+      backgroundColor: '#111111',
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    win.on('resize', () => {
+      const holder = this.tabs.get(tabId)
+      if (holder) this.fitPageWindow(win, holder.view)
+    })
+    win.on('close', (event) => {
+      const main = this.getMainWindow()
+      const quitting = (app as unknown as { isQuitting?: boolean }).isQuitting
+      if (quitting || !main || main.isDestroyed()) return
+      // O X esconde a janela. A aba continua no mesmo perfil do agente.
+      event.preventDefault()
+      win.hide()
+      this.onPageWindowState?.(tabId, 'hidden')
+    })
+    this.pageWindows.set(tabId, win)
+    return win
+  }
+
+  private fitPageWindow(win: BrowserWindow, view: WebContentsView): void {
+    if (win.isDestroyed()) return
+    const [width, height] = win.getContentSize()
+    view.setBounds({ x: 0, y: 0, width, height })
+  }
+
+  public closePageWindows(): void {
+    for (const tabId of [...this.pageWindows.keys()]) this.destroyPageWindow(tabId)
+  }
+
+  private destroyPageWindow(tabId: string): void {
+    this.hostedOnWindow.delete(tabId)
+    const win = this.pageWindows.get(tabId)
+    this.pageWindows.delete(tabId)
+    if (!win || win.isDestroyed()) return
+    const holder = this.tabs.get(tabId)
+    if (holder) {
+      try {
+        win.contentView.removeChildView(holder.view)
+      } catch {
+        // A view já não estava nessa janela.
+      }
+    }
+    win.removeAllListeners('close')
+    win.destroy()
   }
 }

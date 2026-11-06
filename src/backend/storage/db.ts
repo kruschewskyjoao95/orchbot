@@ -1,7 +1,8 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { assertMcpToolSupport, hasMcpRestriction, parseMcpToolPolicy } from '../../shared/authority'
 import { isCustomProvider, validateCustomProviderInput } from '../../shared/custom-providers'
 import { tokensFromChars } from '../../shared/tokens'
 import { isProviderEffort } from '../../shared/types'
@@ -14,6 +15,7 @@ import {
 } from '../../shared/types'
 import type {
   Agent,
+  AgentMcpToolPolicy,
   AgentMemory,
   AgentReaction,
   Approval,
@@ -235,6 +237,18 @@ const BRAIN_PROPOSAL_COLUMNS = `id, project_id AS projectId, agent_id AS agentId
 export class OrchbotDatabase {
   private db: DatabaseSync
   private open = true
+
+  public transaction<T>(work: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const result = work()
+      this.db.exec('COMMIT')
+      return result
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
 
   constructor(
     private readonly dbPath: string,
@@ -469,6 +483,23 @@ export class OrchbotDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS control_requests (
+        request_id TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        accepted_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS webhook_receipts (
+        trigger_id TEXT NOT NULL REFERENCES webhook_triggers(id) ON DELETE CASCADE,
+        delivery_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        accepted_at INTEGER NOT NULL,
+        PRIMARY KEY (trigger_id, delivery_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_receipts_accepted ON webhook_receipts(accepted_at);
+
       CREATE TABLE IF NOT EXISTS agent_memories (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -638,6 +669,9 @@ export class OrchbotDatabase {
       'ALTER TABLE agents ADD COLUMN show_plan INTEGER',
       'ALTER TABLE agents ADD COLUMN steer_mode TEXT',
       'ALTER TABLE agents ADD COLUMN computer_use INTEGER',
+      "ALTER TABLE agents ADD COLUMN runtime TEXT NOT NULL DEFAULT 'host'",
+      'ALTER TABLE webhook_triggers ADD COLUMN github_repository TEXT',
+      'ALTER TABLE task_queue ADD COLUMN required_runtime TEXT',
       'ALTER TABLE agents ADD COLUMN account_id TEXT',
       'ALTER TABLE agents ADD COLUMN paused INTEGER DEFAULT 0',
       'ALTER TABLE messages ADD COLUMN input_tokens INTEGER',
@@ -654,6 +688,7 @@ export class OrchbotDatabase {
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN system_role TEXT',
+      'ALTER TABLE agent_mcp ADD COLUMN tool_policy TEXT',
       'ALTER TABLE threads ADD COLUMN project_id TEXT',
       'ALTER TABLE approvals ADD COLUMN payload_json TEXT',
       "ALTER TABLE approvals ADD COLUMN kind TEXT DEFAULT 'permission'",
@@ -1580,6 +1615,7 @@ export class OrchbotDatabase {
         model, 
         effort,
         instructions, 
+        runtime,
         workspace_path AS workspacePath, 
         avatar, 
         COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
@@ -1613,6 +1649,7 @@ export class OrchbotDatabase {
         model, 
         effort,
         instructions, 
+        runtime,
         workspace_path AS workspacePath, 
         avatar, 
         COALESCE(autonomy_level, 'autonomous') AS autonomyLevel,
@@ -1634,6 +1671,27 @@ export class OrchbotDatabase {
     return result ? normalizeAgent(result) : null
   }
 
+  public setAgentRuntime(id: string, runtime: unknown): Agent {
+    const agent = this.getAgent(id)
+    if (!agent || (runtime !== 'host' && runtime !== 'docker')) throw new Error('Runtime inválido.')
+    if (
+      runtime === 'docker' &&
+      (agent.systemRole ||
+        agent.role === 'orchestrator' ||
+        !['codex', 'claude'].includes(agent.provider))
+    )
+      throw new Error('Runtime configurável apenas para colegas Codex/Claude.')
+    if (this.listTasks(id).some((task) => task.status === 'running'))
+      throw new Error('Espere o turno terminar antes de trocar o runtime.')
+    this.db.prepare('UPDATE agents SET runtime = ? WHERE id = ?').run(runtime, id)
+    this.db
+      .prepare(
+        'DELETE FROM provider_sessions WHERE thread_id IN (SELECT id FROM threads WHERE agent_id = ?)',
+      )
+      .run(id)
+    return { ...agent, runtime }
+  }
+
   public createAgent(input: CreateAgentInput): Agent {
     if (!this.getConnection(input.provider)) throw new Error('Provedor não cadastrado.')
     if (input.accountId !== undefined && !this.getProviderAccount(input.provider, input.accountId))
@@ -1646,6 +1704,7 @@ export class OrchbotDatabase {
     checkInstructionsLength(input.instructions)
 
     const agent: Agent = {
+      runtime: 'host',
       id,
       name: input.name,
       role: input.role === 'orchestrator' ? 'orchestrator' : 'worker',
@@ -2136,6 +2195,7 @@ export class OrchbotDatabase {
         a.model,
         a.effort,
         a.instructions,
+        a.runtime,
         a.workspace_path AS workspacePath,
         a.avatar,
         COALESCE(a.autonomy_level, 'autonomous') AS autonomyLevel,
@@ -2169,9 +2229,19 @@ export class OrchbotDatabase {
     computerRounds = 0,
     memoryRounds = 0,
   ): TaskQueueItem {
+    const requiredRuntime =
+      this.getAgent(agentId)?.runtime === 'docker' ||
+      this.db
+        .prepare(
+          "SELECT 1 FROM task_queue WHERE thread_id = ? AND required_runtime = 'docker' LIMIT 1",
+        )
+        .get(threadId)
+        ? 'docker'
+        : null
     const id = randomUUID()
     const now = createdAt ?? new Date().toISOString()
     const item: TaskQueueItem = {
+      requiredRuntime,
       id,
       agentId,
       threadId,
@@ -2190,8 +2260,8 @@ export class OrchbotDatabase {
     }
 
     const stmt = this.db.prepare(`
-      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, computer_rounds, memory_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO task_queue (id, agent_id, thread_id, origin_thread_id, origin_agent_id, browser_rounds, computer_rounds, memory_rounds, prompt, status, error, delegation_depth, created_at, started_at, completed_at, required_runtime)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     stmt.run(
       item.id,
@@ -2209,6 +2279,7 @@ export class OrchbotDatabase {
       item.createdAt,
       item.startedAt ?? null,
       item.completedAt ?? null,
+      requiredRuntime,
     )
     return item
   }
@@ -2221,6 +2292,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2246,6 +2318,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2299,6 +2372,7 @@ export class OrchbotDatabase {
         thread_id AS threadId, 
         origin_thread_id AS originThreadId,
         origin_agent_id AS originAgentId,
+        required_runtime AS requiredRuntime,
         browser_rounds AS browserRounds,
         computer_rounds AS computerRounds,
         memory_rounds AS memoryRounds,
@@ -2479,23 +2553,74 @@ export class OrchbotDatabase {
     if (isForeman(agent) && serverIds.length > 0) {
       throw new Error('O coordenador não tem conector próprio.')
     }
+    this.requireMcpIdle(agentId)
     const known = new Set(this.listMcpServers().map((s) => s.id))
-    this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
-    const insert = this.db.prepare(
-      'INSERT OR IGNORE INTO agent_mcp (agent_id, server_id) VALUES (?, ?)',
-    )
-    for (const id of serverIds) if (known.has(id)) insert.run(agentId, id)
+    const saved = new Map(this.getAgentMcpToolPolicies(agentId).map((p) => [p.serverId, p.policy]))
+    this.transaction(() => {
+      this.db.prepare('DELETE FROM agent_mcp WHERE agent_id = ?').run(agentId)
+      const insert = this.db.prepare(
+        'INSERT OR IGNORE INTO agent_mcp (agent_id, server_id, tool_policy) VALUES (?, ?, ?)',
+      )
+      for (const id of serverIds) {
+        const policy = saved.get(id)
+        if (known.has(id))
+          insert.run(
+            agentId,
+            id,
+            policy && hasMcpRestriction(policy) ? JSON.stringify(policy) : null,
+          )
+      }
+    })
     return this.listAgentMcp(agentId)
+  }
+
+  private requireMcpIdle(agentId: string): void {
+    if (
+      this.db
+        .prepare("SELECT 1 FROM task_queue WHERE agent_id = ? AND status = 'running'")
+        .get(agentId)
+    )
+      throw new Error('Pare o turno em andamento antes de alterar as permissões MCP.')
+  }
+
+  public getAgentMcpToolPolicies(agentId: string): AgentMcpToolPolicy[] {
+    const rows = this.db
+      .prepare(
+        'SELECT server_id AS serverId, tool_policy AS policy FROM agent_mcp WHERE agent_id = ?',
+      )
+      .all(agentId) as { serverId: string; policy: string | null }[]
+    return rows.map((r) => ({
+      serverId: r.serverId,
+      policy: r.policy === null ? { deny: [] } : parseMcpToolPolicy(JSON.parse(r.policy)),
+    }))
+  }
+
+  public setAgentMcpToolPolicy(
+    agentId: string,
+    serverId: string,
+    raw: unknown,
+  ): AgentMcpToolPolicy[] {
+    const agent = this.getAgent(agentId)
+    if (!agent || !this.listAgentMcp(agentId).includes(serverId))
+      throw new Error('Servidor MCP não vinculado ao agente.')
+    this.requireMcpIdle(agentId)
+    const policy = parseMcpToolPolicy(raw)
+    assertMcpToolSupport(agent.provider, policy)
+    this.db
+      .prepare('UPDATE agent_mcp SET tool_policy = ? WHERE agent_id = ? AND server_id = ?')
+      .run(hasMcpRestriction(policy) ? JSON.stringify(policy) : null, agentId, serverId)
+    return this.getAgentMcpToolPolicies(agentId)
   }
 
   /** Servidores do agente com segredos abertos, para montar a linha de comando do CLI. */
   public getAgentMcpLaunch(agentId: string): McpLaunchServer[] {
     const rows = this.db
       .prepare(
-        'SELECT s.* FROM mcp_servers s JOIN agent_mcp a ON a.server_id = s.id WHERE a.agent_id = ? ORDER BY s.name',
+        'SELECT s.*, a.tool_policy FROM mcp_servers s JOIN agent_mcp a ON a.server_id = s.id WHERE a.agent_id = ? ORDER BY s.name',
       )
       .all(agentId) as unknown as (Parameters<OrchbotDatabase['mcpInfo']>[0] & {
       secrets: string | null
+      tool_policy: string | null
     })[]
     return rows.map((r) => {
       const secrets = this.mcpSecrets(r.secrets)
@@ -2507,6 +2632,9 @@ export class OrchbotDatabase {
         url: r.url ?? undefined,
         env: secrets.env,
         bearerToken: secrets.bearer,
+        ...(r.tool_policy === null
+          ? {}
+          : { toolPolicy: parseMcpToolPolicy(JSON.parse(r.tool_policy)) }),
       }
     })
   }
@@ -2842,7 +2970,7 @@ export class OrchbotDatabase {
 
   private mirror(agentId: string): void {
     const agent = this.getAgent(agentId)
-    if (agent) mirrorAgent(agent, this.listMemories(agentId))
+    if (agent && agent.runtime !== 'docker') mirrorAgent(agent, this.listMemories(agentId))
   }
 
   public addMemory(
@@ -3331,11 +3459,104 @@ export class OrchbotDatabase {
 
   // --- Gatilhos por webhook ---
 
-  public createWebhookTrigger(agentId: string, title: string, instruction: string): WebhookTrigger {
+  public acceptControl(
+    requestId: string,
+    agentId: string,
+    prompt: string,
+  ): { threadId: string; taskId: string; task: TaskQueueItem | null } {
+    return this.transaction(() => {
+      this.db
+        .prepare('DELETE FROM control_requests WHERE accepted_at <= ?')
+        .run(Date.now() - 7 * 86400000)
+      const fingerprint = createHash('sha256')
+        .update(JSON.stringify([agentId, prompt]))
+        .digest('hex')
+      const receipt = this.db
+        .prepare(
+          'SELECT fingerprint, thread_id AS threadId, task_id AS taskId FROM control_requests WHERE request_id = ?',
+        )
+        .get(requestId) as { fingerprint: string; threadId: string; taskId: string } | undefined
+      if (receipt) {
+        if (receipt.fingerprint !== fingerprint)
+          throw new Error('requestId já usado com outro conteúdo.')
+        return { threadId: receipt.threadId, taskId: receipt.taskId, task: null }
+      }
+      const agent = this.getAgent(agentId)
+      if (!agent || agent.systemRole) throw new Error('Colega não encontrado.')
+      const thread = this.createThread(agentId, 'Controle externo')
+      this.addMessage(thread.id, 'user', prompt)
+      const task = this.enqueueTask(agentId, thread.id, prompt)
+      this.db
+        .prepare('INSERT INTO control_requests VALUES (?, ?, ?, ?, ?)')
+        .run(requestId, fingerprint, thread.id, task.id, Date.now())
+      return { threadId: thread.id, taskId: task.id, task }
+    })
+  }
+
+  public acceptWebhook(
+    triggerId: string,
+    deliveryId: string | undefined,
+    prompt: string,
+  ): { threadId: string; task: TaskQueueItem | null } {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const now = Date.now()
+      if (deliveryId !== undefined) {
+        this.db
+          .prepare('DELETE FROM webhook_receipts WHERE accepted_at <= ?')
+          .run(now - 7 * 24 * 60 * 60 * 1000)
+        const receipt = this.db
+          .prepare(
+            'SELECT thread_id AS threadId FROM webhook_receipts WHERE trigger_id = ? AND delivery_id = ?',
+          )
+          .get(triggerId, deliveryId) as { threadId: string } | undefined
+        if (receipt) {
+          this.db.exec('COMMIT')
+          return { threadId: receipt.threadId, task: null }
+        }
+      }
+      const trigger = this.getWebhookTrigger(triggerId)
+      if (!trigger) throw new Error('Gatilho não encontrado.')
+      if (trigger.githubRepository && this.getAgent(trigger.agentId)?.runtime !== 'docker')
+        throw new Error('GitHub requer agente Docker.')
+      const thread = this.createThread(trigger.agentId, `Gatilho: ${trigger.title}`)
+      this.addMessage(thread.id, 'user', prompt)
+      const task = this.enqueueTask(trigger.agentId, thread.id, prompt)
+      if (deliveryId !== undefined) {
+        // O recibo sobrevive à exclusão da conversa para um retry não repetir efeitos externos.
+        this.db
+          .prepare(
+            'INSERT INTO webhook_receipts (trigger_id, delivery_id, thread_id, accepted_at) VALUES (?, ?, ?, ?)',
+          )
+          .run(triggerId, deliveryId, thread.id, now)
+      }
+      this.db.exec('COMMIT')
+      return { threadId: thread.id, task }
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  public createWebhookTrigger(
+    agentId: string,
+    title: string,
+    instruction: string,
+    githubRepository?: string,
+  ): WebhookTrigger {
+    if (
+      githubRepository !== undefined &&
+      (typeof githubRepository !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_.-]{1,100}$/.test(githubRepository))
+    )
+      throw new Error('Use um repositório GitHub no formato dono/repo.')
+    if (githubRepository && this.getAgent(agentId)?.runtime !== 'docker')
+      throw new Error('Selecione Docker para este agente antes de criar o broker GitHub.')
     if (!this.getAgent(agentId)) throw new Error('Agente não encontrado.')
     const trigger: WebhookTrigger = {
       id: randomUUID(),
       agentId,
+      githubRepository: githubRepository ?? null,
       title: title.trim().slice(0, 80) || 'Webhook',
       instruction: instruction.trim(),
       token: randomBytes(24).toString('base64url'),
@@ -3343,7 +3564,7 @@ export class OrchbotDatabase {
     }
     this.db
       .prepare(
-        'INSERT INTO webhook_triggers (id, agent_id, title, instruction, token, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO webhook_triggers (id, agent_id, title, instruction, token, created_at, github_repository) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         trigger.id,
@@ -3352,12 +3573,13 @@ export class OrchbotDatabase {
         trigger.instruction,
         trigger.token,
         trigger.createdAt,
+        trigger.githubRepository ?? null,
       )
     return trigger
   }
 
   private static readonly TRIGGER_COLS =
-    'id, agent_id AS agentId, title, instruction, token, created_at AS createdAt'
+    'id, agent_id AS agentId, title, instruction, token, created_at AS createdAt, github_repository AS githubRepository'
 
   public listWebhookTriggers(agentId: string): WebhookTrigger[] {
     return this.db
