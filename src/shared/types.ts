@@ -382,6 +382,13 @@ export interface Agent {
   computerUse?: boolean
   /** Cadeia: ao terminar um pedido, o resultado segue para este robô. */
   handoffAgentId?: string
+  /** Contato fixado no topo da barra. */
+  pinned?: boolean
+  /** Há mensagem do agente ainda não aberta. */
+  unread?: boolean
+  /** Última mensagem de qualquer conversa deste robô. Só na listagem. */
+  lastMessage?: string
+  lastMessageAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -430,6 +437,8 @@ export interface UpdateAgentInput {
   steerMode?: SteerMode | null
   computerUse?: boolean | null
   handoffAgentId?: string | null
+  pinned?: boolean
+  unread?: boolean
 }
 
 export interface Thread {
@@ -644,6 +653,7 @@ export interface OrchbotApi {
   getAgent: (id: string) => Promise<Agent | null>
   createAgent: (input: CreateAgentInput) => Promise<Agent>
   updateAgent: (input: UpdateAgentInput) => Promise<Agent>
+  duplicateAgent: (id: string) => Promise<Agent>
   deleteAgent: (id: string) => Promise<boolean>
   getThreads: (agentId: string) => Promise<Thread[]>
   createThread: (agentId: string, title?: string, projectId?: string) => Promise<Thread>

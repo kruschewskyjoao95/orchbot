@@ -723,6 +723,11 @@ ${out.slice(-800)}`,
     return database.updateAgent(input)
   })
 
+  ipcMain.handle('orchbot:duplicate-agent', (_event, id: string) => {
+    if (typeof id !== 'string') throw new Error('ID inválido')
+    return database.duplicateAgent(id)
+  })
+
   ipcMain.handle('orchbot:delete-agent', async (_event, id: string) => {
     if (typeof id !== 'string') throw new Error('ID inválido')
     if (isForeman(database.getAgent(id))) throw new Error('O coordenador não sai da equipe.')

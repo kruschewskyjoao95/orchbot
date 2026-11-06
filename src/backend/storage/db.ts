@@ -203,6 +203,10 @@ function normalizeAgent(row: Agent): Agent {
     computerUse: triState(row.computerUse as unknown),
     handoffAgentId: row.handoffAgentId ?? undefined,
     systemRole: row.systemRole === 'foreman' ? 'foreman' : undefined,
+    pinned: Boolean(row.pinned),
+    unread: Boolean(row.unread),
+    lastMessage: row.lastMessage || undefined,
+    lastMessageAt: row.lastMessageAt || undefined,
   }
 }
 
@@ -686,6 +690,8 @@ export class OrchbotDatabase {
       'ALTER TABLE task_queue ADD COLUMN origin_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN handoff_agent_id TEXT',
       'ALTER TABLE agents ADD COLUMN system_role TEXT',
+      'ALTER TABLE agents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE agents ADD COLUMN unread INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE agent_mcp ADD COLUMN tool_policy TEXT',
       'ALTER TABLE threads ADD COLUMN project_id TEXT',
       'ALTER TABLE approvals ADD COLUMN payload_json TEXT',
@@ -1624,12 +1630,37 @@ export class OrchbotDatabase {
         computer_use AS computerUse,
         handoff_agent_id AS handoffAgentId,
         system_role AS systemRole,
+        pinned,
+        unread,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
-      ORDER BY created_at DESC
+      ORDER BY pinned DESC, created_at DESC
     `)
-    return (stmt.all() as unknown as Agent[]).map(normalizeAgent)
+    return this.withLastMessages((stmt.all() as unknown as Agent[]).map(normalizeAgent))
+  }
+
+  private withLastMessages(agents: Agent[]): Agent[] {
+    if (agents.length === 0) return agents
+    const rows = this.db
+      .prepare(
+        `SELECT t.agent_id AS agentId, m.text, m.created_at AS createdAt
+         FROM messages m
+         JOIN threads t ON t.id = m.thread_id
+         JOIN (
+           SELECT t2.agent_id AS agentId, MAX(m2.created_at) AS createdAt
+           FROM messages m2
+           JOIN threads t2 ON t2.id = m2.thread_id
+           GROUP BY t2.agent_id
+         ) last ON last.agentId = t.agent_id AND last.createdAt = m.created_at`,
+      )
+      .all() as { agentId: string; text: string; createdAt: string }[]
+    const byAgent = new Map<string, { text: string; createdAt: string }>()
+    for (const row of rows) if (!byAgent.has(row.agentId)) byAgent.set(row.agentId, row)
+    return agents.map((agent) => {
+      const last = byAgent.get(agent.id)
+      return last ? { ...agent, lastMessage: last.text, lastMessageAt: last.createdAt } : agent
+    })
   }
 
   public getAgent(id: string): Agent | null {
@@ -1658,6 +1689,8 @@ export class OrchbotDatabase {
         computer_use AS computerUse,
         handoff_agent_id AS handoffAgentId,
         system_role AS systemRole,
+        pinned,
+        unread,
         created_at AS createdAt, 
         updated_at AS updatedAt 
       FROM agents 
@@ -1770,6 +1803,36 @@ export class OrchbotDatabase {
     return agent
   }
 
+  public duplicateAgent(id: string): Agent {
+    const source = this.getAgent(id)
+    if (!source) throw new Error('Agente não encontrado.')
+    if (isForeman(source)) throw new Error('O coordenador não pode ser duplicado.')
+    const copy = this.createAgent({
+      name: `${source.name} (cópia)`,
+      avatar: source.avatar,
+      role: source.role,
+      description: source.description,
+      projectId: source.projectId,
+      provider: source.provider,
+      accountId: source.accountId,
+      model: source.model,
+      effort: source.effort,
+      instructions: source.instructions,
+      workspacePath: source.workspacePath,
+      autonomyLevel: source.autonomyLevel,
+      contextMode: source.contextMode,
+      browserAccess: source.browserAccess,
+      localScripts: source.localScripts,
+      startsNewChats: source.startsNewChats,
+      showPlanBeforeLongTasks: source.showPlanBeforeLongTasks,
+      steerMode: source.steerMode,
+      computerUse: source.computerUse,
+    })
+    const skills = this.listAgentSkills(id)
+    if (skills.length > 0) this.setAgentSkills(copy.id, skills)
+    return copy
+  }
+
   public updateAgent(input: UpdateAgentInput): Agent {
     const current = this.getAgent(input.id)
     if (!current) {
@@ -1877,6 +1940,16 @@ export class OrchbotDatabase {
       this.db
         .prepare('UPDATE agents SET avatar = ? WHERE id = ?')
         .run(normalizeAvatar(input.avatar) ?? null, input.id)
+    }
+    if (input.pinned !== undefined) {
+      this.db
+        .prepare('UPDATE agents SET pinned = ? WHERE id = ?')
+        .run(input.pinned ? 1 : 0, input.id)
+    }
+    if (input.unread !== undefined) {
+      this.db
+        .prepare('UPDATE agents SET unread = ? WHERE id = ?')
+        .run(input.unread ? 1 : 0, input.id)
     }
 
     const updated = this.getAgent(input.id)
@@ -2109,6 +2182,13 @@ export class OrchbotDatabase {
       msg.recipientAgentId ?? null,
       msg.createdAt,
     )
+    if (role === 'assistant') {
+      this.db
+        .prepare(
+          'UPDATE agents SET unread = 1 WHERE id = (SELECT agent_id FROM threads WHERE id = ?)',
+        )
+        .run(threadId)
+    }
     return msg
   }
 
@@ -2204,6 +2284,8 @@ export class OrchbotDatabase {
         a.computer_use AS computerUse,
         a.handoff_agent_id AS handoffAgentId,
         a.system_role AS systemRole,
+        a.pinned,
+        a.unread,
         a.created_at AS createdAt, 
         a.updated_at AS updatedAt
       FROM agents a
